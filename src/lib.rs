@@ -1,0 +1,35 @@
+//! An exact boundary-representation kernel. The representation, the tolerance policy and
+//! the history rules are in `doc/design.md`.
+#![forbid(unsafe_code)]
+#![warn(unreachable_pub)]
+
+pub mod blend;
+pub mod boolean;
+pub mod check;
+pub mod codec;
+pub mod distance;
+pub mod draw;
+pub mod edit;
+mod error;
+pub mod geom;
+pub mod loft;
+pub mod math;
+pub mod measure;
+pub mod mesh;
+mod numeric;
+pub mod overlap;
+pub mod pick;
+pub mod primitive;
+pub mod probe;
+pub mod profile;
+pub mod rays;
+pub mod step;
+pub mod sweep;
+pub mod tol;
+pub mod topo;
+
+pub use error::{Error, Result};
+
+/// A digest of the kernel's sources, unit tests aside: two builds with the same one build the same
+/// geometry, so a cache of built parts keys on it.
+pub const SOURCE: &str = env!("SPRINGREP_SOURCE");

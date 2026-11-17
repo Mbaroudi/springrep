@@ -1,0 +1,1332 @@
+# springrep design
+
+How the kernel represents solids, which tolerances it holds them to, how face names follow history,
+and which module owns what. Every later stage builds on these rules; change one here first.
+
+## Representation
+
+A solid is exact geometry under an arena of topology, all in one [`Brep`](../src/topo/mod.rs):
+
+```text
+Solid ─ Shell ─ Face (surface, reversed, loops, names) ─ Loop ─ Coedge (pcurve)
+      ─ Edge (curve) ─ Vertex
+```
+
+- **Ids, not pointers.** Each entity lives in a `Vec` and is named by a typed id (`FaceId`,
+  `EdgeId`, …). Builders append; nothing is removed in place. An operation that changes topology
+  builds a new arena (or appends one with `Brep::append`) rather than patching the old one.
+- **Solid.** Its first shell is the outer boundary; any others bound voids.
+- **Face.** A bounded piece of one surface. Its outward normal is the surface's natural normal
+  `∂S/∂u × ∂S/∂v`, or the opposite when `reversed`. The first loop is the outer one.
+- **Loop.** A closed chain of coedges with the face's material on the left, seen from outside the
+  solid. In the parameter plane the outer loop therefore runs counter-clockwise when the face is not
+  reversed and clockwise when it is; holes run the other way. The checker enforces this.
+- **Coedge.** One face's use of an edge, along the edge's parameter or against it (`reversed`). It
+  carries a **pcurve**: where it runs in the face's parameter plane, as a function of the edge
+  parameter. `PCurve::Affine` (`uv = origin + t·dir`) covers every edge a sweep makes along or
+  across a surface's parameter lines; `PCurve::Projected` projects the 3-D point and continues
+  periodic parameters from a seed, which is exact on a plane, halving any step between samples that
+  turns a periodic parameter by over a quarter period, since beside a pole a short step can turn it
+  by nearly half a period either way; at a pole, where every `u` is the same point, `u` is the angle
+  the curve's tangent leaves the pole at, so every reader finds the same one however it samples the
+  curve. Booleans give every intersection edge a projected pcurve.
+- **Edge.** A curve and a range `t0 < t1`, from `start` at `curve(t0)` to `end` at `curve(t1)`. A
+  closed curve's edge starts and ends at the same vertex. A **degenerate edge** has no curve: it is
+  a pole (a cone's apex, a sphere's pole) that its face's loop spans in the parameter plane. It is
+  used by exactly one coedge.
+- **Seams.** A face that wraps all the way round a periodic parameter carries a seam edge, used
+  twice by that face with pcurves one period apart. So every face's loops close in its parameter
+  plane, which tessellation, measurement and point classification rely on, and every closed critical
+  curve of a coordinate (a torus's top circle) meets a boundary edge.
+
+### Geometry
+
+Curves ([`geom/curve.rs`](../src/geom/curve.rs)): line (arc-length parameter), circle and ellipse
+(angle from the frame's `x`, counter-clockwise about its `z`), non-rational B-spline up to degree 3
+([`geom/bspline.rs`](../src/geom/bspline.rs), open or periodic, interpolated at chord-length
+parameters: not-a-knot cubic when open, C² when closed; a profile's spline has a knot at every point
+and at each end the tangent of the cubic through the four nearest points, the ends other modellers
+give a spline through points; the collocation systems are banded, so a fit through thousands of
+points costs linear time and memory), and intersection curves
+([`geom/intersection.rs`](../src/geom/intersection.rs)): a cubic through points refined onto both
+surfaces, with points added until the spline stays within half the linear tolerance of both; a span
+beside a split one is split too while it is over three times as long as that one's halves, since
+uneven spacing makes the interpolant swing. Where the surfaces cross at a tiny angle θ, a point on
+both to within ε is placed across the curve only to within ε/θ (two tori 1e-3 apart cross near their
+tops at about 1e-7 rad, so points scatter across a band about 1e-3 wide), and the fit drops any
+point whose chords to its neighbours point against each other: a traced branch never reverses
+between neighbouring points, and through such scatter the interpolant would fold back on itself.
+Rational B-splines of any degree up to 15 ([`geom/nurbs.rs`](../src/geom/nurbs.rs)), as STEP files
+carry them, are curves and surfaces too; one whose ends meet within the linear tolerance is periodic
+in that parameter, so an edge or loop may run across its join.
+
+Surfaces ([`geom/surface.rs`](../src/geom/surface.rs)): plane, cylinder, cone, sphere and torus in
+closed form, and extrusion, revolution and ruled surfaces of any curve. On every surface swept about
+an axis, `u` is the angle about it from the frame's `x`; `v` is height (cylinder), arc length along
+a generator (cone), latitude (sphere), tube angle (torus), or the profile curve's own parameter
+(revolution). Every curve and surface has evaluation, first derivatives, projection (closest point)
+and its periods; curves also have second derivatives, breakpoints and coordinate extremes.
+Projection onto a B-spline searches only the knot spans whose control points' bounding ball could
+hold a nearer point, so its cost does not grow with the span count; an extrusion of one projects
+along its direction onto the curve. A B-spline's coordinate extremes are each span's quadratic
+roots. Projection onto a rational surface runs damped Newton steps from the nearest few of a grid of
+seed points, spaced about as closely along a long narrow patch (a twisted loft's side between close
+corners) as across it, so the nearest seed lies in the nearest point's basin. Newton takes the full
+second-order step where the squared distance's Hessian is positive definite, so it converges
+quadratically off the surface too. A parameter at an end of its range, with the nearer point beyond
+it, is held there, and the search goes on along that boundary alone: a step solved in both
+parameters and cut back to the range stalls short of the boundary's nearest point. At a pole, where
+a whole row of the surface is one point and one parameter moves nothing, the line out of the pole
+that heads for the point most directly is found first, and the search starts down it. A search that
+stops where no fraction of its step comes nearer has found a point and not a foot, and is not taken
+for one. Projection from a hint keeps the foot Newton finds when it lies within a twentieth of the
+seed spacing of the surface: the global search already assumes no two sheets come that close. A
+rational surface also carries small patches, each knot span cut to about a sixteenth of the
+surface's longer side, whose control points after knot insertion bound it; rays and curves are
+sampled against the surface only where they pass through a patch's box, and a face's box only
+searches the patches that poke out of it.
+
+Sweeps choose the analytic surface whenever one exists: an extruded line is a plane and an extruded
+circle a cylinder; a revolved line is a cylinder, plane or cone, and a revolved circle a sphere
+(centre on the axis) or torus. Only other curves give extrusion or revolution surfaces.
+
+Lofts ([`loft/`](../src/loft/mod.rs)) match sections edge to edge when every section has as many,
+otherwise split at the polar angles of every section's vertices. Edge to edge, each section's loop
+starts where its vertices, taken about its centre, best fit the last section's, read either along
+world axes or along each section's own axes. The world reading keeps one outline drawn on planes
+with different axes, or on a plane facing back down the loft, a straight prism; the frame reading
+keeps a helical gear's tooth space, turned past about 4.6 rad over nine sections and moving further
+between sections than it is wide, from pairing each vertex with the next one round and coming out
+inside out. On a tie the world reading wins. Each column of matched edges is brought to one degree
+and knot vector and skinned into a rational B-spline surface: linear across a ruled loft or two
+sections, otherwise the lowest-degree Bézier through the end sections that passes within `LINEAR` of
+the others. A flat ruled side between two straight edges is a plane. Each skinned surface runs a
+tenth of its parameter range on past every edge that is not a seam, as a swept surface runs on past
+its profile's ends, so an intersection that ends on a loft edge is traced across it and meets the
+edge's vertex.
+
+## Tolerance policy
+
+There is one linear tolerance, [`tol::LINEAR`](../src/tol.rs) = 1e-7 mm, and one angular tolerance,
+`tol::ANGULAR` = `LINEAR / MODEL_SIZE` (1e-10 rad for a 1000 mm model), so a direction within it
+moves a point at most `LINEAR` across the model. Every geometric decision uses one of these or a
+value derived from one where it is used (a parameter tolerance is `LINEAR / speed`). Nothing the
+kernel makes carries its own tolerance, and no module defines a private epsilon for geometry. There
+are two exceptions. Geometry imported from another system that meets only to that system's tolerance
+and cannot be healed to `LINEAR` (below, under STEP) may carry local tolerances on its edges and
+vertices (`Brep::edge_tolerance`, `Brep::vertex_tolerance`), as in tolerant modelling (Jackson
+1995). And a vertex a boolean places where two solids graze carries the uncertainty of the graze
+(below, under booleans). A vertex's sphere holds the tube of every edge ending at it, a tolerance is
+the gap measured and never more than a quarter of an edge it holds, two entities coincide within the
+sum of their tolerances less the one `LINEAR` two exact entities share (`tol::between`), and
+geometry stays exact. Numerical routines (Newton steps, quadrature convergence) have their own
+stopping rules, which are about arithmetic, not geometry.
+
+Tangency is one decision too: two surfaces (or a ray and a surface) are tangent where the sine of
+the angle between them is at most `tol::TANGENT` = `LINEAR / RESOLVED`, the angle at which they stay
+within `LINEAR` of each other for `RESOLVED` (0.1 mm) along their meeting. In closed form a plane
+and a cylinder (or two circles) touch when they overlap by at most `LINEAR`; past that they cross,
+however thin the sliver between the crossings. A sliver thinner than twice `LINEAR` is cut along
+both its edges, so where a test at one of its points falls within `LINEAR` of an edge, the exact
+side of that edge (the winding number, or the sign of a ray's hit) decides it.
+
+Two kinds of constant remain that are not tolerances: parameter-plane gaps between images of one
+vertex (`arrange.rs`, `sew.rs`), which only need to be far smaller than a period (or twice a
+tolerant vertex's tolerance, where its edges end anywhere in its sphere), and orderings and guards
+against rounding (a flat triangle in the mesher, a direction `march` cannot take). One such guard is
+in sampled curve–surface roots (`csi.rs`), for the pairs with no closed form (see
+[Analytic contact](#analytic-contact)): where a curve only touches a surface, rounding in the
+distance makes sign changes up to √(noise / curvature) along the curve from the touching point, 3e-8
+mm on a 3 mm round, and more where the curve sits a hair inside the surface: a seam 3e-11 mm outside
+a cylinder a fillet's tube touches dips into the tube and out again 9.5e-6 mm either side. A sign
+change beside an extremum within `LINEAR` of the surface, where the curve leaves the surface on one
+side both ways within a sample step, is moved onto the extremum, found from the sign of the slope,
+which pins it to rounding; a dip between two samples is found at its extremum too, a touch when
+within `LINEAR` and two crossings, one either side, past it. Without it a round's edge that ends
+where it touches its pillar gave a second vertex 1.3e-7 mm from the first, and a sliver edge between
+them. A boolean takes an edge's meeting with a face to be a vertex already within a cell of it that
+lies on both, when the edge stays within `LINEAR` of the face all the way there: two crossings with
+no excursion past the tolerance between them are one touching point. A box's edge along a loft's
+side, tangent at a ruling, was met 1.3e-7 mm from where the ruling pierces the box, and the side was
+never split there. An edge that meets a face on the face's boundary while running tangent to it
+(sine at most `TANGENT`) runs along a boundary edge of that face: that is an edge–edge contact,
+whose vertices are each edge's ends lying on the other, and the sampled roots along the band are
+rounding, so they are not meetings. A circle lofted to a square met by its copy turned 90° about the
+axis had its bottom arcs split at 46 such roots, 62 edges where 16 do.
+
+Where two faces nearly coincide (a body and a copy moved a hair off every axis), an edge of one
+grazes the other and its meeting with it can lie anywhere along a band LINEAR / sine long, off the
+curve the two faces are cut along, which is then never split there. So an edge's meetings with faces
+are placed after every face pair's intersection curves are known: a meeting is moved to where an
+intersection curve of the edge's own face and the face it meets crosses the edge (Gauss–Newton on
+both parameters, then along the curve onto the edge's other face, so the point lies on every surface
+of the meeting), the steepest such crossing within the band where the edge stays on the face. A
+fitted curve carries its fit error into that point, so where the three surfaces (the edge's two
+faces and the face it meets) fix a point within `LINEAR` of it, by Newton steps on their tangent
+planes, the meeting goes there: a chamfer's end on a keyway wall otherwise moved 4e-10 mm along the
+bore and changed the chamfer's volume by 1e-9 of itself. Inside its own face the edge crosses that
+curve at least as steeply as it crosses the face, so the crossing is no worse placed, and it lies on
+the curve. It is then taken to be a vertex already there only if that vertex lies on the same curve.
+Meetings are placed steepest first, ties broken by position, so where several computations find one
+grazing meeting the vertex does not depend on which ran first.
+
+A curve the kernel fits, where no exact form exists, is fitted finer than `LINEAR` by the smallest
+angle it will be cut at. A screwed profile's helix crosses a plane square to its axis, or a cone
+about it, at its lead angle or less, a hundredth of a radian on a fine thread, and its crossing
+slides along it by the fit's error over that angle: [`helix`](../src/sweep/helix.rs) holds each
+column of a screwed face within a ten-thousandth of `LINEAR` of its helix. Where a screwed edge is
+no helix but an arc about the axis or a line along it, its face is the exact cylinder.
+
+Validity is measured against `LINEAR`: an edge's ends lie within it of its vertices, and every
+coedge lies within it of its face's surface. A result that cannot meet that is an error, never a
+solid with a widened tolerance. An imported edge or vertex with a local tolerance is measured
+against that instead. A boolean cuts such solids as Jackson's does
+([Local tolerances in booleans](#local-tolerances-in-booleans)); its own geometry stays exact
+wherever it does not touch a tolerant entity.
+
+## Validity
+
+[`check::check`](../src/check.rs) returns the issues that make a solid invalid; an empty list means:
+
+- every non-degenerate edge is used by two coedges, in opposite directions, of faces in the same
+  shell (closed, consistently oriented), or, where pieces of the solid touch along it, by an even
+  number paired off into partners that run opposite ways in one shell
+  ([Results that touch](#results-that-touch)); every degenerate edge by one;
+- every loop is connected vertex to vertex and closes in its face's parameter plane;
+- each edge's curve ends at its vertices, and each coedge lies on its surface, within `LINEAR`;
+- no intersection curve turns back on itself: its direction at neighbouring samples a quarter of a
+  knot span apart never differs by more than a right angle (a face bounded by a fold touches itself,
+  and no mesher can triangulate it). Imported splines are not tested, since a designer may draw a
+  cusp;
+- each loop runs the way its face's orientation requires, except a vertex loop, which is a point;
+- each inner loop lies in the region the face's other loops bound, by the exact winding number of
+  those loops about a point on it (a face whose loops wind round a period, as a band round a
+  cylinder, has no such region and is not tested), and each void shell lies inside its solid's outer
+  shell, by classifying a point inside one of its faces. A sewn blend that kept a hole or void the
+  blend took away failed only these two;
+- vertices are finite and no two lie within `LINEAR`, and every edge is longer than `LINEAR`;
+- each solid's volume is positive;
+- no two faces that share no edge meet, away from the vertices they share: the solid neither passes
+  through itself nor touches itself anywhere its edges and vertices do not hold the contact, and no
+  two solids of the arena pass through or touch each other;
+- no solid of the arena lies inside another, found by classifying a point inside one of its faces.
+  `check_each`, for an import's placed parts, skips this and pairs only faces of one solid. Pairing
+  faces across solids and the nesting probe changed no result on the designs they were run over.
+
+The last is a search over pairs of faces whose boxes meet, sorted along `x`: each edge of one face
+is intersected with the other face's surface and every meeting located in that face. An edge is
+first halved into stretches, and a stretch is dropped where its box lies clear of the surface (a
+plane's side, an analytic surface's distance from the box's centre, or the projection of the
+stretch's middle against the box's farthest corner), so an edge that only passes near a face costs a
+few distances. An edge that lies in the other face's surface is located at its quarter points; it
+can only enter the face elsewhere by crossing the face's boundary, whose edges then meet the first
+face. Two curved faces that meet only along a closed curve inside both are not found. A pair found
+apart is recorded in both faces' memos and never tested again while their geometry is unchanged. A
+boolean's result tests only pairs that take one face from each input: each input is valid, so two
+faces cut from one meet only where the faces they were cut from did, along edges and at vertices the
+result keeps. On a set of real parts the search adds about 4% to the instructions of a whole run. It
+refuses two results the checker used to pass: a 90° revolve cut by its copy moved 1e-3 or 1e-5 mm
+along `x` leaves the copy's corner edge 5e-8 (5e-12) mm from the original's inner wall, a face it
+shares no edge with, so the result touches itself there.
+
+Every operation runs the checker on its result and returns `Error::InvalidResult` instead of a
+broken solid. Booleans and blends must keep that contract.
+
+`check::check_each` holds the solids of an arena to the same rules one at a time: vertices of
+different solids may lie within `LINEAR` of each other. That is the contract of a STEP import, whose
+placed solids are separate parts and may touch (a part seated on another shares its corners); every
+solid the reader returns has passed the checker on its own.
+
+## History and face names
+
+Every face carries a set of [`FaceName`](../src/topo/names.rs)s, `feature.face`. A sweep names each
+side face after its profile segment and its caps `start` (on the sketch plane) and `end`; a full
+revolution has no caps. The rules every operation follows:
+
+- **A split face keeps its names.** Every piece of a face cut in two carries all the names it had.
+- **Merged faces carry the union.** When same-domain faces merge, the result carries every name of
+  every face merged into it.
+- **Blend faces are named by their operation.** A chamfer or fillet face is `<op>.bevel_<i>` or
+  `<op>.round_<i>` for the edge pair `i`, and a vertex blend `<op>.corner`.
+- A face the result loses simply disappears; nothing is renamed to fill its place.
+- **A reshaped face keeps its names.** A face a later operation trims, holes, tilts (a draft) or
+  moves along its normal keeps every name it had; an outward shell's inside is the modelled faces
+  where they were, so each keeps its names and takes the shell's `inner` too.
+
+Names never depend on geometry or on arena order, and no operation names a face by the surface it
+lies on: a face lying on another feature's surface is not that feature's face. So a face with no
+names was made by a face its feature left unnamed, and an edit after a feature never moves that
+feature's names.
+
+One rule reads surfaces, and it reads them from faces history names: a blend's edge pair stands for
+the edges where the surfaces of the faces carrying its two names meet.
+
+## Booleans
+
+[`boolean`](../src/boolean/mod.rs) combines every solid of one arena with every solid of another, in
+four steps, each in its own module:
+
+1. **Meeting points.** Every edge of each solid is intersected with every face of the other
+   ([`csi.rs`](../src/boolean/csi.rs)), every edge with every edge of the other (which places the
+   vertices where coplanar boundaries cross), and every pair of faces' surfaces
+   ([`ssi.rs`](../src/boolean/ssi.rs)). Each point goes into one pool, merged within `LINEAR`.
+2. **Pieces.** Every input edge and intersection curve is split at every pooled vertex that lies on
+   it; pieces outside either face are dropped, and pieces that run along each other become one edge,
+   an input edge in preference to an intersection curve. So the two faces of every result edge use
+   the same edge by construction, as sweeps do.
+3. **Face pieces.** Each face is cut by the intersection pieces inside it and by the boundary of any
+   face of the other solid that lies on its surface ([`arrange.rs`](../src/boolean/arrange.rs)). The
+   cuts and the boundary form a planar graph in the parameter plane; its regions, traced with the
+   material on the left, are the pieces.
+4. **Selection and sewing.** Each piece is classified at an interior point, one off the other
+   solid's faces where the piece has one (a point on a tangent contact is on both sides): on a
+   coincident face of the other solid (same or opposite outward normal), or inside or outside it. A
+   piece bounded by a transversal cut is read at the cut's middle where that lies inside the other
+   face: it runs into the other solid when the direction into the piece, square to the cut along its
+   surface, opposes that face's outward normal (sine at least 1e-3). A piece whose point still lies
+   on the other solid's boundary, where no ray has a parity, is decided by that contact: inside one
+   face, by the side of it the piece stands on where it stands clear of the face by more than
+   rounding (a thousandth of the tolerance), as a sliver cut where two faces cross at a small angle
+   does all over, and otherwise by the side the piece's surface bends to (the sign of the gap form
+   of [`contact.rs`](../src/boolean/contact.rs), semidefinite along a tangent line); on a seam, as
+   inside the face; on an edge the piece's tangent plane holds, by whether that plane runs into the
+   wedge of material the edge's two faces bound on both sides of it (along a face it is tangent to,
+   by the gap again). A corner, or surfaces that osculate, leave it to the rays. Any other piece
+   takes the parity of a ray's crossings of the exact faces
+   ([`classify.rs`](../src/boolean/classify.rs)). In a symmetric design the piece's best interior
+   point is often on the contact: all 40 of seq seed 2's
+   `could not tell whether a face piece is inside` failures were such a point, 18 on a tangent line
+   inside a face, 16 on an edge and 6 on a cylinder's seam where it touches a plane. A point is
+   located on a face by every image of it in the face's parameter window, since a face that winds
+   along a helix can span more than a period, where only one image is inside. The operation keeps
+   pieces by that class; [`sew.rs`](../src/boolean/sew.rs) merges kept faces on one surface that
+   share an edge only where every use of it lies on that surface (an edge more faces use is a
+   contact, and stays), pairs the uses of each edge, groups shells into solids, and runs the
+   checker. Where the result touches itself or a piece of it touches another, the contact is kept in
+   it ([Results that touch](#results-that-touch)).
+
+### Results that touch
+
+A boolean is the regularized set operation, and its result may touch itself or have pieces that
+touch, along a curve or at points: two blocks sharing an edge, a box less a cylinder touching all
+four of its sides, two balls touching. The result is one solid, the point set's, and it keeps the
+contact:
+
+- **Along a curve**, the contact is an edge `2k` faces use. Round it, faces alternate between wedges
+  of material and empty wedges. Each coedge has a _partner_, the coedge across its wedge of
+  material, and a coedge _beside_ it across the empty wedge (`Brep::partner`, `Brep::beside`). The
+  order round the edge is read a short step into each face, so faces that leave the edge tangent to
+  each other (a cylinder lying on a plane) still part. A tangent curve is a cut like any other; a
+  cut that dangles inside a face, as a groove's apex edge resting on a wall does, stays in it as a
+  slit the face's loop runs along and back.
+- **At a point inside a face**, the contact is a _vertex loop_: a loop of one coedge on a degenerate
+  edge at the point (`Brep::is_vertex_loop`). The boolean makes one where two faces' surfaces meet
+  at an isolated point, or where an edge of the result runs tangent to a face, and the point is a
+  vertex both sides share.
+- **Sheets and solids.** Faces joined through partners are a sheet; sheets joined through shared
+  edges or vertices are one solid, whose first `Solid::outer` shells are outer sheets and the rest
+  voids.
+
+[`measure::betti`](../src/measure.rs) gives the point set's Betti numbers. Resolving each contact
+into the manifold boundary of the interior gives a surface `M`, so χ(X) = χ(B) − χ(M)/2, `B` the
+boundary. An edge `2k` faces use is `k` edges of `M`. A vertex where `f` fans of faces meet is
+replaced by its link, the material on a small sphere round it, whose regions the fans' circles part
+by turns into material and empty: two balls touching leave two disks, and a cavity touching the skin
+from inside an annulus. Which it is follows from whether each fan lies on the other's material side,
+read a step from the vertex. `b2` counts the groups of faces joined across empty wedges that enclose
+negative volume.
+
+Operations that cannot keep a contact refuse it with `Error::Unsupported`: a blend along a contact
+or up to one, and moving a face that runs up to one (a draft, a thicken, a shell). STEP holds a
+touching result as the manifold boundary of its interior ([STEP](#step)).
+
+### Solids that are each other
+
+Before any of this, a solid of one input that is a solid of the other, every vertex, edge and face
+of one coinciding with one of the other's within their tolerances
+([`same.rs`](../src/boolean/same.rs)), is taken from topology: the pair is its own union and
+intersection and leaves nothing of a difference, and only the rest is intersected, the facts the
+caller gave renumbered onto the copies of the rest as they are where solids pass through untouched.
+Faces that lie on each other everywhere are where tracing is least stable; an imported assembly of
+605 solids united with itself takes 12 s this way. A distance at exactly the tolerance is read with
+a few ulps of the coordinates' size to spare, so a copy moved by `LINEAR` coincides however its
+coordinates round: `stress` had 51 `FAIL`s and 21 `REFUSED` among its 81 copies moved 1e-7 mm, and
+has none.
+
+Solids a hair apart, farther than the tolerance but close enough that boundaries touching in one lie
+within it of the other's over a stretch, are where the face split is least stable. A loop that runs
+out along a piece and straight back loses the spike. Departures along nearly one tangent are
+compared by chords a twentieth of the shortest trim compared, and ones equal to the last bit by
+where their far ends lie. A loop whose chord area is not clearly larger than its error takes its
+sign from the exact integral along its trims. Vertices that split a curve less than the tolerance
+apart along it become one. Edges of the two solids running within 1e-5 mm of each other meet where
+the offset between them turns round, a crossing at angles no step resolves. Where two surfaces cross
+at a tiny angle, an intersection point the Newton steps miss is found by the gap's sign change along
+a line across the curve.
+
+Faces of the second input that lie within 1e-6 mm of a face of the first, all along their boundary,
+are moved onto that face's surface first ([`boolean/snap.rs`](../src/boolean/snap.rs)), the rest of
+the solid rebuilt round them by [`tweak::move_faces`](../src/edit/tweak.rs). Such surfaces cross, if
+at all, at an angle the tolerance cannot place: an insert placed by a pose rounded to 0.1 µm sits
+0.5 µm off its pocket's axis, and the crescent between them would run within the tolerance of both
+cylinders for half a millimetre at each tip. Moved onto one surface, the part sits in its seat, and
+the volume moved is at most 1e-6 mm times the face's area. Faces up to 1e-4 mm apart are moved too
+where they cross at an angle below `TANGENT`: a cylinder 1 µm off its seat's axis at 24.5 mm radius
+crosses it at 4e-8 rad. Where moving all of them at once leaves a corner whose surfaces do not meet,
+each is tried alone and kept if the solid still closes; a face tangent to a neighbour cannot move
+off it, and is left for the boolean. Planes within the tolerance of each other over both faces are
+one plane however small the angle between them, and planes that cross a hair off parallel meet along
+a line found without the difference of two numbers `1 − c²` apart, which put it 1e-5 mm off both at
+1.5e-5 rad.
+
+Copies moved by one to a few tolerances, 1.1e-7 to 7e-7 mm, failed in 84 of `stress`'s 468 runs of
+that band, all for one reason: something of the copy was left a little over the tolerance from the
+original, and the boolean cut a piece of edge or face that thin between them. Four rules close it:
+
+- **Vertices free on a curve.** A seam's end lies on a circle, and moving its faces puts it the
+  least distance onto them, as far round the circle as the copy was moved. Each vertex of a moved
+  face takes the original's vertex within reach where that lies on all its new surfaces
+  (`tweak::move_faces_pinned`).
+- **Faces already within the tolerance.** One left where it is makes the vertex it shares with a
+  nearly parallel neighbour, which does move, slide along their line by the gap over the angle
+  between them. Such faces move with the others, and on their own where they lie half the tolerance
+  off or more all over, where a distance read with a few ulps to spare and one read without decide
+  differently. A face off by that much at only some of its boundary, a part tilted by rounding,
+  stays: moving such a cover that way broke its pair with the plate under it.
+- **Spline faces.** Extrusions, revolutions, ruled and B-spline faces of one kind snap by the same
+  sampled distance; one within the tolerance all over already lies on the other, as a symmetric part
+  turned onto itself does, and moves only with the rest.
+- **The checker** reads a coedge's distance from its surface with the same few ulps to spare
+  (`tol::within`): an edge at exactly the tolerance from a face, as two faces turned 5e-6 rad apart
+  leave one, measured 1.0000000028e-7 mm.
+
+Copies moved by 1.1e-7, 2e-7 and 5e-7 mm combine too. A face tangent to a neighbour that does not
+move with it still cannot be moved: a plate whose outline is a chain of tangent arcs 1e-6 mm off
+another's is the one known pair left. Holding the gap as a local tolerance on its edges, as an
+import does, was tried and dropped: it broke 15 `stress` runs that pass when the face is left to the
+boolean.
+
+Step 1's pairs are taken from boxes, and where they are many (256 face pairs or 4096 edge pairs
+whose boxes overlap) most of them are far apart: a crank and a cam whose boxes overlap had 1,174
+face pairs that never meet, each traced from up to 162 seeds at 6 ms a pair. There
+[`boolean/near.rs`](../src/boolean/near.rs) meshes the faces of each input whose boxes reach a face
+of the other, and drops every face pair, edge pair and edge–face pair whose mesh pieces stay farther
+apart than twice both meshes' deflections plus the tolerances and the 1e-5 mm the edge-graze search
+looks within: a mesh lies within its deflection of the exact geometry, so where the exact pieces
+meet their meshes come that close. A face the mesher leaves bare counts as near everything. The
+crank and cam took 11 s and take 0.8 s; an imported assembly of 25,676 faces against a plate took
+368 s, mostly in the edge-graze search over 64 samples of every edge pair. Below the threshold
+meshing costs more than it saves: always on, it made builds of small parts 40% slower.
+
+A large input touched in one place pays per face for work that is only needed where it is touched.
+Three steps skip that work and decide everything as before:
+
+- **Boxes.** [`measure::face_hull_box`](../src/measure.rs) holds a face's loose box and costs a pass
+  over its edges: control points for splines, a sphere's or torus's whole extent. Solids, and the
+  faces the snap step compares, are ruled out by hull boxes first. The loose box is worked out only
+  where hull boxes meet.
+- **Splitting curves.** Each curve's vertices are found through a hierarchy over the vertex pool
+  rather than a pass over all of it.
+- **Classification.** Where the meshes are known, a face clear of the other solid and joined to
+  another such face by an edge that is also clear lies on the same side of it, so one ray classifies
+  each connected group. A face whose box misses the other solid is outside it with no domain built.
+
+That assembly against a dowel took 0.9 s and takes 0.02 s. Against the plate it takes 3.7 s, where
+most of its faces lie in the plate's box: their domains are still built (1.4 s), their boxes worked
+out for the snap step (0.9 s) and their meshes made (0.6 s).
+
+A piece of a face narrower than twice the tolerance has no point clear of its boundary, so pieces of
+curve are judged by more than their middles: one lies on a face's boundary only if its ends and
+middle all lie along one trim, and otherwise the exact side of its middle decides whether it cuts
+the face. A piece on a plane that runs into the other solid on one side of its edge only is on the
+side of the edge's other face that its point is. Without these, faces between the tolerance and
+twice it apart failed, though a copy moved by either value passed.
+
+A boolean's result has its redundant vertices dissolved
+([`boolean/simplify.rs`](../src/boolean/simplify.rs)): where only two edges meet, both between the
+same two faces and on one curve (one line, one circle, or the same curve running on), an imprint
+split an edge the result keeps whole, and the two become one. Two unit cubes united face to face are
+a box with 8 vertices and 12 edges. A vertex or edge with a local tolerance is never merged.
+
+### Local tolerances in booleans
+
+An imported solid's tolerant edges and vertices ([STEP](#step), healing step 4) go through a boolean
+as tolerant modelling sets out (Jackson 1995, section 4): faces stay exact, and every coincidence
+test between two entities uses the sum of their tolerances (`tol::between`).
+
+- **Vertices.** Every pool vertex carries a tolerance: an input vertex its own, a meeting `LINEAR`,
+  and a meeting on a tolerant edge (an edge crossing a face, two edges crossing) that edge's. Two
+  vertices within the sum of theirs are one; where either is tolerant the one kept grows to hold the
+  other's sphere, and a curve split at a vertex its piece ends short of grows it to that distance.
+  No tolerance grows past the widest of the inputs', which an import keeps within its file's
+  uncertainty; past that, the checker refuses the result and names the gap.
+- **Edges.** A tolerant edge lies on a face of the other solid where it stays within its own
+  tolerance of the face's surface; it is split at every vertex within the sum of the two tolerances;
+  and two pieces between the same vertices that run within the sum of theirs are one.
+- **Faces.** An input face's boundary is within each trim's own tolerance, so a point on a tolerant
+  edge locates on the boundary although it lies off the surface. In the parameter plane, the images
+  of a tolerant vertex at the ends of its trims lie up to twice its tolerance apart: they are one
+  node when splitting faces and one corner when merging them.
+- **Face pairs.** Where a tolerant edge of one face lies on the other face, the two meet along it:
+  within twice its tolerance of it their surfaces lie that close (two B-spline faces of one imported
+  solid touch rather than cross, which is why healing failed there), so no trace seeds there, and
+  where a trace of the pair still fails the edge is taken as their whole contact, as Jackson's
+  face–face step leaves contact already known to edge–face coincidence. The checker still reads the
+  result for faces that pass through each other.
+- **Result.** Each result edge carries its input edge's tolerance, intersection curves `LINEAR`, and
+  each vertex its pool tolerance, so the checker holds each to its own.
+
+Every boolean of an imported assembly's three tolerant solids with a box or a rod through them, at
+three places each, builds a valid solid (54 of 54; each union, intersection and difference). A cut
+through a tolerant edge also splits faces whose edges miss them, so the pieces' volumes add up to
+the whole only to within the solid's area times its widest tolerance: the box that cuts one of them
+leaves pieces 0.014 mm³ (9e-6) over it.
+
+### Imprint order
+
+A boolean on tolerant models imprints in strict order of dimension (Jackson 1995, section 4.3):
+vertex–vertex, vertex–edge, edge–edge, vertex–face, edge–face, face–face, and face–face need not
+consider contact already known from edge–edge or edge–face coincidence, since near-tangent curves
+are unstable to compute. `Work::meet` and the steps after it run in this order:
+
+| Step               | Meets | How                                                                   |
+| ------------------ | ----- | --------------------------------------------------------------------- |
+| `Work::new`        | VV    | every input vertex pooled; two within `LINEAR` are one                |
+| `pierce`           | EF    | `csi` per edge and face of the other; held, not yet placed            |
+| `pierce`           | EF on | an edge lying in a face's surface is recorded as lying on it, not cut |
+| `cross_edges`      | EE    | `curve_curve`; each crossing pooled                                   |
+| `intersect_faces`  | VF    | per traced face pair, every pooled vertex on both surfaces            |
+| `intersect_faces`  | FF    | closed form, or traced from seeds; uses the facts above (below)       |
+| `place_hits`       | EF    | each held meeting moved onto the face pair's curve, then pooled       |
+| `split_curves`     | VE    | every pooled vertex within `LINEAR` of a curve splits it              |
+| `imprint_on_faces` | EF on | an edge lying on a face that its own faces cross there cuts that face |
+| `dedup`            | EE on | pieces with the same ends that run along each other become one        |
+
+A grazing meeting is one vertex. Two surfaces each known to `LINEAR` fix where they cross only to
+`LINEAR` over the sine between them, so where an edge of each solid crosses the other's face at a
+shallow angle, the two crossings found for one meeting lie several tolerances apart along the graze,
+and so do the intersection curves of the face pairs round it (two meshing gear flanks at a sine of
+0.012 give crossings 3e-7 mm apart). The vertex an edge–edge crossing or an unplaced hit left there
+moves to where a later hit is placed on its curve, every curve of the two faces a hit met at is
+split at that vertex within the graze's reach (`LINEAR` over the sine, at most a hundred times
+`LINEAR`), and the vertex's tolerance grows to hold where each such curve passes it.
+
+So the order differs from Jackson's in four places: edge–face meetings are found before edge–edge
+ones but placed after face–face (a grazing meeting is placed where the face pair's curve crosses the
+edge, which is better conditioned); vertex–edge incidence is read by distance when curves are split,
+not before; vertex–face incidence is read only for face pairs that are traced; and coincident edges
+are merged last, as pieces. What face–face takes from the steps below it:
+
+- **A vertex on both surfaces where they touch is that touch.** A known vertex (an input's, or one
+  an earlier step pooled) that lies on both surfaces, where their normals are parallel within
+  `TANGENT` and the gap between them is a definite quadratic form (the difference of the two shape
+  operators on the common tangent plane, [`contact.rs`](../src/boolean/contact.rs)), is a point
+  where the surfaces touch and share nothing else: no intersection curve passes through it. Within
+  `√(2·LINEAR / κ)` of it, `κ` the gap's smaller curvature, the surfaces lie within `LINEAR` of each
+  other, so a trace there finds only noise: no seed starts there, and a traced curve that stays
+  there is dropped. Where the form is indefinite the branches through the point are traced along its
+  null directions as before; where it is semidefinite the surfaces may touch along a curve and
+  nothing is decided. A blend's straight round meeting the next corner's round at a tangent section
+  touches the corner's wall cylinder at the section's end, a vertex of both; tracing the two
+  cylinders from it left a curve 3.3e-5 mm long through it, an edge four faces used.
+- **An edge lying on a face is that contact.** Where an edge of one input lies in the surface of a
+  face of the other, the contact between the edge's faces and that face along it is the edge. A
+  curve of the face pair that runs along it all the way is dropped, and the edge itself cuts the
+  face wherever it lies inside it and one of its own faces crosses the face there
+  (`imprint_on_faces`); where its faces only touch the face it is a tangent contact, not a cut, as
+  before. Seeds on the edge still start traces: where the two faces nearly coincide (a loft and its
+  copy moved 1e-5 mm), an edge of one lies on the other's surface while their intersection crosses
+  it, and only a seed there finds that curve.
+- **Facts from the operation.** A caller may hand the boolean what its construction makes true
+  ([`Facts`](../src/topo/facts.rs)): an edge of one input that lies on a face of the other. The
+  boolean checks each at the edge's ends and quarter points against `LINEAR`, and an untrue fact is
+  `Error::InvalidInput`, never trusted; a true one is recorded as `pierce` would record it, without
+  intersecting the edge with that face. Facts name the inputs' ids; where solids whose boxes meet
+  nothing of the other input pass through, the facts about the rest are renumbered into the copies
+  that are combined. A blend tool's section sides are swept along the faces its edge joins, so every
+  edge of a side face lies on each face of the body on that face's surface; the blend hands those
+  over with each tool.
+
+### Tangent contact, in order
+
+Where two faces touch, three sources can say how, and they are consulted strongest first, so a
+number never overrides what topology or a closed form already decided (Sugihara and Iri 1989):
+
+1. **Facts.** What the inputs' topology or the operation states: an edge lying on a face (found by
+   `pierce` or handed over as a [`Facts`](../src/topo/facts.rs) entry) bounds the face pair's
+   contact along it, and a pair's curve that runs along such an edge all the way is dropped,
+   whichever layer below produced it.
+2. **Exact classification.** A pair with a closed form ([Analytic contact](#analytic-contact))
+   decides crossing, touching at a point, tangency along a curve or coincidence from distances in
+   closed form. It never asks for seeds, so nothing numeric below runs for it.
+3. **Numeric tracing, last.** Only a pair with no closed form is traced, and only then are the known
+   vertices where its surfaces touch at a point worked out (`known_touches`): no seed starts within
+   such a touch's reach and a trace that stays there is dropped. A trace that stalls where the
+   surfaces become tangent ends on the point where they touch, and where a known point of both
+   surfaces lies ahead of it in the same band, on that point exactly
+   ([`march.rs`](../src/boolean/march.rs)). Two blend sections that start as straight as the face
+   they share touch each other there to the fourth order: no search finds such a touching to better
+   than a few millionths, but the faces' edges that cross at it do.
+
+A stub of this kind, from a fillet's rim meeting a pocket's corner round, came from a pair that both
+later layers now cover: the r 1.5 round's cylinder against the r 4 wall cylinder, axes not parallel,
+is swept in closed form ([`ssi/sweep.rs`](../src/boolean/ssi/sweep.rs)) and the touching vertex
+comes back as a point. The part builds with `known_touches` switched off too; the touch rule guards
+the pairs still traced (cones and tori against each other and against cylinders), where the same
+stub can arise.
+
+### Face memos
+
+Each face of an arena carries a memo ([`topo/memo.rs`](../src/topo/memo.rs)) of what is derived from
+its geometry alone: its rough volume share about its own anchor and its vector area (`∬ n dA`, from
+`½∮ p × dp` round its loops), that the checker found its loops on its surface, closed and running
+its way, the trims, samples and box a boolean reads, and its share of the loose box. A boolean hands
+a result face the memo of the input face it copies when no cut crosses that face, none of its edges
+is split or stands in for another, and the arrangement gives back its loops unchanged; so a part
+built by many features works each face out once, not once a feature. Adding a loop to a face, A
+change to a face and `transform` drop memos; `append` and `clone` share them. Since the vector areas
+of a closed shell sum to zero, the volume sign is the sum of the memoed shares moved to one centre.
+
+[`unify`](../src/boolean/unify.rs) runs step 4's merge and sewing on any valid solid, so faces no
+boolean made (an imported file's coplanar triangles) merge as a boolean's do. A solid with nothing
+to merge comes back unchanged. A solid kept with local tolerances merges too: faces merge on exact
+surfaces, within `LINEAR`, and the edges and vertices that remain keep their tolerances. Planes of
+one such solid that lie 1e-4 mm apart across a tolerant edge (in one imported solid) are two faces,
+where a kernel merging by the edges' tolerance would make them one.
+
+A solid whose box meets no solid of the other input skips all four steps: it is copied into the
+result when the operation keeps it whole, and dropped when it does not. A face whose box meets
+nothing of the other solid is outside it without a ray. Where the graph of step 3 has departures
+from one node whose tangents differ by less than they bend over a short chord (a fitted curve's
+tangent is only as good as its fit), the chords order them; every chord from one node reaches as
+far, a twentieth of its shortest curved trim, so they compare how the trims bend rather than how
+long they are. The chord's end is found at that distance from the node, not at that fraction of the
+trim's length: a chord's angle grows with its length, and two trims that leave tangentially and bend
+alike (a cut and an edge 1e-4 mm apart) are told apart by less than a parameter's unevenness changes
+it.
+
+Surface pairs with a closed form use it, and decide their contact (crossing, touching at points,
+tangent along a curve, coincident or apart) from distances in closed form, never from a trace; see
+[Analytic contact](#analytic-contact) below. Every other pair is traced
+([`march.rs`](../src/boolean/march.rs)) from seed points (the edge–face meetings on both surfaces,
+then a grid) along `n_a × n_b`, each step refined onto both surfaces, and fitted as an intersection
+curve. A step is taken only where it goes the way the tangent points and the curve passes near its
+chord's middle, so refinement that lands behind the last point or on another stretch of the curve
+shortens the step instead of being taken. Each point carries its parameters on both surfaces, and
+the next step is refined from them where the surfaces cross at a sine of 0.05 or more; where they
+nearly coincide, refinement from nearby parameters can settle anywhere along them, so it starts from
+a global projection, as it does whenever the hinted refinement fails. The fit likewise measures its
+error from the nearest point's parameters, and an inserted point is refined from its neighbour's
+first and from scratch only when that lands on the other branch of a lens (below). A walk that the
+edge of a spline's parameters stops ends on that edge exactly, where the iso-curve there meets the
+other surface: its last point, as near as the shortest step got, can miss the vertex its face's
+boundary makes there by more than the tolerance, and the curve's last piece would then be lost.
+
+Where two branches cross, the surfaces touch: two blends each tangent to one face along circles that
+cross, or a solid and its copy moved a hair along a shared edge. A walk that stops short of the
+region there ends on the point where the normals are parallel, found by Newton steps, when it lies
+on both surfaces; the point becomes a vertex, and every branch through it is traced from it along
+the two directions in which the surfaces' gap, a quadratic form there, is zero. A seed within the
+tolerance of such a point can walk straight into it both ways; that walk is a point, not a branch,
+and is dropped, since the branches are traced from the point itself. Where no curve fits through a
+branch and such a point, the walk stalled in a band the surfaces share within the tolerance and the
+point lies off its curve (a loft's sides against a copy moved 3e-9 mm, which touch along a ruling):
+the point and the branches traced from it are dropped, and the branch ends where the walk stopped.
+Walks that stall in one such band each find their point anywhere along it, so two crossings within a
+step of each other with every point between them on both surfaces are one, unless the surfaces pass
+through each other across the line between them (points of one as far out either side as the
+crossings are apart lie on opposite sides of the other, beyond the tolerance): two surfaces that
+hold one straight line can touch at two points of it and cross along it in between. A branch that
+ends on the later of one is moved onto the first: a loft's side and its copy moved 1e-5 mm cross
+where they coincide for 2e-7 mm, and the cut down the side otherwise missed the vertex its top edge
+was cut at. A closed branch closes only across a gap no wider than its first step, so a curve that
+folds back within micrometres (a fillet's tube against a copy moved 1e-5 mm) is followed round the
+fold. The fit inserts each new point in the plane square to the curve and keeps it only where
+`n_a × n_b` runs the way its neighbours' do: where the surfaces are nearly tangent, the two branches
+bounding the thin lens between them run opposite ways, and a point off the curve by little is near
+both.
+
+### Analytic contact
+
+Contact between two analytic surfaces is decided once, from distances computed in closed form, and
+the result's topology follows from that decision: a touching point comes back as a point, two
+branches that cross where the surfaces touch end on that point, and a stretch along which the
+surfaces lie within `LINEAR` of each other is a contact, not a sliver to trace. A distance within
+`LINEAR` of zero is zero, as a plane and a cylinder that overlap by no more touch along a line.
+
+| Pair                                                                                    | Result                                                                                                                        | Contact decided by                                                        |
+| --------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| plane–plane, plane–cylinder, plane–sphere                                               | line, lines, circle or ellipse; tangent line; point                                                                           | the plane's distance from the axis or centre                              |
+| surfaces of revolution about one axis (incl. a sphere's centre)                         | circles from their meridians; a point on the axis                                                                             | the meridians' distances                                                  |
+| parallel cylinders; equal cylinders whose axes cross                                    | lines; two ellipses and their two touching points                                                                             | the axes' distance                                                        |
+| plane–cone, axis not square to the plane                                                | exact ellipse; hyperbola or parabola along the generators; through the apex two generators, one tangent generator or the apex | the plane's distance from the apex and its angle to the nearest generator |
+| plane–torus holding the axis                                                            | the two meridian circles                                                                                                      | the plane's distance from the axis                                        |
+| cylinder–cylinder (axes not parallel), cylinder–sphere, plane–torus, sphere–torus       | branches evaluated along a sweeping family, fitted; touching points; nodes                                                    | the family's margins (below)                                              |
+| cylinder–cone, cone–cone, cylinder–torus, cone–torus, torus–torus, sphere–cone off axis | traced by `march.rs`                                                                                                          | Newton steps where the normals are parallel: sensitive near tangency      |
+
+The swept pairs ([`ssi/sweep.rs`](../src/boolean/ssi/sweep.rs)) take one surface as a family of
+lines or circles (a cylinder's generators, a torus's meridians), each meeting the other surface in
+at most two points given by a square root. The family is laid out so that how far its member at
+angle `θ` crosses the other surface depends on `c = cos θ` alone, as the least of two functions of
+`c` that are each monotone on [-1, 1]: how far the member's nearest point lies inside the other
+surface, and how far its farthest point lies outside it, both true distances in mm (a generator's
+distance from the other cylinder's axis against its radius; a meridian circle's nearest and farthest
+distances from a sphere's centre against its radius; a meridian's reach across a plane). So the
+margin has one maximum, found where the two parts cross or at an end, and the contact is decided
+from three distances: the margin at that maximum and at `c = ±1` (θ = 0 and π, where the family is
+symmetric). A maximum within `LINEAR` of zero is an isolated touching point (or, where the member
+itself lies on the other surface, a circle of contact: a ball rolling in a tube); a margin within
+half `LINEAR` of zero at θ = 0 or π with the members crossing either side is a node where two
+branches cross, which both end on; anywhere else the arcs of `θ` where members cross end where a
+member turns tangent, found by bisecting the margin. Each arc's two meetings are then one closed
+loop, or two branches between nodes. Where a node's margin is not exactly zero, the squared half
+chord there is taken out where the chord is as short, and in proportion to the node's over the
+chord's where it is longer, so both branches end on the node; that moves no point off the other
+surface by more than the node's margin, and points away from the node by far less. A node's margin
+is held to half `LINEAR` because the fit holds half `LINEAR` on top of it: rods of radius 2 and 2 +
+1e-7 whose axes cross 1e-7 apart have a margin of 1e-7 at one end, and branches bent onto a node
+there could not be fitted, so the result was traced instead and came back open. Past half `LINEAR`
+the branches pass each other, as far apart as the chord the margin leaves (6e-4 mm there). For the
+same reason two cylinders are one radius whose axes cross (the closed form with two ellipses) only
+while the radii's and the axes' gaps sum to `LINEAR`: the ellipses, about the axes' midpoint at the
+mean radius, then lie within half `LINEAR` of each. The points come from the closed form and are
+fitted with points added at middle parameters until the spline lies within half `LINEAR` of both
+surfaces and of the closed form itself (`IntersectionCurve::fit_sampled`), so nothing is refined
+numerically and no step can lose a touching point. Within the tolerance of both surfaces is not
+enough where they cross at a shallow angle: a fillet's tube against a copy's corner ball 1e-3 mm off
+its axis crosses it at 1e-4 rad, and a spline 5.8e-5 mm along that band from the loop still lay
+within `LINEAR` of both, so the vertices placed on the exact loop fell off it and the loop was
+dropped. A plane against a cone ([`ssi/conic.rs`](../src/boolean/ssi/conic.rs)) meets each generator
+once: an ellipse within the region's reach of the apex is built exactly from its vertices and the
+point a quarter turn round; any other section is followed along the generators only as far as the
+region reaches, on the cone's own nappe, which is the one its parameters and projection describe. A
+plane all but parallel to a generator cuts an ellipse some 1e16 mm long, which is followed as a
+parabola is.
+
+Curve–surface meetings in closed form: a line against a plane, cylinder, sphere, cone or ring torus;
+a circle or ellipse against a plane, a circle against a cylinder whose axis is square to it, and a
+circle against a sphere (the sphere's section in the circle's plane). A line against a torus is the
+zero set of the quartic `(|p|² + R² − r²)² − 4R²ρ²` along it, whose sign is the distance's: its
+stationary points, each the one root of its derivative between the derivative's own stationary
+points, split the line into stretches with one crossing at most, and every place the line can touch
+the tube is one of them, so a touch is one point whatever the rounding. Other curve–surface pairs
+are sampled (`numeric_hits`, below).
+
+A torus or sphere face is boxed by its boundary and the points of its parameter window where a world
+coordinate is stationary, not by the whole surface, so faces of one blend ring far apart are not
+traced against each other.
+
+A result with no material (a solid minus itself or a copy within tolerance, the common part of
+disjoint solids) is `Ok` with an empty arena: no solids, faces or edges. It is valid, and callers
+that need a solid check for one; measuring it gives zero.
+
+Degenerate contact follows two rules:
+
+- **A tangent curve is not a cut.** Where two surfaces touch along a curve, the pieces on its two
+  sides lie on the same side of the other solid, so nothing is split there. If the result keeps both
+  faces that touch, it would touch itself along that curve, which is not a manifold solid: the
+  operation returns `Error::InvalidResult` saying so.
+- **An edge used by more than two faces is an error.** Solids that touch along an edge only, such as
+  two boxes meeting at a corner line, give a non-manifold edge and an error, never a solid.
+
+A cut that ends on a pole splits the pole's degenerate edge where it arrives in the parameter plane.
+Merging faces maps each one's parameters onto the first's (planes in any frame; surfaces of
+revolution about one axis, whose angles and heights differ by sign and offset) and moves it by whole
+periods to meet its neighbours: a shared edge at one place becomes interior, and one shared a period
+apart becomes the merged face's seam.
+
+## Blends
+
+[`blend`](../src/blend.rs) chamfers and fillets edges picked by the names of their two faces: each
+pair `[A, B]` takes every edge where a face standing for A meets one standing for B, and all pairs
+go in one operation. A name stands for the faces that carry it and every face on the same surface as
+one of them: an edge is defined by the surfaces its faces lie on. Each picked edge then takes every
+edge that continues it tangentially between faces that continue its own, so a fillet takes the whole
+tangent chain; such an edge's blend face carries the names of the pair that reached it. An edge two
+pairs pick is blended once, its face named for both. An exact pair takes only the edges where faces
+carrying the two names themselves meet, not every face on their surfaces: where a boss's underside
+lies on the block's top plane, the pair of the boss's side and the underside picks the convex edge
+below the boss and not the concave one where the side stands on the block.
+
+Where concave and convex picked edges meet at a vertex (other than at a saddle, below), the concave
+ones are blended first, and the convex ones are picked again on the result, where they run on round
+the concave rounds as tangent chains; each keeps its pair's index, which names its faces.
+
+Each picked edge's blend is a piece: the region between the edge and the bevel line or round arc,
+swept along the edge, a prism along a straight edge, a ring or a sector of one about a circular
+edge. The section's sides follow the two faces: lines on planes, and on a cylinder along a straight
+edge its circle, so a round between a plane and a bore is the circle tangent to both. Each piece is
+swept as a tool solid, so its blend face, the contact curves where that face leaves the two faces
+the edge joins, and its end sections are exact by construction.
+
+The result is made from the pieces by surgery, the blend sewn in as a face (Jackson 1995, section
+5), in [`blend/sew.rs`](../src/blend/sew.rs). Each piece's blend faces are taken whole from its
+tool, facing out of the body. The two faces the edge joins give up the edge for the tool's contact
+curves; every other edge at the edge's ends is cut back to where its own piece's contact curve ends
+on it; a face a piece ends on takes the tool's end section across the corner it loses; an end
+section two pieces share (a tangent joint, a mitre) is one edge of both; and a sphere corner is a
+face bounded by its three pieces' end arcs. Every curve and point of the result is one the sweeps or
+the tools' own trims made, or one already on the body. The sewn solid is checked, testing only face
+pairs the blend made or changed for crossings, and blend faces on one surface that share an edge (a
+circle split in two) are merged. On one real part's 17 blends the sewing took 0.19 s where the
+tools' booleans took 1.44 s (wall time on a shared machine, the sweeps common to both left out).
+
+Three ends need more than the edge's own corner, and each is still read from topology:
+
+- **Past a short edge** ([`blend/run.rs`](../src/blend/run.rs)). Where a contact curve does not meet
+  the next edge of its face within that edge's range, the face's loop is walked from the vertex,
+  edge by edge, until an edge the contact curve crosses. Every edge before it lies wholly in the
+  strip the blend takes off, so it goes with the blend, and so does each vertex where two of them
+  meet; the faces across the walked edges bound the blend's end, so the piece is also trimmed by
+  each of their surfaces (a plane, cylinder or cone), and their edges at the vanished vertices are
+  cut back to where the trimmed tool's end sections meet them. The faces past the end must meet at
+  convex edges, so the trims together keep what the body keeps; a concave piece does not walk. A
+  chamfer of 1 on a notch's rim runs past a 0.8 chamfer of the flange below it onto the flange's
+  cylinder, and the notch's 2 mm round runs past that chamfer's 0.28 mm ellipse edge onto its cone.
+- **Opening the face beyond.** Where the face a piece ends on turns more than a half turn at the
+  vertex (a lug's edge meeting the wall it stands on, a chamfer into an inner corner), the end
+  section lies past the face's corner, on the face's own surface. The line or circle edge between
+  that face and the blend's own face runs on past the vertex to the end section, and the face takes
+  the end section as new area.
+- **At a crease.** Two convex rounds that each run through the other's wall into air, at a vertex of
+  three faces sharing one, cross along a curve no face of the body holds. For sewing, each ends on
+  the other's wall instead (the body lies inside both walls, so nothing it keeps is lost) and the
+  two tools are joined into one by a union. The union finds the crease where the two blend surfaces
+  cross, exactly as any boolean does (a cylinder and a torus along a half disc's rim, two cylinders
+  at a tower's rim), and each piece keeps its own blend and side faces by marks set before the
+  union; the crease is one edge of both pieces' faces. The joined tool's faces past the crease are
+  the end sections where one round crosses the other's wall.
+
+Where the pieces do not close up that way the tools are used instead: each is cut away at a convex
+edge and added at a concave one with a boolean, so the result is split, sewn, merged and checked as
+every boolean's is, and the side faces hand the boolean the fact that they lie on the body's faces.
+The tools are used for an edge at a piece's end that no contact curve or end section meets (a
+concave piece running past a short edge), for a body with local tolerances, since sewing would cut
+its tolerant edges back exactly while the booleans hold each to its own tolerance
+([local tolerances in booleans](#local-tolerances-in-booleans)), and for any sewn solid the checker
+refuses. Setting `SPRINGREP_BLEND_VERIFY` makes every blend run both ways, prints a
+`springrep-blend:` line for each on stderr naming its feature, and fails a blend whose sewn result
+differs from the tools' by more than 1e-9 of its area or volume or in its names. On the designs it
+was run over, every sewn blend agrees to 3e-16, except the two whose ends are trimmed past a short
+edge, where both ways intersect a cone or cylinder with a traced curve: 1.8e-12 in area and 5.3e-12
+in volume (a notch's chamfer) and 4.9e-11 and 1.4e-10 (the notch's round).
+
+Each piece ends where its edge does, in one of seven ways:
+
+- **On a neighbour's section.** Pieces whose edges continue each other tangentially share their end
+  section exactly. They are glued into one tool along it without a boolean: the two blend surfaces
+  touch tangentially there, which intersection cannot resolve.
+- **On a mitre.** Two straight pieces on one plane whose other faces are planes mirrored across the
+  plane between them (a box's top edges, a pocket's corners) each run past the corner and are cut on
+  that mirror plane, where their blend faces meet.
+- **Through into air.** Two convex pieces sharing one face, at a vertex of three faces where each
+  edge runs on past the vertex through the other's wall into air (a tower's rim where a square side
+  meets a leaning cut), each run past the vertex and clear of that wall. Cutting both leaves the
+  crease where their blend surfaces meet, as no material lies past either wall to lose; sewing joins
+  them at the crease, above.
+- **On another face.** A piece whose edge runs into exactly one other face ends square on it when
+  that face is a plane square to the edge; otherwise it runs past and is trimmed by that face's
+  plane, cylinder or cone, keeping the side its edge lies on.
+- **At a sphere.** Three fillets on three convex edges of three planes, at any angles, stop short of
+  the corner where a sphere closes it. The ball `r` inside all three planes has its centre on each
+  fillet's spine, since each spine runs `r` from both its planes; so each fillet stops on the
+  section through the centre, and its end is a great circle arc from the ball's foot on one plane to
+  its foot on the other. The patch is the spherical triangle of the three feet, of solid angle Ω
+  (the triangle of the planes' outward normals), and the material the corner loses is the cell
+  between the centre and the corner, less Ωr³/3. The sphere's poles lie on the great circle square
+  to the patch's middle and its seam opposite the middle, both off the patch; a corner whose normals
+  do not all lie within a quarter turn of their middle is refused. On a prism whose normals are
+  68.2° apart the result holds the hand volume to 1.5e-16 and the hand area exactly.
+
+- **Over a smaller round** ([`blend/corner.rs`](../src/blend/corner.rs)). A fillet larger than a
+  round it runs over, bent the same way (a plate's rim over its rounded corner, a pocket's floor
+  past its corner rounds), cannot follow the round. Both pieces beside it share one corner centre,
+  the fillet's radius from the plate and both walls, and stop on the planes through it square to
+  each wall. The corner between them is a family of quarter ellipses in the half planes through the
+  axis square to the plate: a rational biquadratic over a base of circles, exact, and tangent to
+  both pieces. A piece along a cylindrical wall is a torus, which ends at the half plane through the
+  cylinder's axis, where it and the corner share their tangent plane all along. The material between
+  the corner, the walls and the plate is cut (or for a concave rim added) with the piece before it
+  as one tool.
+- **At a saddle** ([`blend/saddle.rs`](../src/blend/saddle.rs)). Four straight fillets of one radius
+  at a vertex of three planes square to each other, alternating concave and convex round it (a boss
+  overhanging a block's edge, at each end of its underside's edge), meet where two lines each turn
+  from concave to convex, and no ball touches all four. In the vertex's frame each fillet stops a
+  radius short of the vertex, square on the cube of side 2r about it. Inside the cube the filleted
+  body is nine faces: the cube's six walls, the two convex fillets running on to their ends, and a
+  patch bounded by those ends and the concave fillets' end arcs; none of the body's faces reach
+  inside. A convex end is a rational quartic on its cylinder that leaves the concave arc square to
+  it, along the cylinder's generator, so the patch's corners are right angles. The patch
+  ([`blend/saddle_patch.rs`](../src/blend/saddle_patch.rs)) is a rational B-spline of degree 6 whose
+  cross derivative along each side is built from the fillet's own homogeneous curve, the direction
+  round its cylinder and its axis: whatever the coefficients, it lies in the fillet's tangent plane,
+  so the patch meets each fillet G1 to rounding (1e-13 rad), and the corner twists are linear
+  conditions on the coefficients. The coefficients and the inner control points fit a Gregory
+  surface on the same sides (Gregory 1974). The cube is cut from the body and the nine faces glued
+  in along its walls, which match edge for edge; the convex fillets' two pieces then merge.
+
+On the tools' path, pieces that meet at a mitre or run through into air stay separate tools, cut one
+after the other: the second cut meets the first's blend surface across it, where a union of the two
+pieces would have to resolve their faces lying on the same walls. A run of tangent pieces is glued
+into one tool; a piece that will not glue on, as the last piece of a run that closes on itself at a
+mitre does (its far end's mitre cap lies on the first piece's), is cut as a tool of its own.
+
+A round about a circular edge as tight as itself (a corner arc of the fillet's own radius) reaches
+its axis at one point and turns into a sphere there. A sphere centred on a circular edge's axis
+meets each section in a circle about its centre, and a torus about that axis in its tube's circle,
+so a round where either meets a plane, cylinder, cone, sphere or torus about that axis (a
+hemisphere's equator, a dome fused on a block, a torus section's rim) is the torus tangent to both,
+and its side on the sphere or torus sweeps into a zone of that surface itself.
+
+A fillet along a tangent chain with an edge no constant section sweeps (an ellipse where a bore
+meets a sloping face, a circle whose faces do not share its axis) is the surface a ball of the
+fillet's radius sweeps rolling along the chain against the faces on both sides
+([`blend/rolling.rs`](../src/blend/rolling.rs)). At each point the ball's centre lies in the plane
+square to the chain, at the radius from both sides, found by Newton steps whose rows are the two
+surface normals and the chain's tangent. Where a side changes face at a joint between faces that
+meet tangentially (a slot's flat side into its round end), the contact slides from one onto the
+other: the foot is the nearest on that side's faces that lies in its face, by the face's own trimmed
+domain (where none does, past an open chain's end, the ball rolls on the link's own surface). The
+crossing is where the foot on the face before reaches the curve between the two, found exactly, and
+that edge is cut back to it.
+
+The blend is cut into segments at every chain vertex and every such crossing, so each is smooth.
+Across, a segment is the exact circular arc between the contacts, a rational quadratic; along, its
+rows are interpolated by a cubic, sampled twice as finely until every midway section and both
+contact curves lie within a tenth of the linear tolerance of the true ones. The contact curves are
+the surface's own edge rows, exact lines in its parameters. Neighbouring segments share their
+section arc.
+
+An open chain ends where one other face meets each end, a plane or any curved face. Past the end the
+chain runs on straight along its tangent, so the ball keeps rolling between the same two surfaces,
+and the blend is trimmed by that face's surface: `s*(v)` is where each true section crosses it,
+measured along the surface's normal, and the trim curve is fitted like the blend. A trim may cut
+across several segments, leaving a crescent of one where it touches a section arc. The end face
+loses the corner the blend takes: along its boundary on each side, its edges are dropped up to the
+one the contact ends on, which is cut back; where the face turns past a half turn at the vertex, its
+first edge (a line, circle or ellipse) runs on past the vertex instead, and the face gains the area.
+Forced onto a circular rim, the rolling ball gives the exact torus's volume and area to 1e-9. A
+design that picks several such chains has them filleted one after another.
+
+What the region form cannot reach comes back as `Error::Unsupported`, never as a wrong solid:
+
+- a straight edge between faces other than planes and cylinders along it, and a chamfer on a
+  cylinder along a straight edge;
+- a circular edge between faces other than planes, cylinders, cones and spheres about its axis,
+  unless it is filleted as a rolling ball;
+- a rolling-ball fillet through a chain vertex another face meets, or whose contact runs past more
+  than a run of its end face's edges; and a fillet larger than a convex corner round in its chain
+  (the exact path reaches past the corner's axis);
+- blends meeting at a vertex other than as a tangent chain, a mirrored mitre, a convex corner they
+  run through or a three-plane corner (the error names the vertex and the faces), and an edge ending
+  where several other faces, or a face other than a plane, cylinder or cone, meet it;
+- a blend wider than a face it sits on, including one whose strip would cross onto the next face
+  along its edge, such as where its edge runs on, tangent, as a curve other than a line or circle.
+
+A pair that picks nothing, a size that is not positive, and an edge between tangent faces are
+`Error::InvalidInput`.
+
+A result can still fail as an explicit error where a boolean meets tangent contact it cannot
+resolve: a round whose surface touches a body face at a single point beside a tangent joint (a
+fillet round the root of a boss whose sides are rounded at their corners), or that meets a cone
+along the circle where the cone joins the face the round is tangent to.
+
+### Blends past the rolling ball
+
+[`blend/shaped.rs`](../src/blend/shaped.rs) makes the blends a rolling ball does not: a conic or
+curvature-continuous section along a straight edge between planes, a fillet between faces that share
+no edge, a full round, a ball that grows along its edge, and corners closed by a patch of their own.
+A section blend is cut as a prism, the region between the edge and the section, run along the edge;
+the curvature-continuous section is a rational quintic, exact. Two corners are not cut but put
+together from their faces, each face given by its surface and its bounding edges and the solid
+assembled as a file's is ([`step::solid_of`](../src/step/topology.rs)), so no boolean meets the
+tangent contact all round them:
+
+- **A set-back corner between curvature-continuous fillets**
+  ([`edit/corner.rs`](../src/blend/shaped/corner.rs)). In the distances `u` in from the corner's
+  three faces, with `φ` falling from 1 on a face to 0 at the fillet's reach and `B` falling from 1
+  to 0 at the setback, the corner is `φ(u₀) + φ(u₁) + φ(u₂) + B(u₀)B(u₁)B(u₂) ≤ 1`: the fillets and
+  faces exactly past the setback, and one surface of continuous curvature within it. It is nine
+  quintic B-spline faces, cut where `φ` or `B` changes form and fitted to within 1e-8 of the radius;
+  the faces along the fillets are rational over the section's denominator, so each ends on its
+  fillet's section itself.
+- **Three fillets of unequal radii** ([`edit/uneven.rs`](../src/blend/shaped/uneven.rs)). The corner
+  is the ball of the largest radius touching all three faces. Along each edge the ball rolls on a
+  travel of that radius, shrinking evenly to the edge's own radius, and from there is the fillet's
+  ball: its centre runs on a line, so it sweeps a cone, or a cylinder where the radius is the
+  largest. Every face is a plane, a cylinder, a cone or a sphere, each tangent to the next. Fillets
+  of unequal radii that meet any other way are mitred, the solid less each one's region.
+
+Both first cut the corner away as far as each fillet's start and fillet each edge from inside the
+cut, so no fillet has to be cut against another.
+
+## Moving faces
+
+Shells, drafts and thickens move faces and keep the solid's topology where they can
+([`tweak.rs`](../src/edit/tweak.rs)): a thicken moves only the faces it names, each by its distance
+along its outward normal. Each moved face goes onto a new surface. Each vertex goes where its faces'
+new surfaces meet, found by Gauss–Newton steps along their normals from the old point: the least
+move where they leave it free (a seam's end lies on only two faces), their one meeting where three
+or more pin it. Faces tangent at a vertex (a round and the wall it runs into) stay tangent when both
+move one distance, so their equal rows count once. Each edge becomes its two faces' new meeting
+between its new vertices: a line where the line through them lies on both, else the branch of their
+intersection (closed form where one exists, traced otherwise) through the old edge's middle carried
+onto both, trimmed at the vertices and laid the way the old edge ran. A seam keeps its parameter
+line on the new surface, through its moved ends. Faces whose loops were rebuilt take parameter
+curves projected along each edge in turn, so a loop round a period keeps one image of its
+parameters. Planar moves keep the older all-planes path, whose edges are lines by construction.
+
+A face's offset is the same kind of surface, exactly: a plane moved along its normal, a cylinder's,
+sphere's or torus's radius grown, a cone's radius grown by `d·cos a` as its origin moves `−d·sin a`
+along the axis. A shell moves every face by its thickness (the open faces the other way, through the
+wall), so a cylinder, sphere or torus is hollowed with its wall offset exactly. A draft tilts a
+plane about its line on the neutral plane, and turns a cylinder along the pull into the cone through
+its circle there, narrowing a boss along the pull and widening a bore.
+
+A surface with no exact offset of its own kind gets a certified one: a spline within a tenth of the
+linear tolerance of the true offset `p + d·n` at the middle of every span, refined until it is or
+refused. An extrusion's offset is the extrusion of its curve's offset and a revolution's the
+revolution of its meridian's, so only that curve is fitted: a C¹ cubic through the true offset and
+its derivative at nodes that include the curve's own knots (where the offset's curvature jumps, so a
+C² interpolant would converge only as h²), with a double knot at each node. Any other surface
+(ruled, a spline) is fitted as a bicubic through a grid over the face's parameter box. A spline
+sphere octant offset this way lies on the grown sphere to 2e-8 wherever it is sampled.
+
+### Faces that close on the way
+
+Where a move cannot keep the topology because a face closes before the faces get where they go
+(walls drafted until they meet over the top, a step raised level with the top so the riser between
+them closes, a slot's wall moved onto the other wall, a round offset past its radius), the move is
+followed there ([`through.rs`](../src/edit/tweak/through.rs)). Each moved face runs along a path
+from its old surface to its new one: a plane through the pencil of planes the two span (so a draft
+keeps its hinge and an offset stays parallel), an offset surface by its distance, a cylinder drafted
+into a cone by its half angle. The furthest the solid gets with its topology kept is found by
+bisection. There vertices closer than ten times the tolerance are made one, edges that then run
+together one, and edges shorter than that dropped; a face left a strip along a single edge, or lying
+on another face to face, is taken out, and a face left running along an edge and back that nothing
+else uses loses it. The move goes on from there with every vertex settled again where its faces
+meet, and faces left on one surface are merged at the end. An event that needs more, as an edge that
+would turn through a vertex of four faces, ends it with the error the move gave.
+
+## Moving whole solids
+
+`Brep::transform` moves a solid rigidly and leaves every parameter alone. `transform_similar`
+([`topo/similar.rs`](../src/topo/similar.rs)) takes any similarity: a uniform scale times a rotation
+or a mirror, then a shift. A stretch or shear is refused with `Error::Unsupported`, because a
+cylinder or sphere it moves is no longer one.
+
+- **Mirror.** Each curve and surface is rebuilt as its mirror image in a right-handed frame. A
+  plane, circle or ellipse keeps its parameters, with z flipped. A cylinder, cone, sphere, torus or
+  surface of revolution runs its angle backwards, so u becomes period − u. A face whose parameters
+  are kept turns its normal over. Every loop is reversed, and the pcurves map the old uv through the
+  same change.
+- **Scale.** Each curve's parameter scales by the factor its geometry needs: a line's by s (its
+  direction stays a unit vector), a conic's and a spline's not at all. Each surface's parameters
+  scale the same way: a plane's both, a cylinder's or cone's height, an extrusion's sweep. Edge
+  ranges, affine pcurves and the local tolerances scale with them.
+
+## Slabs
+
+[`slab`](../src/primitive/slab.rs) builds the solid between a frame's xy plane and a clamped
+B-spline height field over a rectangle. Its coefficients sit at the knots' Greville abscissae, so x
+and y run linearly with the parameters and the top is a graph. Each side's top edge is that field's
+boundary row as a B-spline curve, and its pcurve on the top is a parameter line. Every coefficient
+must be above the floor. By the convex hull property that keeps the whole field above it, so the
+solid never pinches.
+
+## STEP
+
+[`step`](../src/step/mod.rs) reads and writes AP214 with its own ISO 10303-21 parser
+([`part21.rs`](../src/step/part21.rs)).
+
+- **Writing** puts every solid of the arena in one part's advanced B-rep, in millimetres and
+  radians. Each face's STEP name is its names joined by `;`, and the header names the kernel as the
+  originating system, so a read gives those names back. Every curve and surface type has an exact
+  STEP form: a cone narrowing along its axis is written about the reversed axis, an intersection
+  curve as its spline, and a ruled surface as the B-spline surface between its rails (two polynomial
+  rails, or two conics over equal angles; any other pair is an explicit error). Voids are written
+  turned inside out under `ORIENTED_CLOSED_SHELL(.F.)`, as STEP stores them. STEP's solids are
+  manifold, so a solid whose pieces touch is written as the manifold boundary of its interior: each
+  outer sheet a solid of its own with the voids inside it, each partner pair of an edge's coedges
+  its own edge, each fan of faces round a vertex its own vertex, and neither a slit nor a vertex
+  loop, which lie inside one piece's face. Each edge is a `SURFACE_CURVE` (a seam a `SEAM_CURVE`)
+  with its pcurve on every face that uses it, in the surface's STEP parameters (a cone's `v` is its
+  height along the STEP axis, turned with it). An affine pcurve is a line, and on a plane a line or
+  spline edge maps onto it exactly; any other pcurve is a cubic through the coedge's parameter-plane
+  points, with points added where the surface over it strays more than 0.45 of the tolerance from
+  the edge at any of seven points a span, which keeps it within half the tolerance between them (a
+  part's file grows by up to 7%). A reader given no pcurves must project each traced edge onto its
+  face itself. A ruled surface between conics, whose rational rails do not run at the angle's rate,
+  gets no pcurves.
+- **Writing an assembly** ([`write_assembly`](../src/step/write.rs)) puts several parts in one file.
+  Each part is a product with its own advanced B-rep, written once however often it is used, and
+  each instance is a use of its part's product under the assembly's, placed by its motion. A part
+  given a colour has its solids styled with it. Each part's representation states its own
+  uncertainty.
+- **What a read says of each body** is in the import's `bodies`, one for each solid: the id of the
+  file's solid it came from, the name of the product whose shape holds it, the uses that place it
+  from the root down, and its surface colour where a presentation style names the solid. A face
+  styled on its own is in `face_colours`. Only a surface style counts: a curve's colour is not a
+  body's.
+- **Reading** walks the product structure (`NEXT_ASSEMBLY_USAGE_OCCURRENCE` with its placing
+  transformation, shape representations joined by plain relationships, mapped items) to every
+  solid's placements, converts units, builds each distinct solid once (in parallel, those with the
+  most faces and spline control points first; the output does not depend on which finishes first)
+  and copies it to each placement. A transformation that scales uniformly builds its solid in scaled
+  units, so every placement the kernel applies stays rigid; a mirroring one is an explicit error.
+  Faces of another system's file are named `<feature>.face_<i>` in placement order.
+- **Entities.** An `OFFSET_SURFACE` of a plane, cylinder, cone, sphere or torus is read as the
+  surface of the same kind it is; an offset of any other surface is an explicit error, never an
+  approximation. A `VERTEX_LOOP` on a cone or sphere, the apex the face closes on, becomes a seam (a
+  generator or a meridian) from the face's other bound up to the apex and back, as the kernel's own
+  cones and spheres are bounded; a sphere bounded by a pole's alone, as some files write a whole
+  ball, takes a meridian from the other pole. Anywhere else on its face's surface it becomes a
+  vertex loop; off the surface it is an explicit error. `POLY_LOOP` faces and `FACETED_BREP` solids
+  are read as planes bounded by straight edges, each side shared with the face across it.
+- **Contacts and voids.** Within one solid, vertices that coincide and then edges that coincide over
+  their whole range are joined: a valid solid has no two vertices that close, so they are the two
+  sides of a contact the file wrote apart, and the edge four faces use comes back. A bound that runs
+  along an edge and back is a slit and is kept, as a point bound is: each marks where something
+  touched the face. A loop tries a seam's second use a period away before taking it as running back
+  over the first. A shell is the way the volume it encloses says, outer positive and void negative:
+  some files write a void's faces facing into it and turn its shell too, which read as written is a
+  void inside out.
+- **Pcurves and poles.** Each loop is followed through its face's parameter plane by projection,
+  each point continuing from the last. Where a loop leaves a pole any angle is possible: the one its
+  next point implies is tried in each nearby period, a seam's second use must run a period from its
+  first, and the loop must close and enclose area the way the face's orientation requires. A gap at
+  a pole becomes a degenerate edge. The free parameter where a use reaches or leaves a pole is the
+  one every reader of its pcurve finds (`topo::project_on`): where `u` is free, the `u` of a point
+  just along the edge, or, where the edge leaves along the surface's axis as every curve through a
+  horn torus's pole does, of a point the way the edge bends; where `v` is free (a B-spline blend's
+  pole along `u = const`), the `v` whose `u`-line leaves the pole along the edge, from the surface's
+  own derivative, since projecting a point beside the pole of a thin patch lands at any `v`.
+- **Healing** ([`heal.rs`](../src/step/heal.rs)). Exporters hold vertices, curves and surfaces
+  together only to their own tolerance (an assembly's file may declare 0.01 mm). Wherever it can,
+  the imported geometry moves instead, until each solid closes at `LINEAR`:
+  1. Where an edge misses its faces or vertices by more than `LINEAR`, each vertex involved is moved
+     onto every surface that meets there (and onto the curves that already fit), and each edge that
+     still misses is refitted through its vertices onto both its faces' surfaces. A refit follows
+     the file's curve bent to the moved vertices, so where two faces touch it stays on the line of
+     the vertices rather than a second line beside it; a refit that stays on both faces everywhere
+     is kept as its spline, otherwise as an intersection curve.
+  2. Where faces miss each other, so that step fails (three surfaces with no common point at a
+     vertex, two faces that touch rather than cross, a B-spline face that stops short of its
+     corner), the surfaces of the faces involved move too ([`adjust.rs`](../src/step/adjust.rs)).
+     Each gets a few unknowns: a rigid motion and its radii, or its B-spline control points
+     (coincident ones together, so poles and seams stay closed). Every vertex and sample point of an
+     edge on those faces is free as well, and damped Gauss–Newton steps of least weighted change
+     move them until each point lies on each of its faces; moving a surface costs a hundred times
+     what moving a point does, so surfaces move only where points cannot close a gap. Where an
+     edge's sample slides along its edge, or a vertex whose faces all touch slides across their
+     common normal, it costs as much as a surface: neither direction is fixed to first order, and a
+     free point runs far along it. Each step is tried undamped and then damped, since touching faces
+     leave the normal equations nearly singular. Where a B-spline face's own control points cannot
+     follow the other surface closely enough (a cubic blend boundary along a curve on a cylinder),
+     the step starts again with knots inserted until each parameter has 16 spans; the points it
+     placed along an edge that would not fit seed that edge's refit, since two touching faces meet
+     anywhere across a band. Step 1 then runs again on the moved surfaces, up to three times.
+  3. Every solid records how far its geometry moved: the largest distance any vertex, edge or
+     surface moved, what moved and where, and the largest surface movement on its own, which bounds
+     how far a face moved. `Import::healed` carries it for each placed solid, for the caller to
+     report. A solid that would move more than `MAX_HEAL` (0.05 mm) is rejected with an error naming
+     the distance and what moved.
+  4. Where healing fails, or moves geometry further than the file's stated uncertainty (its
+     `distance_accuracy_value`), the solid is kept as the file has it instead, if it can be: each
+     edge gets a tolerance of 1.5 times the widest gap sampled between its curve and its faces'
+     surfaces, each vertex the widest of its edges' and of its own distance from its edges' ends and
+     its faces. The tolerance is the gap measured, whatever the file states: exporters write gaps
+     wider than the uncertainty they state, and a file that states none can still be kept. What
+     bounds it is the model: a tolerance past a quarter of an edge it holds leaves that edge's ends
+     indistinct, and is an error; where there is one and healing succeeded, the healed solid stands.
+     `Import::tolerant` lists each such solid, with the uncertainty the file states and how many of
+     its tolerances are past it. The writer gives a file holding local tolerances the widest of them
+     as its uncertainty, which is what other kernels read. The conjugate-gradient solves of step 2
+     stop once the residual has not halved in 200 iterations: on faces that touch the system is
+     nearly singular and the residual stalls far above its goal.
+
+  The read returns the solids that check valid and a reason for each it rejected. A solid is
+  rejected for its structure, the geometry each entity lies on, and its loops
+  (`check::check_structure`), not for passing through itself: a solid whose faces meet away from
+  their shared edges is kept, and each place is reported in `Import::crossed` with the two faces,
+  the point, and how far one passes through the other (`check::self_crossings`). One imported mesh
+  of 23442 triangles folds through itself at four corners, up to 0.014 mm deep. The data is the part
+  as its file gives it, and refusing it refused the whole part. A boolean that cuts through such a
+  fold may still fail.
+
+## Measurement and tessellation
+
+[`measure`](../src/measure.rs) integrates the exact geometry. A face integral over its trimmed
+parameter domain becomes a boundary integral by Green's theorem; the inner integral runs along a
+parameter in which the integrand is a low-order polynomial or trigonometric polynomial (so a fixed
+Gauss rule is exact to rounding; on a B-spline surface the held parameter's basis is summed into one
+iso-line per boundary point), and the boundary integral is adaptive. Volume is `⅓∮ (p − c)·n dA`
+over the faces. Area and volume agree with closed forms to about 1e-15 relative on analytic solids.
+The same integral carries the first and second moments, `¼∬ xᵢ(x·n)` and `⅕∬ xᵢxⱼ(x·n) dA`, for the
+centre and the inertia tensor about it, each settled to a tolerance in the size of the loose box
+round the geometry, since a moment that symmetry makes zero has no size of its own to settle to. The
+bounding box is tight: edge extremes in closed form or by root finding, plus interior stationary
+points of surfaces whose critical sets need not meet a boundary.
+
+[`distance`](../src/distance.rs) finds the closest points of two selections of faces, edges,
+vertices and solids. Both sides' meshes give the distance to within their deflections, each between
+a ten-thousandth and a thousandth of its part's size, so a part micrometres across has triangles
+that stand near its faces and one kilometres across is not meshed to 0.01 mm; every pair of mesh
+pieces that close, nearest first, seeds a Newton search on the exact surfaces, curves and points,
+damped to keep each step downhill, and a result counts only where both points lie on their face or
+edge. The true minimum lies in one of those basins, so the least result is exact, even where a whole
+ring of points is equally near. A surface whose nearest point lies off its face is covered by the
+face's edges, and a solid wholly inside another, by its winding number in the other's mesh, is at
+zero.
+
+[`rays`](../src/rays.rs) meshes an arena once, at the same scale, and casts rays at it. The mesh
+says where to look and no more: a ray's candidate faces are those with a mesh triangle within twice
+the deflection of it, so no crossing is missed, and each is searched over the stretches of the ray
+that pass its triangles. What is found there is every meeting of the line with the face's exact
+surface, by the intersection the booleans use (`csi::curve_surface`), which never steps along the
+line looking for a change of sign: two crossings closer than any step would be stepped over, as at a
+gear's root. A plane, cylinder, cone, sphere and torus have closed forms, a torus whose tube reaches
+its axis in both its sheets. An extrusion, a surface of revolution and a ruled surface each turn on
+one parameter of their profile: the profile's distance from the plane through the line, the
+difference between a ring's radius and the line's distance from the axis at the ring's height, and
+the triple product that vanishes where the line and a ruling lie in one plane. Each is a polynomial
+over a piece of a spline, times the spline's denominator on a rational one, and a quadratic in the
+tangent of the half angle on a circle or an ellipse; its stationary points split the piece into
+stretches with one crossing at most. A spline surface has no such parameter: it is cut into Bézier
+patches, each read as its distances from two planes through the line and lying among its control
+points, as each half of a patch cut in two does. A patch whose control points all stand to one side
+of either plane holds no crossing. A patch whose slopes, bounded by the steps between its control
+points, make the map from its parameters to the two distances one to one holds one crossing at most,
+and is solved outright. Any other is halved, down to patches the size of the tolerance, which a
+touch or two crossings a hair apart comes to. A run of more than 64 such patches along the line is a
+line that lies in the surface, as a face's straight edge lies along the blend beside it, and has no
+crossings to find. Only a profile that is an intersection curve, and a line that lies in a spline
+surface, are still sampled. A crossing counts inside its face and range, by the face's exact domain
+(`boolean::domain`), the test the booleans and the checker use. A crossing on an edge counts once. A
+grazing ray stays within the tolerance of the surface along a stretch; the touch is where the
+surface's normal turns square to the ray, found by bisection.
+
+Whether a solid holds a point (`Rays::holds`) is the parity of a ray's crossings. A ray that passes
+through an edge, grazes a face or starts on one does not say, and the next of a fixed set of
+directions is tried; a point no ray decides is on the boundary. There is one such query: the
+booleans' own classifier (`boolean::classify`) follows the same rules on the same intersection,
+without the mesh, for the few points a boolean asks about.
+
+The normal and curvature at a point of the boundary ask whether a point of a face's surface lies on
+the face through `measure::Outline`. The face's loops, drawn as polygons in its parameters, decide,
+except within their chord sag of the boundary, where a polygon cuts inside a curved edge: there the
+nearest edge decides by its own side, and a point on an edge is on both its faces. The edges are
+asked only where the point lies that near the chords along them, since projecting onto a spline edge
+costs far more than walking the chords.
+
+[`mesh`](../src/mesh/mod.rs) discretises each edge once; both faces of an edge use the same points,
+so a valid solid's mesh is watertight by construction. An edge is sampled until its chords stay
+within the linear and angular deflection of the curve, then thinned to the fewest of those samples
+that still do, and split again wherever the surface over a chord in a face's parameter plane strays
+from the curve or its normal turns along the chord, or between either end and its middle, by more
+than the angular deflection (a straight edge along a twisted loft's side lies on the surface
+everywhere, but its triangles must follow the turn, and the normal can turn away and back between
+two ends that face the same way). A chord no longer than the linear deflection is never split for
+its turn alone, so a hair-wide circle keeps its samples well apart. A knot within 1e-9 of the edge's
+parameter range of either end is not a sample point, so rounding cannot crowd samples onto a vertex.
+Edges that join one pair of vertices with one chord each get a sample at their middle: four faces
+would otherwise use that one segment (two short arcs where two holes' circles cross on a face).
+Chords of one face that cross in its parameter plane, as two edges leaving a point at a hair's angle
+can, are halved until they do not (no further than the edge's tolerance, below which their
+parameter-plane points are rounding), and so is a curved chord with another of the face's boundary
+points between it and its curve, which a coarse deflection would leave on the wrong side (a disc's
+rim drawn as a square past its bolt holes). A loop of only two chords gets a point between them.
+Deflections must be positive and finite. Where a face's loops pass one vertex twice (a crescent
+pinched where two circles touch), images of it that only rounding parts, far closer than a period or
+a pole's span, become one point, so the face is meshed through that point once rather than twice a
+hair apart.
+
+[`display`](../src/mesh/display.rs) makes what a viewer draws from that mesh: each face's triangles
+with nodes of its own, so shading creases where faces meet, each node's normal the exact surface's
+there, faces in the order the STEP writer writes them, each with the id of the face it draws; and
+the drawn edges as polylines, leaving out seams, poles and edges between faces on one surface, each
+with the faces it joins. It packs the faces as one binary glTF mesh (`POSITION`, `NORMAL`, a `_FACE`
+index per node, optionally `COLOR_0`), so a viewer draws a part without meshing it again.
+`display_within` takes the mesh's fineness, coarser for a part that is only context.
+
+Each face is a constrained Delaunay triangulation of its boundary samples in its parameter plane
+([`cdt.rs`](../src/mesh/cdt.rs), with an exact orientation test in
+[`predicates.rs`](../src/mesh/predicates.rs)), scaled per face so that one unit along each parameter
+is the longest step the deflection limits allow along it, at most the face's size
+([`face.rs`](../src/mesh/face.rs)). A cylinder's triangles therefore run the length of its straight
+lines. A triangle is refined while the surface at its centroid or an interior edge's middle strays
+from it by more than the linear deflection (the centroid may stray by its boundary segments' own sag
+on top), or the normals at its corners turn by more than the angular one, and, on a curved face,
+while it is skinnier than about 20° and wider than one unit. However small, a triangle across which
+the normal turns more than a right angle is refined: a ball narrower than the deflection, sampled at
+its poles and seam alone, would otherwise be triangles from pole to pole that fold flat. The point
+goes in at the triangle's circumcentre, or at its worst sample when the circumcentre lies outside
+the face. Boundary segments are never split. A point within 1e-3 of its triangle's longest side of
+one of the triangle's corners, or in a triangle that flat, is not inserted: a triangle whose error
+lies along a boundary segment would otherwise be refined ever nearer that segment, leaving slivers.
+Nor is a point within `LINEAR` in space of the line through two corners of its triangle, and once
+refined, each triangle with a corner within `LINEAR` of its longest side in space has that side
+flipped where both new triangles are taller: the scaled plane stretches a face far narrower one way
+than the other (a pocket's round of radius 1e-3 mm, 3.8 mm long), so a triangle well shaped there
+can be flat in space. An imported assembly of 605 solids meshed with 22 such triangles, and now with
+none. Points outside the triangulation's box are never located, since the orientation test overflows
+there. The parameter-plane scale reads curvature from one-sided differences, keeping the smaller, so
+a singularity a hair outside the face (a spindle torus's apex) cannot shrink it. At a pole, where
+one point spans a stretch of the parameter plane, each triangle is sampled with its pole corner
+moved along the pole to face the triangle's other corners, and two triangles on the same three
+points facing opposite ways, a point joined to the pole on both sides of one chord, are dropped:
+they cover nothing. A face whose refinement passes a cap on its points is an error, never a hang.
+
+Faces mesh in parallel. Afterwards an interior edge between two boundary points that some other
+triangle of the mesh also uses is split at its middle, so no mesh edge is used more than twice.
+
+## Module map
+
+| Module        | Owns                                                                      |
+| ------------- | ------------------------------------------------------------------------- |
+| `math`, `tol` | Points, vectors, frames, rigid transforms, boxes; the two tolerances      |
+| `numeric`     | Gauss–Legendre rules, adaptive quadrature, dense and banded solves, roots |
+| `geom/`       | Curves and surfaces                                                       |
+| `topo/`       | The arena, builders, names, pcurves, facts, tolerances, similarities      |
+| `profile`     | Planar sketch profiles, the readings of point lists, regions combined     |
+| `primitive`   | Block, cylinder, sphere, torus, cone, and a block under a height field    |
+| `sweep`       | Extrusion, revolution, and sweeps along legs, a helix or a space curve    |
+| `loft`        | Solids skinned through planar sections                                    |
+| `boolean/`    | Intersection (closed form, swept, traced), contact, splitting, sewing     |
+| `blend`       | Chamfers and fillets: one size, per edge, shaped sections, corner patches |
+| `edit`        | Faces moved, tilted or deleted; shells, offsets, thickens, affine maps    |
+| `pick`        | Faces and edges found by the names faces carry, and convex edges          |
+| `step/`       | STEP AP214 import and export, product structure, healing                  |
+| `mesh/`       | Watertight tessellation (constrained Delaunay), the mesh report, display  |
+| `measure`     | Area, volume, mass properties, boxes, extents, plane sections, samples    |
+| `distance`    | Closest distance between selections, and from a point to one              |
+| `overlap`     | Whether placed solids share material, and how much                        |
+| `draw`        | Hidden-line drawings                                                      |
+| `affine`      | A solid stretched, sheared or mirrored exactly                            |
+| `codec`       | The binary encoding of built geometry kept on disk                        |
+| `rays`        | Where rays cross faces, touches included                                  |
+| `check`       | The validity checker                                                      |
+| `probe`       | Thin places in a valid solid: narrow faces, slivers and gaps, for hygiene |
+
+Heavy tests stay out of this crate: its own tests are fast unit tests.
+
+## References
+
+The papers this document and the source cite by author and year.
+
+- **Gregory 1974.** J. A. Gregory, "Smooth interpolation without twist constraints", in R. E.
+  Barnhill and R. F. Riesenfeld (eds.), _Computer Aided Geometric Design_, Academic Press, 1974.
+- **Hartmann 2001.** E. Hartmann, "Parametric Gⁿ blending of curves and surfaces", _The Visual
+  Computer_ 17, 2001, pp. 1–13. The source of the word "thumbweight" for a blend section's shape
+  parameter.
+- **Jackson 1995.** D. J. Jackson, "Boundary representation modelling with local tolerances",
+  _Proceedings of the Third Symposium on Solid Modeling and Applications_ (Solid Modeling '95), ACM,
+  1995, pp. 247–253.
+- **Kronrod 1965.** A. S. Kronrod, _Nodes and Weights of Quadrature Formulas_, Consultants
+  Bureau, 1965.
+- **Shewchuk 1997.** J. R. Shewchuk, "Adaptive precision floating-point arithmetic and fast robust
+  geometric predicates", _Discrete & Computational Geometry_ 18, 1997, pp. 305–363.
+- **Sugihara and Iri 1989.** K. Sugihara and M. Iri, "A solid modelling system free from topological
+  inconsistency", _Journal of Information Processing_ 12(4), 1989.
+- **Wang et al. 2008.** W. Wang, B. Jüttler, D. Zheng and Y. Liu, "Computation of rotation
+  minimizing frames", _ACM Transactions on Graphics_ 27(1), 2008.
