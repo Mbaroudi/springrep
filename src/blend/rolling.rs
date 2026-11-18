@@ -1173,6 +1173,9 @@ pub(super) fn fillet(
                 .collect();
             let mut specs: Vec<CoedgeSpec> = Vec::new();
             let mut hint: Option<Vec2> = None;
+            let runs = (0..order.len())
+                .filter(|&x| is_chain(order[x]) && (x == 0 || !is_chain(order[x - 1])))
+                .count();
             let push_new = |specs: &mut Vec<CoedgeSpec>,
                             hint: &mut Option<Vec2>,
                             out: &Brep,
@@ -1279,6 +1282,44 @@ pub(super) fn fillet(
                 let mut mine: Vec<usize> = (0..m)
                     .filter(|&j| pieces[j][k].is_some() && segments[j].face[k] == f)
                     .collect();
+                // A loop the chain passes through more than once (a closed chain across the
+                // face's seam) takes for each run only the contact between the crossings at its
+                // ends.
+                if runs > 1 {
+                    let links: BTreeSet<usize> = order[i..i + run]
+                        .iter()
+                        .map(|&c| {
+                            let e = body.coedge(c).edge;
+                            roll.links
+                                .iter()
+                                .position(|l| l.edge == e)
+                                .expect("a chain edge")
+                        })
+                        .collect();
+                    let n = roll.links.len();
+                    let in_run = |x: usize| links.contains(&x);
+                    let before = |x: usize| (closed || x > 0).then(|| (x + n - 1) % n);
+                    let after = |x: usize| (closed || x + 1 < n).then_some(x);
+                    let first = *links
+                        .iter()
+                        .find(|&&x| before(x).is_none_or(|b| !in_run(b)))
+                        .expect("a run has a first link");
+                    let last = *links
+                        .iter()
+                        .find(|&&x| after(x).is_none_or(|a| !in_run((a + 1) % n)))
+                        .expect("a run has a last link");
+                    let from = before(first)
+                        .and_then(|vi| crossing[vi][k])
+                        .unwrap_or(roll.links[first].s0);
+                    let to = after(last)
+                        .and_then(|vi| crossing[vi][k])
+                        .unwrap_or(roll.links[last].s0 + roll.links[last].len);
+                    let span = roll.wrap(to - from);
+                    mine.retain(|&j| {
+                        let past = roll.wrap(0.5 * (segments[j].a + segments[j].b) - from);
+                        past >= 0.0 && past < span
+                    });
+                }
                 if closed
                     && let Some(gap) = (0..mine.len()).find(|&x| {
                         let (p, q) = (mine[x], mine[(x + 1) % mine.len()]);

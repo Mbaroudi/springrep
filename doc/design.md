@@ -917,7 +917,7 @@ where only air lies past a convex edge, and the tool is cut from the body with a
 
 A fillet along a tangent chain with an edge no constant section sweeps (an ellipse where a bore
 meets a sloping face, a circle whose faces do not share its axis) is the surface a ball of the
-fillet's radius sweeps rolling along the chain against the faces on both sides
+fillet's radius sweeps rolling along the chain against the faces on both sides (Choi and Ju 1989)
 ([`blend/rolling.rs`](../src/blend/rolling.rs)). At each point the ball's centre lies in the plane
 square to the chain, at the radius from both sides, found by Newton steps whose rows are the two
 surface normals and the chain's tangent. Where a side changes face at a joint between faces that
@@ -932,7 +932,9 @@ Across, a segment is the exact circular arc between the contacts, a rational qua
 rows are interpolated by a cubic, sampled twice as finely until every midway section and both
 contact curves lie within a tenth of the linear tolerance of the true ones. The contact curves are
 the surface's own edge rows, exact lines in its parameters. Neighbouring segments share their
-section arc.
+section arc. A closed chain that crosses a face's seam (a tee's junction over the bar's seam) meets
+that face's loop in more than one run of its edges, and each run takes the contact pieces between
+the crossings at its two ends.
 
 An open chain ends where one other face meets each end, a plane or any curved face. Past the end the
 chain runs on straight along its tangent, so the ball keeps rolling between the same two surfaces,
@@ -1532,6 +1534,8 @@ The papers this document and the source cite by author and year.
 - **Blackmore, Leu and Wang 1997.** D. Blackmore, M. C. Leu and L. P. Wang, "The sweep-envelope
   differential equation algorithm and its application to NC machining verification",
   _Computer-Aided Design_ 29(9), 1997, pp. 629–637.
+- **Choi and Ju 1989.** B. K. Choi and S. Y. Ju, "Constant-radius blending in surface modelling",
+  _Computer-Aided Design_ 21(4), 1989, pp. 213–220.
 - **de Boor 1978.** C. de Boor, _A Practical Guide to Splines_, Springer, 1978.
 - **Gregory 1974.** J. A. Gregory, "Smooth interpolation without twist constraints", in R. E.
   Barnhill and R. F. Riesenfeld (eds.), _Computer Aided Geometric Design_, Academic Press, 1974.

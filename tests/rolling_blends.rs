@@ -359,3 +359,31 @@ fn a_rolling_ball_round_an_open_curved_edge_ends_on_a_cylinder() {
     }
     assert!(on_back >= 2, "{on_back} trim edges on the back");
 }
+
+#[test]
+fn a_rolling_ball_round_a_closed_junction_across_a_seam_matches_one_clear_of_it() {
+    use springrep::primitive::cylinder;
+    // A tee: the bar of radius 6 along x joined by the stem of radius 3 up z, the saddle junction
+    // rounded 1. With the bar's seam along its top the junction crosses it twice and the bar's
+    // loop meets the chain in two runs; with the seam along its side the junction stays clear of
+    // it. The round is the same solid both ways.
+    let rounded = |bar_frame: Frame| {
+        let bar = cylinder(&bar_frame, 6.0, 40.0, "bar").unwrap();
+        let stem = cylinder(&Frame::WORLD, 3.0, 15.0, "stem").unwrap();
+        let tee = union(&bar, &stem).unwrap();
+        let b = fillet(&tee, &[("bar.side", "stem.side")], 1.0, "r").unwrap();
+        assert!(check::check(&b).is_empty());
+        (measure::volume(&b), measure::area(&b))
+    };
+    let start = Vec3::new(-20.0, 0.0, 0.0);
+    let across = rounded(Frame::new(start, Vec3::X, Vec3::Z).unwrap());
+    let clear = rounded(Frame::new(start, Vec3::X, Vec3::Y).unwrap());
+    assert!(
+        (across.0 - clear.0).abs() < 1e-9 * clear.0,
+        "{across:?} {clear:?}"
+    );
+    assert!(
+        (across.1 - clear.1).abs() < 1e-9 * clear.1,
+        "{across:?} {clear:?}"
+    );
+}
