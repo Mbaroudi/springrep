@@ -803,4 +803,32 @@ mod tests {
             TAU * (2.0 * r * s * (PI - phi) + 2.0 * s * c),
         );
     }
+
+    #[test]
+    fn a_cylinder_cut_aslant_grown_past_its_ellipse_s_bend_holds_steiner_s_formula() {
+        // The cylinder of radius 3 from z = −10 up to the plane z = x·tan 45°, grown by 4: more
+        // than the cut ellipse's least radius of curvature, 9/(3√2). The body is convex, so by
+        // Steiner's formula its volume is V + S·d + M·d² + 4πd³/3: V = 90π, S = 69π + 9π√2, and
+        // M the side's 10π, the bottom rim's 3π²/2 and half of J, the ellipse's turning angle
+        // between its faces' normals, acos(−sin α cos φ), integrated along its length element
+        // 3√(1 + tan²α sin²φ) dφ.
+        let a = PI / 4.0;
+        let c =
+            crate::primitive::cylinder(&Frame::WORLD.translated(-Vec3::Z * 10.0), 3.0, 20.0, "c")
+                .unwrap();
+        let above = half_space(&c, Point3::ZERO, Vec3::new(-a.sin(), 0.0, a.cos())).unwrap();
+        let cut = boolean::difference(&c, &above).unwrap();
+        let d = 4.0;
+        let out = offset(&cut, d, "o").unwrap();
+        let mut turn =
+            |p: f64| (-a.sin() * p.cos()).acos() * 3.0 * (1.0 + (a.tan() * p.sin()).powi(2)).sqrt();
+        let j = crate::numeric::integrate(&mut turn, 0.0, TAU, 1e-13);
+        let m = 10.0 * PI + 1.5 * PI * PI + 0.5 * j;
+        let s = 69.0 * PI + 9.0 * PI / a.cos();
+        close(
+            measure::volume(&out),
+            90.0 * PI + s * d + m * d * d + 4.0 / 3.0 * PI * d.powi(3),
+        );
+        close(measure::area(&out), s + 2.0 * m * d + 4.0 * PI * d * d);
+    }
 }

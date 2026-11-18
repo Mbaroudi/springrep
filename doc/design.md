@@ -931,7 +931,15 @@ meets a sloping face, a circle whose faces do not share its axis) is the surface
 fillet's radius sweeps rolling along the chain against the faces on both sides (Choi and Ju 1989)
 ([`blend/rolling.rs`](../src/blend/rolling.rs)). At each point the ball's centre lies in the plane
 square to the chain, at the radius from both sides, found by Newton steps whose rows are the two
-surface normals and the chain's tangent. Where a side changes face at a joint between faces that
+surface normals and the chain's tangent, from the centre of the ball in the wedge of the faces'
+tangent planes, `(na + nb)·r/(1 + na·nb)` off the edge (or from a neighbouring section's centre,
+and from the wedge's where that does not settle). A ball larger than the chain's bend (a cylinder
+cut aslant and grown past the cut ellipse's least radius of curvature, whose rim the ball rolls
+round) has no centre in some of those planes: they cross before they reach the centres' path. The
+fillet is then made again with each section in the plane square to the centres' path through the
+chain's point, the plane the ball's circle of contact lies in, the two contact normals' cross
+product its normal; that row turns with the centre, so it is the plane distance's gradient, by
+central differences. Where a side changes face at a joint between faces that
 meet tangentially (a slot's flat side into its round end), the contact slides from one onto the
 other: the foot is the nearest on that side's faces that lies in its face, by the face's own trimmed
 domain (where none does, past an open chain's end, the ball rolls on the link's own surface). The

@@ -3,7 +3,10 @@
 //!
 //! The chain runs the way its side-0 face uses it, with one parameter `s` along it. At each `s` the
 //! ball's centre lies in the plane square to the chain, at the radius from both sides, found by
-//! Newton steps whose rows are the two surface normals and the chain's tangent. A side's contact is
+//! Newton steps whose rows are the two surface normals and the chain's tangent. A ball larger than
+//! the chain's bend has no centre in some of those planes (they cross before they reach the
+//! centres' path), and the fillet is then made again with each section in the plane square to the
+//! centres' path through the chain's point, where the ball's circle of contact lies. A side's contact is
 //! the nearest point on whichever of that side's faces holds it: where a side changes face at a
 //! joint, between faces that meet tangentially, the ball's contact slides from one onto the other,
 //! and a foot counts only on its own face's side of the edge between them.
@@ -144,6 +147,9 @@ struct Roll<'a> {
     radius: f64,
     /// −1 where the ball lies inside the body (a convex chain), +1 outside it.
     side: f64,
+    /// Whether each section lies square to the centres' path, the two contact normals' cross
+    /// product, rather than to the chain.
+    spine: bool,
     /// `joints[i][k]`: the junction on side `k` where link `i` ends and the next begins.
     joints: Vec<[Option<Junction>; 2]>,
     /// The trimmed domain of every face a side has, to tell whether a foot lies in the face.
@@ -291,23 +297,51 @@ impl Roll<'_> {
         }
     }
 
-    /// The section at chain parameter `s`, starting Newton from `guess` or from the chain.
+    /// The section at chain parameter `s`, starting Newton from `guess`, and from the chain where
+    /// there is none or Newton does not settle from it: a neighbouring section's centre lies far
+    /// off where a large ball rolls round a tight bend.
     fn section(&self, s: f64, guess: Option<Point3>) -> Result<Section> {
+        match guess {
+            Some(g) => self.settled(s, g).or_else(|_| self.section(s, None)),
+            None => {
+                let (e, _, i) = self.chain_at(s)?;
+                // The centre of the ball in the wedge of the two faces' tangent planes at the
+                // edge, `r` from both: `(na + nb)·r/(1 + na·nb)` off it.
+                let na = outward(self.body, self.links[i].faces[0], e);
+                let nb = outward(self.body, self.links[i].faces[1], e);
+                let k = self.side * self.radius / (1.0 + na.dot(nb)).max(1e-3);
+                self.settled(s, e + (na + nb) * k)
+            }
+        }
+    }
+
+    /// The section at chain parameter `s` by Newton steps from the centre `c`.
+    fn settled(&self, s: f64, mut c: Point3) -> Result<Section> {
         let (e, along, i) = self.chain_at(s)?;
-        let mut c = guess.unwrap_or_else(|| {
-            let n = outward(self.body, self.links[i].faces[0], e)
-                + outward(self.body, self.links[i].faces[1], e);
-            e + n * (self.side * self.radius)
-        });
         for _ in 0..60 {
             let (pa, na, _) = self.foot(i, 0, c);
             let (pb, nb, _) = self.foot(i, 1, c);
+            // The centres' path runs along both contact normals' cross product: square to it, the
+            // plane through the centre holds both contacts. That direction turns with the centre,
+            // so its row is the gradient of the distance from the plane, by central differences.
+            let off_plane = |q: Point3| {
+                let (_, na, _) = self.foot(i, 0, q);
+                let (_, nb, _) = self.foot(i, 1, q);
+                (q - e).dot(na.cross(nb).unit_or_zero())
+            };
+            let (row, third) = if self.spine {
+                let h = 1e-6 * (1.0 + self.radius);
+                let d = |v: Vec3| (off_plane(c + v * h) - off_plane(c - v * h)) / (2.0 * h);
+                (Vec3::new(d(Vec3::X), d(Vec3::Y), d(Vec3::Z)), off_plane(c))
+            } else {
+                (along, (c - e).dot(along))
+            };
             let f = [
                 (c - pa).dot(na) - self.side * self.radius,
                 (c - pb).dot(nb) - self.side * self.radius,
-                (c - e).dot(along),
+                third,
             ];
-            let step = solve3([na, nb, along], f).ok_or_else(|| {
+            let step = solve3([na, nb, row], f).ok_or_else(|| {
                 Error::Unsupported("a rolling-ball fillet whose faces are parallel".into())
             })?;
             c -= step;
@@ -687,11 +721,27 @@ fn chain(body: &Brep, picked: &[Picked]) -> Option<(Vec<Link>, bool)> {
 }
 
 /// The fillet of `radius` along the tangent chain `picked`, edge `i`'s faces named `names[i]`.
+/// Each section lies in the plane square to the chain where it crosses it; where that plane misses
+/// the ball's path (a ball larger than the chain's bend, whose square planes cross before they
+/// reach the centres), in the plane square to the centres' path through the chain's point
+/// instead, the plane the ball's circle of contact lies in.
 pub(super) fn fillet(
     body: &Brep,
     picked: &[Picked],
     radius: f64,
     names: &[BTreeSet<FaceName>],
+) -> Result<Brep> {
+    rolled(body, picked, radius, names, false)
+        .or_else(|e| rolled(body, picked, radius, names, true).map_err(|_| e))
+}
+
+/// [`fillet`], its sections square to the centres' path where `spine`, else to the chain.
+fn rolled(
+    body: &Brep,
+    picked: &[Picked],
+    radius: f64,
+    names: &[BTreeSet<FaceName>],
+    spine: bool,
 ) -> Result<Brep> {
     if body.has_tolerances() {
         return unsupported("on a body with local tolerances");
@@ -791,6 +841,7 @@ pub(super) fn fillet(
         total,
         radius,
         side: if convex { -1.0 } else { 1.0 },
+        spine,
         domains: picked
             .iter()
             .flat_map(|pk| pk.faces)
