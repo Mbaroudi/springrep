@@ -74,11 +74,14 @@ pub fn shell(s: &Brep, open: &[FaceId], thickness: f64, wall: Wall, feature: &st
     // into a wall that stands beside the opening. The cut lies on them there and leaves no skin.
     match wall {
         Wall::Inward => {
-            let mut cavity = moved(-thickness, 0.0, concave_edges(s)?)?;
-            for f in cavity.face_ids().collect::<Vec<_>>() {
-                cavity.set_face_names(f, std::iter::once(inner.clone()).collect());
-            }
-            boolean::difference(s, &cavity)
+            let sharp = || {
+                let mut cavity = moved(-thickness, 0.0, concave_edges(s)?)?;
+                for f in cavity.face_ids().collect::<Vec<_>>() {
+                    cavity.set_face_names(f, std::iter::once(inner.clone()).collect());
+                }
+                boolean::difference(s, &cavity)
+            };
+            sharp().or_else(|e| hollowed(s, open, thickness, feature).map_err(|_| e))
         }
         Wall::Outward => {
             let mut outer = moved(thickness, 0.0, convex_edges(s)?)?;
@@ -96,6 +99,89 @@ pub fn shell(s: &Brep, open: &[FaceId], thickness: f64, wall: Wall, feature: &st
             boolean::difference(&outer, &cavity)
         }
     }
+}
+
+/// The two faces of edge `e`, where two use it.
+fn edge_faces(s: &Brep, e: EdgeId) -> Option<(FaceId, FaceId)> {
+    let uses: Vec<FaceId> = s
+        .coedge_ids()
+        .filter(|&c| s.coedge(c).edge == e)
+        .map(|c| s.coedge_face(c))
+        .collect();
+    match uses[..] {
+        [f, g] => Some((f, g)),
+        _ => None,
+    }
+}
+
+/// An inward shell of `s` built as `s` less its points farther than `t` from its faces other than
+/// `open`: the union of those faces' slabs `t` in, and a tube about each concave edge, where the
+/// moved faces cannot be followed (walls that close beside a concave edge, or a bore's moved wall
+/// running into another). That is the sharp shell only where it rounds every concave edge, which
+/// it may only where a face beside the edge closes, and where each open face meets the walls at a
+/// right angle or less, so the walls' slabs reach it as the moved walls would; otherwise an error.
+fn hollowed(s: &Brep, open: &[FaceId], t: f64, feature: &str) -> Result<Brep> {
+    let refuse = || {
+        Err(Error::Unsupported(
+            "a shell whose moved walls cannot be followed, and whose wall is not the points near them"
+                .into(),
+        ))
+    };
+    let by: HashMap<FaceId, f64> = s
+        .face_ids()
+        .filter(|f| !open.contains(f))
+        .map(|f| (f, -t))
+        .collect();
+    let closed = tweak::offset_faces_closing(s, &by)
+        .map(|(_, closed)| closed)
+        .unwrap_or_default();
+    let concave = concave_edges(s)?;
+    for &e in &concave {
+        let Some((f, g)) = edge_faces(s, e) else {
+            return refuse();
+        };
+        if open.contains(&f) || open.contains(&g) || !(closed.contains(&f) || closed.contains(&g)) {
+            return refuse();
+        }
+    }
+    let outward = |f: FaceId, p: Point3| {
+        let sf = &s.face(f).surface;
+        let uv = sf.project(p);
+        let n = sf.normal(uv.x, uv.y);
+        if s.face(f).reversed { -n } else { n }
+    };
+    let convex = convex_edges(s)?;
+    for e in s.edge_ids() {
+        let Some((f, g)) = edge_faces(s, e) else {
+            continue;
+        };
+        if open.contains(&f) == open.contains(&g) {
+            continue;
+        }
+        let x = s.edge(e);
+        let Some(c) = &x.curve else { continue };
+        let p = c.eval(0.5 * (x.range.0 + x.range.1));
+        if !convex.contains(&e) || outward(f, p).dot(outward(g, p)) > tol::ANGULAR {
+            return refuse();
+        }
+    }
+    let mut parts = Vec::new();
+    for f in s.face_ids().filter(|f| !open.contains(f)) {
+        parts.push(near::slab(s, f, -t, feature)?);
+    }
+    for &e in &concave {
+        parts.push(near::tube(s, e, t, feature)?);
+    }
+    for v in near::corners(s, &concave, |_| false) {
+        parts.push(near::ball(s.vertex(v).point, t, feature)?);
+    }
+    let refs: Vec<&Brep> = parts.iter().collect();
+    let mut cavity = boolean::difference(s, &boolean::union_all(&refs)?)?;
+    let inner = FaceName::new(feature, FaceName::INNER);
+    for f in cavity.face_ids().collect::<Vec<_>>() {
+        cavity.set_face_names(f, std::iter::once(inner.clone()).collect());
+    }
+    boolean::difference(s, &cavity)
 }
 
 /// The points within `distance` of `s`: every face moved out that far, a hole that closes on the
@@ -444,10 +530,12 @@ mod tests {
     }
 
     #[test]
-    fn a_shell_wall_closing_a_neck_is_refused_not_filled_flat() {
-        let refused = |r: Result<Brep>| matches!(r, Err(Error::Unsupported(why)) if why.contains("round about the edge"));
+    fn a_shell_wall_closing_a_neck_rounds_the_mouths_about_its_corners() {
         // A neck 2 wide between two squares, walled 1.5 thick from inside: the walls cross in the
-        // neck, and the cavity's mouth to it is bounded by arcs about the neck's corners.
+        // neck, which stays solid, and each pocket's mouth to it is bounded by arcs of radius 1.5
+        // about the neck's corners. A pocket is the square 7 × 7 and the bulge between x = 8.5 and
+        // the arcs about (10, 4) and (10, 6), which meet at (10 − √5/2, 5): β = 3 − √5/2 −
+        // (9/4)·asin(2/3). Both pockets run 4.5 deep in the plate of 208 × 6.
         let dumbbell = prism(
             &[
                 [0.0, 0.0],
@@ -471,13 +559,37 @@ mod tests {
             .filter(|&f| dumbbell.face(f).names.contains(&top))
             .collect();
         assert_eq!(top.len(), 1);
-        assert!(refused(shell(&dumbbell, &top, 1.5, Wall::Inward, "w")));
+        let shelled = shell(&dumbbell, &top, 1.5, Wall::Inward, "w").unwrap();
+        let beta = 3.0 - 5f64.sqrt() / 2.0 - 2.25 * (2.0f64 / 3.0).asin();
+        close(
+            measure::volume(&shelled),
+            208.0 * 6.0 - 4.5 * 2.0 * (49.0 + beta),
+        );
         // A wall 0.5 thick leaves the neck open: the cavity is two squares 9 on a side and a
         // channel 5 × 1 between them, 5.5 deep, in the plate of 208 × 6.
         let shelled = shell(&dumbbell, &top, 0.5, Wall::Inward, "w").unwrap();
         close(
             measure::volume(&shelled),
             208.0 * 6.0 - 5.5 * (2.0 * 81.0 + 5.0),
+        );
+    }
+
+    #[test]
+    fn a_bore_s_moved_wall_running_into_a_shell_s_wall_merges_with_it() {
+        // The block 20 × 20 × 10 bored through by a hole of radius 3 about (15.5, 10), walled 1
+        // thick from inside, open at its top. The bore's wall, moved to radius 4, reaches past the
+        // inside wall x = 19 by the segment of the disk of radius 4 at 3.5 from its centre,
+        // 16·acos(7/8) − 7√15/4; the cavity is the square 18 × 18 less the rest of that disk, 9
+        // deep.
+        let bore = Profile::named_circle(Vec2::new(15.5, 10.0), 6.0, "bore").loops;
+        let section = Profile::rect(Vec2::new(10.0, 10.0), 20.0, 20.0).with_holes(bore);
+        let block = extrude(&section, &Frame::WORLD, 10.0, "p").unwrap();
+        let top = face(&block, "end");
+        let shelled = shell(&block, &[top], 1.0, Wall::Inward, "w").unwrap();
+        let segment = 16.0 * (7.0f64 / 8.0).acos() - 7.0 * 15f64.sqrt() / 4.0;
+        close(
+            measure::volume(&shelled),
+            4000.0 - 90.0 * PI - 9.0 * (324.0 - 16.0 * PI + segment),
         );
     }
 

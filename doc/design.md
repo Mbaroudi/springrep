@@ -1088,6 +1088,15 @@ The booleans resolve where the pieces meet, tangent along the slabs' sides and t
 lines. A face of another kind, or an edge other than a line or a circle, is refused with the error
 the move gave.
 
+An inward shell whose moved walls cannot be followed (walls that close beside a concave edge, as in
+a neck narrower than twice the wall; a bore's moved wall that runs into another wall) is built the
+same way: the cavity is the solid less the union of its walls' slabs moved in, a tube about each
+concave edge and a ball at each corner of them, and the shell is the solid less the cavity. That is
+the sharp shell's cavity where the two agree, so it is used only where every concave edge has a
+face beside it that closes (the sharp shell has no corner to meet there, and the points within the
+wall of the edge round it) and every open face meets the walls at a right angle or less, so the
+walls' slabs reach it as the moved walls would.
+
 ## Moving whole solids
 
 `Brep::transform` moves a solid rigidly and leaves every parameter alone. `transform_similar`
