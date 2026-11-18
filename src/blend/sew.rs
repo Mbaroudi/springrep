@@ -579,7 +579,7 @@ fn corner_face(
         out.vertex(if rev { x.end } else { x.start }).point
     };
     let corners: Vec<Point3> = lp.iter().map(start).collect();
-    let n: Vec3 = ball.normals[0] + ball.normals[1] + ball.normals[2];
+    let n: Vec3 = ball.middle();
     let turn = (corners[1] - corners[0])
         .cross(corners[2] - corners[1])
         .dot(n);

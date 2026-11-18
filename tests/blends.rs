@@ -809,6 +809,50 @@ fn chamfers_meeting_at_a_corner_close_it_with_the_plane_of_their_contacts() {
 }
 
 #[test]
+fn fillets_at_a_corner_of_more_planes_or_concave_close_with_their_ball() {
+    use springrep::{blend::fillet_edges, primitive, topo::EdgeId};
+    // The octahedron |x| + |y| + |z| ≤ 10, every edge rounded 2: four planes meet at each corner,
+    // and the planes 2 in from them meet in one point, so one ball touches all four. The result is
+    // the octahedron shrunk by 2, |x| + |y| + |z| ≤ s = 10 − 2√3, grown by 2 (Steiner): its edges
+    // s√2 long each turn through arccos(1/3).
+    let o = octahedron(10.0);
+    let edges: Vec<EdgeId> = o.edge_ids().collect();
+    let b = fillet_edges(&o, &edges, 2.0, "f").unwrap();
+    let s = 10.0 - 2.0 * 3f64.sqrt();
+    let (v_in, s_in) = (4.0 * s.powi(3) / 3.0, 4.0 * 3f64.sqrt() * s * s);
+    let m_in = 12.0 * 2f64.sqrt() * s * (1.0f64 / 3.0).acos() / 2.0;
+    assert_solid(
+        &b,
+        v_in + 2.0 * s_in + 4.0 * m_in + 32.0 * PI / 3.0,
+        s_in + 4.0 * m_in + 16.0 * PI,
+    );
+    assert_eq!(kinds(&b, "sphere"), 6);
+    // A cube of side 20 with the cube of side 10 cut from one corner; the notch's three concave
+    // edges rounded 3. Along each edge a strip of section (1 − π/4)·9, and at the inside corner
+    // the cube of side 3 less an eighth of the ball of radius 3.
+    let cube = primitive::block(&Frame::WORLD, Vec3::new(20.0, 20.0, 20.0), "cube").unwrap();
+    let at = Frame::new(Vec3::new(10.0, 10.0, 10.0), Vec3::Z, Vec3::X).unwrap();
+    let notch = primitive::block(&at, Vec3::new(10.0, 10.0, 10.0), "notch").unwrap();
+    let body = difference(&cube, &notch).unwrap();
+    let pairs = [
+        ("notch.u_min", "notch.v_min"),
+        ("notch.v_min", "notch.start"),
+        ("notch.start", "notch.u_min"),
+    ];
+    let b = fillet(&body, &pairs, 3.0, "f").unwrap();
+    let r: f64 = 3.0;
+    let spandrel = (1.0 - PI / 4.0) * r * r;
+    let volume = 7000.0 + r.powi(3) * (1.0 - PI / 6.0) + 3.0 * spandrel * (10.0 - r);
+    let area = 2400.0 - 300.0
+        + 3.0 * (10.0 - r).powi(2)
+        + 1.5 * PI * r * (10.0 - r)
+        + PI * r * r / 2.0
+        + 3.0 * spandrel;
+    assert_solid(&b, volume, area);
+    assert_eq!(kinds(&b, "sphere"), 1);
+}
+
+#[test]
 fn a_straight_edge_between_a_plane_and_a_bore_takes_a_chamfer_by_the_chord() {
     // The key standing in a bore, as above, the root of each side chamfered 1 on both faces: 1
     // along the side, and a chord 1 long on the bore's wall, which turns 2·asin(1/40) about its

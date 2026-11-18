@@ -845,16 +845,23 @@ Each piece ends where its edge does, in one of eight ways:
   corner earlier chamfers have cut), runs past it and is trimmed by each of those planes: the body
   there is the region inside all of them. The tools cut such a piece; chamfering a solid's edges
   one after another this way mitres each corner.
-- **At a sphere.** Three fillets on three convex edges of three planes, at any angles, stop short of
-  the corner where a sphere closes it. The ball `r` inside all three planes has its centre on each
-  fillet's spine, since each spine runs `r` from both its planes; so each fillet stops on the
-  section through the centre, and its end is a great circle arc from the ball's foot on one plane to
-  its foot on the other. The patch is the spherical triangle of the three feet, of solid angle Ω
-  (the triangle of the planes' outward normals), and the material the corner loses is the cell
-  between the centre and the corner, less Ωr³/3. The sphere's poles lie on the great circle square
-  to the patch's middle and its seam opposite the middle, both off the patch; a corner whose normals
-  do not all lie within a quarter turn of their middle is refused. On a prism whose normals are
-  68.2° apart the result holds the hand volume to 1.5e-16 and the hand area exactly.
+- **At a sphere.** Three or more fillets on every edge of a corner of planes, all convex or all
+  concave, at any angles, stop short of the corner where a sphere closes it: the rolling ball's
+  corner, the blend being the union of the balls that fit inside the body (Rossignac and Requicha
+  1984). The ball `r` from all the planes on the side it rolls has its centre on each fillet's
+  spine, since each spine runs `r` from both its planes; so each fillet stops on the section through
+  the centre, and its end is a great circle arc from the ball's foot on one plane to its foot on the
+  other. With three planes the centre is where the planes `r` in meet; with more it is their least
+  squares point, which must lie `r` from every one (an octahedron's corner; a pyramid's apex on a
+  rectangle has no such ball and is refused). The patch is the spherical polygon of the feet, and
+  the material the corner loses (or, concave, gains) is the cell between the end sections, the
+  centre and the corner, less the ball: for three planes of solid angle Ω, the cell less Ωr³/3. The
+  sphere's poles lie on the great circle square to the direction from the centre to the corner, and
+  its seam opposite it, both off the patch, since the corner stands `r` off every plane and so every
+  foot lies within a quarter turn of that direction; only a corner so sharp a foot lies on that
+  great circle is refused. On a prism whose normals are 68.2° apart the result holds the hand
+  volume to 1.5e-16 and the hand area exactly. A concave corner is added with the tools.
+
 - **At a flat corner** ([`blend/flat_corner.rs`](../src/blend/flat_corner.rs)). Three or more
   chamfers on every edge of a convex corner of planes mitre there, each trimmed by the corner's
   other planes as above, and the corner is then cut by the plane through the points where the two
@@ -947,9 +954,9 @@ What the region form cannot reach comes back as `Error::Unsupported`, never as a
   than a run of its end face's edges; and a fillet larger than a convex corner round in its chain
   (the exact path reaches past the corner's axis);
 - blends meeting at a vertex other than as a tangent chain, a mirrored mitre, a convex corner they
-  run through, a three-plane corner or a flat corner (the error names the vertex and the faces), and an edge ending
-  where several other faces meet it other than at a convex corner of planes, or where a face other
-  than a plane, cylinder or cone meets it;
+  run through, a sphere corner or a flat corner (the error names the vertex and the faces), and an
+  edge ending where several other faces meet it other than at a convex corner of planes, or where a
+  face other than a plane, cylinder or cone meets it;
 - a blend wider than a face it sits on, including one whose strip would cross onto the next face
   along its edge, such as where its edge runs on, tangent, as a curve other than a line or circle.
 
@@ -1540,6 +1547,8 @@ The papers this document and the source cite by author and year.
   surface construction algorithm", _Computer Graphics_ 21(4) (SIGGRAPH '87), 1987, pp. 163–169.
 - **Martin and Stephenson 1990.** R. R. Martin and P. C. Stephenson, "Sweeping of three-dimensional
   objects", _Computer-Aided Design_ 22(4), 1990, pp. 223–234.
+- **Rossignac and Requicha 1984.** J. R. Rossignac and A. A. G. Requicha, "Constant-radius blending
+  in solid modelling", _Computers in Mechanical Engineering_ 3(1), 1984, pp. 65–73.
 - **Shewchuk 1997.** J. R. Shewchuk, "Adaptive precision floating-point arithmetic and fast robust
   geometric predicates", _Discrete & Computational Geometry_ 18, 1997, pp. 305–363.
 - **Sugihara and Iri 1989.** K. Sugihara and M. Iri, "A solid modelling system free from topological

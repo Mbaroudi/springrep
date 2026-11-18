@@ -18,8 +18,9 @@
 //! surface, and by the faces past any short edge its contact runs beyond (`run`); on a curved
 //! face met at a glancing angle it runs on only until that surface takes in its whole section. A
 //! concave piece whose strip is wider than its face runs over the face's convex edge and is
-//! trimmed by the face past it. Three fillets
-//! meeting at a corner of three planes close with the sphere touching all three.
+//! trimmed by the face past it. Three or more fillets meeting at a corner of planes close with the
+//! sphere touching them all, the rolling ball's corner (Rossignac and Requicha 1984); three or more
+//! chamfers close with the plane through the points where their contact lines cross.
 
 pub(crate) mod shaped;
 
@@ -846,7 +847,9 @@ fn blend_picked(
         corner_tools.push((i, j, tool, sw.arc.is_some()));
     }
     // The corner tools only join the straight pieces as tools: sewing has no corner patch.
-    let sewn = if corner_tools.is_empty() && saddles.is_empty() {
+    let sewn = if balls.iter().any(|(_, b)| !b.convex) {
+        Err("a fillet with a concave corner ball".to_string())
+    } else if corner_tools.is_empty() && saddles.is_empty() {
         sew_tools.and_then(|(tools, beyond)| {
             sew::sewn(
                 body, &picked, &tools, &beyond, &convex, &names, &balls, feature,
@@ -1053,7 +1056,12 @@ fn by_tools(
         }
     }
     for (_, ball) in balls {
-        cuts.push(corner_tool(ball, feature)?);
+        let tool = corner_tool(ball, feature)?;
+        if ball.convex {
+            cuts.push(tool);
+        } else {
+            adds.push(tool);
+        }
     }
 
     let mut out = body.clone();
@@ -3114,35 +3122,42 @@ fn renamed(mut tool: Brep, blend: &str, names: &BTreeSet<FaceName>) -> Brep {
     tool
 }
 
-/// The sphere that closes a corner where three fillets of `radius` meet on three planes: its
-/// centre, `radius` from each plane inside the corner, and the three planes' outward normals,
-/// right-handed. Each fillet's spine runs `radius` from both its planes, so all three pass through
-/// the centre, and each ends on the section through it: a great circle arc from the foot of the
-/// centre on one plane to its foot on the other. The patch is the spherical triangle of the three
-/// feet, whatever the angles between the planes.
+/// The sphere that closes a corner where three or more fillets of `radius` meet on as many planes,
+/// every edge there filleted and all convex or all concave: its centre, `radius` from each plane on
+/// the side the fillets' balls roll (inside a convex corner, outside a concave one), and the
+/// directions from the centre to its feet on the planes. Each fillet's spine runs `radius` from both
+/// its planes, so all pass through the centre, and each ends on the section through it: a great
+/// circle arc from the ball's foot on one plane to its foot on the other. The patch is the
+/// spherical polygon of the feet, whatever the angles between the planes. More than three planes
+/// have such a ball only where the planes `radius` in from them meet in one point (an octahedron's
+/// corner, not a pyramid's apex on a rectangle).
 pub(super) struct Ball {
     centre: Point3,
     radius: f64,
-    normals: [Vec3; 3],
-    /// The corner, and the directions its three filleted edges leave it in.
+    feet: Vec<Vec3>,
+    /// Whether the corner is convex: the patch takes material off, where a concave one adds it.
+    convex: bool,
+    /// The corner, and the directions its filleted edges leave it in.
     corner: Point3,
-    edges: [Vec3; 3],
+    edges: Vec<Vec3>,
 }
 
 impl Ball {
-    /// The direction from the centre to the middle of the patch.
+    /// The direction from the centre to the middle of the patch: toward the corner, which stands
+    /// `radius` off every plane, so every foot lies within a quarter turn of it.
     fn middle(&self) -> Vec3 {
-        let [e1, e2, e3] = self.normals;
-        (e1 + e2 + e3).unit_or_zero()
+        (self.corner - self.centre).unit_or_zero()
     }
 
     /// The sphere with both poles and its seam off the patch: the poles on the great circle square
     /// to the patch's middle, the seam on the far side.
     fn surface(&self) -> Result<crate::geom::Sphere> {
         let m = self.middle();
-        let axis = m
-            .cross(self.normals[2])
-            .unit()
+        let axis = self
+            .feet
+            .iter()
+            .filter_map(|f| m.cross(*f).unit())
+            .next()
             .ok_or_else(|| Error::Numerical("a corner whose normals are parallel".into()))?;
         Ok(crate::geom::Sphere {
             frame: Frame::new(self.centre, axis, -m)?,
@@ -3161,57 +3176,104 @@ fn corner_ball(
 ) -> Result<Ball> {
     let faces = faces_at(body, v);
     let corner = body.vertex(v).point;
-    let unsupported = || {
-        Err(Error::Unsupported(
-            "fillets meeting at a vertex other than three convex edges of three planes".into(),
-        ))
+    let unsupported = |why: &str| {
+        Err(Error::Unsupported(format!(
+            "fillets meeting at a vertex {why}"
+        )))
     };
-    if at.len() != 3 || faces.len() != 3 {
-        return unsupported();
+    let edges_at: BTreeSet<EdgeId> = body
+        .coedge_ids()
+        .filter(|&c| body.coedge_start(c) == v)
+        .map(|c| body.coedge(c).edge)
+        .collect();
+    let picked_at: BTreeSet<EdgeId> = at.iter().map(|&i| picked[i].edge).collect();
+    if at.len() < 3 || faces.len() != at.len() || edges_at != picked_at {
+        return unsupported("with an edge that is not filleted");
     }
     let faces: Vec<FaceId> = faces.into_iter().collect();
-    for &f in &faces {
-        if !matches!(body.face(f).surface, Surface::Plane(_)) {
-            return unsupported();
-        }
+    if faces
+        .iter()
+        .any(|&f| !matches!(body.face(f).surface, Surface::Plane(_)))
+    {
+        return unsupported("of faces other than planes");
     }
+    let convex = sections[at[0]].convex;
     for &i in at {
-        if !sections[i].convex || !matches!(sections[i].path, Path::Prism { .. }) {
-            return unsupported();
+        if sections[i].convex != convex || !matches!(sections[i].path, Path::Prism { .. }) {
+            return unsupported("of straight edges not all convex or all concave");
         }
     }
+    // The point `radius` off each plane where the ball rolls: n_k·(c − corner) = ∓radius, by
+    // least squares over the planes, which more than three must all meet.
+    let side = if convex { -radius } else { radius };
     let n: Vec<Vec3> = faces.iter().map(|&f| outward(body, f, corner)).collect();
-    let det = n[0].cross(n[1]).dot(n[2]);
-    if det.abs() <= tol::ANGULAR {
-        return unsupported();
+    let mut a = [[0.0; 3]; 3];
+    let mut b = [0.0; 3];
+    for nk in &n {
+        let nk = [nk.x, nk.y, nk.z];
+        for r in 0..3 {
+            for c in 0..3 {
+                a[r][c] += nk[r] * nk[c];
+            }
+            b[r] += nk[r] * side;
+        }
     }
-    let normals = if det > 0.0 {
-        [n[0], n[1], n[2]]
-    } else {
-        [n[1], n[0], n[2]]
+    let Some(x) = solve3(a, b) else {
+        return unsupported("of planes that do not meet in a point");
     };
-    let [e1, e2, e3] = normals;
-    // The point `radius` inside each plane: n_k·(c − corner) = −radius for each k.
-    let centre = corner - (e2.cross(e3) + e3.cross(e1) + e1.cross(e2)) * (radius / det.abs());
-    let mut edges = [Vec3::ZERO; 3];
-    for (k, &i) in at.iter().enumerate() {
-        edges[k] = leaving(body, picked[i].edge, v)
-            .ok_or_else(|| Error::Numerical("an edge with no tangent".into()))?;
+    let offset = Vec3::new(x[0], x[1], x[2]);
+    if n.iter()
+        .any(|nk| (nk.dot(offset) - side).abs() > tol::LINEAR)
+    {
+        return unsupported("where no ball touches all its planes");
+    }
+    let centre = corner + offset;
+    let feet = n.iter().map(|&nk| if convex { nk } else { -nk }).collect();
+    let mut edges = Vec::with_capacity(at.len());
+    for &i in at {
+        edges.push(
+            leaving(body, picked[i].edge, v)
+                .ok_or_else(|| Error::Numerical("an edge with no tangent".into()))?,
+        );
     }
     let ball = Ball {
         centre,
         radius,
-        normals,
+        feet,
+        convex,
         corner,
         edges,
     };
     // Each foot must lie on the near side of the patch's middle, so the sphere's poles and seam
     // stay off the patch.
     let m = ball.middle();
-    if normals.iter().any(|e| e.dot(m) <= tol::TANGENT) {
-        return unsupported();
+    if ball.feet.iter().any(|f| f.dot(m) <= tol::TANGENT) {
+        return unsupported("too sharp for its ball's patch");
     }
     Ok(ball)
+}
+
+/// The solution of the 3 × 3 system `a·x = b`, by Cramer's rule; None where `a` is singular.
+fn solve3(a: [[f64; 3]; 3], b: [f64; 3]) -> Option<[f64; 3]> {
+    let det = |m: [[f64; 3]; 3]| {
+        m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+            - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+            + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+    };
+    let d = det(a);
+    let scale = a.iter().flatten().fold(0.0f64, |m, x| m.max(x.abs()));
+    if d.abs() <= 1e-12 * scale.powi(3) {
+        return None;
+    }
+    let mut x = [0.0; 3];
+    for (c, xc) in x.iter_mut().enumerate() {
+        let mut m = a;
+        for r in 0..3 {
+            m[r][c] = b[r];
+        }
+        *xc = det(m) / d;
+    }
+    Some(x)
 }
 
 /// The parallelepiped at `origin` spanned by `w`, its faces planes facing out.
@@ -3285,22 +3347,68 @@ fn parallelepiped(origin: Point3, w: [Vec3; 3]) -> Result<Brep> {
     Ok(b)
 }
 
+/// The cell between four or more fillets' end sections through a corner ball's centre: the
+/// pyramid from the centre along the lines where neighbouring sections meet, out past the corner
+/// to a base square to the patch's middle.
+fn section_cone(ball: &Ball) -> Result<Brep> {
+    let m = ball.middle();
+    let frame = Frame::new(ball.centre, m, m.any_perpendicular())?;
+    let angle = |d: Vec3| {
+        let l = frame.to_local(ball.centre + d);
+        l.y.atan2(l.x)
+    };
+    let mut edges = ball.edges.clone();
+    edges.sort_by(|a, b| angle(*a).total_cmp(&angle(*b)));
+    let height = 2.0 * ball.corner.dist(ball.centre) + ball.radius;
+    let mut points = vec![ball.centre];
+    for (k, &a) in edges.iter().enumerate() {
+        let b = edges[(k + 1) % edges.len()];
+        let d = a.cross(b);
+        let d = if d.dot(m) > 0.0 { d } else { -d };
+        let along = d.dot(m);
+        if along <= tol::ANGULAR * d.norm() {
+            return Err(Error::Unsupported(
+                "fillets meeting at a corner whose end sections do not close round it".into(),
+            ));
+        }
+        points.push(ball.centre + d * (height / along));
+    }
+    let n = edges.len() as u32;
+    let mut triangles: Vec<[u32; 3]> = (0..n).map(|k| [0, 1 + k, 1 + (k + 1) % n]).collect();
+    triangles.extend((1..n - 1).map(|k| [1, 2 + k, 1 + k]));
+    // Counter-clockwise seen from outside: the first side faces away from the middle of the base.
+    let base = points[1..].iter().fold(Point3::ZERO, |acc, &p| acc + p) * (1.0 / n as f64);
+    let out = (points[1] - points[0]).cross(points[2] - points[0]);
+    if out.dot(points[0] - base) < 0.0 {
+        for t in &mut triangles {
+            t.swap(1, 2);
+        }
+    }
+    crate::mesh::solid(&points, &triangles)
+}
+
 /// The material the sphere patch takes off a corner where three fillets meet: the parallelepiped
 /// at the sphere's centre bounded by the three fillets' end sections, oversized outward, less the
 /// ball.
 fn corner_tool(ball: &Ball, feature: &str) -> Result<Brep> {
-    let (centre, radius, corner, edges) = (ball.centre, ball.radius, ball.corner, ball.edges);
+    let (centre, radius, corner) = (ball.centre, ball.radius, ball.corner);
+    let edges = &ball.edges;
     // The end sections are the planes through the centre square to each edge; the cell between
     // them is spanned by the lines where two of them meet, each running toward the corner.
-    let mut w = [Vec3::ZERO; 3];
-    for j in 0..3 {
-        let d = edges[(j + 1) % 3].cross(edges[(j + 2) % 3]);
-        let d = if d.dot(edges[j]) < 0.0 { d } else { -d };
-        // How far along `d` the corner's own coordinate reaches, twice over.
-        let reach = (corner - centre).dot(edges[j]) / d.dot(edges[j]);
-        w[j] = d * (2.0 * reach.abs().max(radius / d.norm()));
-    }
-    let cell = parallelepiped(centre, w)?;
+    let cell = if let [e0, e1, e2] = edges[..] {
+        let edges = [e0, e1, e2];
+        let mut w = [Vec3::ZERO; 3];
+        for j in 0..3 {
+            let d = edges[(j + 1) % 3].cross(edges[(j + 2) % 3]);
+            let d = if d.dot(edges[j]) < 0.0 { d } else { -d };
+            // How far along `d` the corner's own coordinate reaches, twice over.
+            let reach = (corner - centre).dot(edges[j]) / d.dot(edges[j]);
+            w[j] = d * (2.0 * reach.abs().max(radius / d.norm()));
+        }
+        parallelepiped(centre, w)?
+    } else {
+        section_cone(ball)?
+    };
     let sphere = ball.surface()?;
     let (axis, seam) = (sphere.frame.z, sphere.frame.x);
     let ball_frame = Frame::new(centre, seam.cross(axis), seam)?;
@@ -3665,5 +3773,47 @@ mod tests {
         );
         assert!((t.minor - 1.0).abs() < 1e-12);
         assert!((t.frame.origin.z - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn every_edge_of_a_slanted_parallelepiped_rounds_to_its_inner_box_grown() {
+        // Spanned by (8, 0, 0), (0, 4, 0) and (8, 5, 3): one corner's normals spread more than a
+        // quarter turn from their sum. Rounding every edge by r leaves the parallelepiped whose
+        // faces stand r in, spanned by w_i·(1 − 2r/h_i) for the width h_i across each pair of faces,
+        // grown by r (Steiner): V' + S'r + M'r² + 4πr³/3, where the four edges along w_i turn through
+        // a whole turn between them, so M' = π·Σ|w_i'|.
+        let w = [
+            Vec3::new(8.0, 0.0, 0.0),
+            Vec3::new(0.0, 4.0, 0.0),
+            Vec3::new(8.0, 5.0, 3.0),
+        ];
+        let body = parallelepiped(Vec3::ZERO, w).unwrap();
+        let r = 0.5;
+        let volume = w[0].cross(w[1]).dot(w[2]).abs();
+        let inner: Vec<Vec3> = (0..3)
+            .map(|i| {
+                let h = volume / w[(i + 1) % 3].cross(w[(i + 2) % 3]).norm();
+                w[i] * (1.0 - 2.0 * r / h)
+            })
+            .collect();
+        let v_in = inner[0].cross(inner[1]).dot(inner[2]).abs();
+        let s_in: f64 = (0..3)
+            .map(|i| 2.0 * inner[(i + 1) % 3].cross(inner[(i + 2) % 3]).norm())
+            .sum();
+        let m_in = PI * inner.iter().map(|x| x.norm()).sum::<f64>();
+        let edges: Vec<EdgeId> = body.edge_ids().collect();
+        let out = fillet_edges(&body, &edges, r, "f").unwrap();
+        assert!(check::check(&out).is_empty());
+        let want_v = v_in + s_in * r + m_in * r * r + 4.0 * PI * r.powi(3) / 3.0;
+        let want_a = s_in + 2.0 * m_in * r + 4.0 * PI * r * r;
+        let (v, a) = (measure::volume(&out), measure::area(&out));
+        assert!(
+            (v - want_v).abs() < 1e-9 * want_v,
+            "volume {v} against {want_v}"
+        );
+        assert!(
+            (a - want_a).abs() < 1e-9 * want_a,
+            "area {a} against {want_a}"
+        );
     }
 }
