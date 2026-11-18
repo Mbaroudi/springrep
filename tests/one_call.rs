@@ -161,8 +161,12 @@ fn a_shell_open_at_the_top_keeps_walls_of_its_thickness() {
     valid(&b);
     let v = measure::volume(&b);
     assert!((v - (480.0 - 240.0)).abs() < 1e-9, "{v}");
-    // A wall as thick as half the part leaves no hollow, and is refused.
-    assert!(edit::shell(&block, &[top], 4.0, edit::Wall::Inward, "sh").is_err());
+    // A wall as thick as half the part leaves no hollow: the cavity closes, and the block stays
+    // whole.
+    let b = edit::shell(&block, &[top], 4.0, edit::Wall::Inward, "sh").unwrap();
+    valid(&b);
+    let v = measure::volume(&b);
+    assert!((v - 480.0).abs() < 1e-9, "{v}");
 }
 
 #[test]

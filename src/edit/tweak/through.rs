@@ -11,7 +11,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::{move_faces_pinned, near_uv};
+use super::{move_faces_pinned, near_uv, pole_v};
 use crate::{
     Result,
     boolean::unify,
@@ -97,6 +97,10 @@ pub(crate) fn through(b: &Brep, paths: &HashMap<FaceId, Path>) -> Result<(Brep, 
         let Some((next, kept)) = collapse(&near, CLOSED) else {
             return Err(last);
         };
+        // Every face closed: the solid has shrunk to nothing.
+        if next.face_count() == 0 {
+            return Ok((Brep::new(), b.face_ids().collect()));
+        }
         // Faces of `near` are `cur`'s in order; each kept one maps on to its face of `next`.
         let next_from = cur
             .face_ids()
@@ -119,9 +123,10 @@ fn root(p: &mut [usize], mut i: usize) -> usize {
 }
 
 /// `b` with what has closed taken out: vertices within `eps` of each other made one, edges then
-/// running together made one, and edges shorter than `eps` gone; faces left a strip along one edge,
-/// or lying on each other face to face, taken out; and a face left running along an edge and back
-/// that nothing else uses rid of it. With, for each face of `b`, its face in the result. `None`
+/// running together made one, and edges shorter than `eps` gone, or a pole where a closed one
+/// shrank round its face's; faces left a strip along one edge, poles alone, or lying on each other
+/// face to face, taken out; and a face left running along an edge and back that nothing else uses
+/// rid of it. With, for each face of `b`, its face in the result. `None`
 /// where nothing has closed.
 fn collapse(b: &Brep, eps: f64) -> Option<(Brep, Vec<Option<FaceId>>)> {
     let eids: Vec<EdgeId> = b.edge_ids().collect();
@@ -202,7 +207,36 @@ fn collapse(b: &Brep, eps: f64) -> Option<(Brep, Vec<Option<FaceId>>)> {
     if !changed {
         return None;
     }
-    // Each face's loops as (edge, reversed) after the merges, closed edges left out.
+    // A closed edge shrunk round a pole of a face's surface (a cone's apex) becomes that pole there,
+    // a degenerate edge numbered from `ne` on.
+    let mut poles: Vec<(VertexId, PCurve)> = Vec::new();
+    let mut pole_of = |c: crate::topo::CoedgeId| -> Option<usize> {
+        let x = b.edge(b.coedge(c).edge);
+        if x.start != x.end {
+            return None;
+        }
+        let surface = &b.face(b.coedge_face(c)).surface;
+        let period = surface.u_period()?;
+        let uvs = b.coedge_uvs(c, &crate::check::coedge_params(b, c, 32));
+        let (a, z) = (uvs[0], uvs[uvs.len() - 1]);
+        let v = pole_v(surface, a.y)?;
+        if ((z.x - a.x).abs() - period).abs() > 1e-6 * period
+            || surface.eval(a.x, v).dist(b.vertex(x.start).point) > eps
+        {
+            return None;
+        }
+        poles.push((
+            x.start,
+            PCurve::Affine {
+                origin: Vec2::new(a.x, v),
+                dir: Vec2::new(z.x - a.x, 0.0),
+            },
+        ));
+        Some(ne + poles.len() - 1)
+    };
+    // Each face's loops as (edge, reversed) after the merges, closed edges left out, and whether
+    // the face lost an edge so.
+    let mut lost = vec![false; b.face_ids().count()];
     let mut loops: Vec<Vec<Vec<(usize, bool, crate::topo::CoedgeId)>>> = b
         .face_ids()
         .map(|f| {
@@ -215,7 +249,14 @@ fn collapse(b: &Brep, eps: f64) -> Option<(Brep, Vec<Option<FaceId>>)> {
                         .iter()
                         .filter_map(|&c| {
                             let co = b.coedge(c);
-                            into[co.edge.index()].map(|(e, flip)| (e, co.reversed != flip, c))
+                            match into[co.edge.index()] {
+                                Some((e, flip)) => Some((e, co.reversed != flip, c)),
+                                None => {
+                                    let pole = pole_of(c);
+                                    lost[f.index()] |= pole.is_none();
+                                    pole.map(|e| (e, false, c))
+                                }
+                            }
                         })
                         .collect::<Vec<_>>()
                 })
@@ -230,10 +271,15 @@ fn collapse(b: &Brep, eps: f64) -> Option<(Brep, Vec<Option<FaceId>>)> {
         s.sort_unstable();
         s
     };
+    let curved = |e: usize| e < ne && b.edge(eids[e]).curve.is_some();
     for f in 0..nf {
         let es = edge_set(&loops[f]);
-        // No boundary, or a strip along one edge.
-        if es.is_empty() || (es.len() == 2 && es[0] == es[1] && loops[f].len() == 1) {
+        // No boundary, or a strip along one edge, or poles alone left where an edge closed: a
+        // ball's cap shrunk onto its pole.
+        if es.is_empty()
+            || (es.len() == 2 && es[0] == es[1] && loops[f].len() == 1)
+            || (lost[f] && !es.iter().any(|&e| curved(e)))
+        {
             gone[f] = true;
         }
     }
@@ -298,6 +344,11 @@ fn collapse(b: &Brep, eps: f64) -> Option<(Brep, Vec<Option<FaceId>>)> {
     };
     let mut edges: HashMap<usize, EdgeId> = HashMap::new();
     for &i in &used {
+        if i >= ne {
+            let s = vertex(&mut out, &mut parent, poles[i - ne].0);
+            edges.insert(i, out.add_degenerate_edge(s, (0.0, 1.0)));
+            continue;
+        }
         let x = b.edge(eids[i]);
         let s = vertex(&mut out, &mut parent, x.start);
         let t = vertex(&mut out, &mut parent, x.end);
@@ -323,6 +374,7 @@ fn collapse(b: &Brep, eps: f64) -> Option<(Brep, Vec<Option<FaceId>>)> {
                 let edge = edges[&e];
                 let x = out.edge(edge);
                 let pcurve = match &x.curve {
+                    None if e >= ne => poles[e - ne].1.clone(),
                     None => b.coedge(c).pcurve.clone(),
                     Some(cv) => {
                         let from = if reversed { x.end } else { x.start };

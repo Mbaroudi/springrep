@@ -100,13 +100,39 @@ pub fn shell(s: &Brep, open: &[FaceId], thickness: f64, wall: Wall, feature: &st
 /// The points within `distance` of `s`: every face moved out that far, a hole that closes on the
 /// way followed there, each convex edge rounded at `distance` (which leaves a ball's patch at each
 /// convex corner), and over each end of a hole that closed, the dimple its rim leaves. An error
-/// where any other face beside a convex edge closes on the way, as the walls of a narrow slot.
+/// where any other face beside a convex edge closes on the way, as the walls of a narrow slot, and
+/// at a convex cone apex, whose ball is not built.
 pub fn offset(s: &Brep, distance: f64, feature: &str) -> Result<Brep> {
     if distance == 0.0 {
         return Ok(s.clone());
     }
     if distance < 0.0 {
         return Err(Error::Unsupported("an inward offset".into()));
+    }
+    // A cone's apex where its outward normal leans away from the axis is a convex point: the ball
+    // of `distance` about it would cap the moved cone.
+    let apex = s.coedge_ids().any(|c| {
+        let f = s.coedge_face(c);
+        let face = s.face(f);
+        let Surface::Cone(cone) = &face.surface else {
+            return false;
+        };
+        if s.edge(s.coedge(c).edge).curve.is_some() {
+            return false;
+        }
+        let dom = boolean::face_domain(s, f);
+        dom.interior_point().is_some_and(|uv| {
+            let p = face.surface.eval(uv.x, uv.y);
+            let n = face.surface.normal(uv.x, uv.y);
+            let off = p - cone.frame.origin;
+            let out = off - cone.frame.z * off.dot(cone.frame.z);
+            (n.dot(out) > 0.0) != face.reversed
+        })
+    });
+    if apex {
+        return Err(Error::Unsupported(
+            "an offset of a cone's apex: the ball about it is not built".into(),
+        ));
     }
     let by: HashMap<FaceId, f64> = s.face_ids().map(|f| (f, distance)).collect();
     let (moved, closed) = tweak::offset_faces_closing(s, &by)?;
@@ -561,5 +587,28 @@ mod tests {
         let side = face(&b, "e0");
         close(measure::volume(&thicken(&b, &[side], 0.5).unwrap()), 4.0);
         close(measure::volume(&thicken(&b, &[side], -1.0).unwrap()), 8.0);
+    }
+
+    #[test]
+    fn a_dome_thickened_in_by_its_radius_is_the_half_ball() {
+        // The half ball of radius 5: its dome moved 5 in closes on the centre, and the solid
+        // between them is the half ball itself, 250π/3.
+        let meridian = Profile::outline(vec![
+            NamedSegment::line(Vec2::new(0.0, 0.0), Vec2::new(5.0, 0.0), "base"),
+            NamedSegment::arc(Vec2::ZERO, 5.0, 0.0, PI / 2.0, "sheet"),
+            NamedSegment::line(Vec2::new(0.0, 5.0), Vec2::new(0.0, 0.0), "axis"),
+        ]);
+        let plane = Frame::new(Point3::ZERO, -Vec3::Y, Vec3::X).unwrap();
+        let h = revolve(&meridian, &plane, Point3::ZERO, Vec3::Z, TAU, "p").unwrap();
+        let out = thicken(&h, &[face(&h, "sheet")], -5.0).unwrap();
+        close(measure::volume(&out), 250.0 * PI / 3.0);
+    }
+
+    #[test]
+    fn a_cone_s_apex_is_refused_by_an_offset() {
+        let c = crate::primitive::cone(&Frame::WORLD, 3.0, 0.0, 4.0, "c").unwrap();
+        assert!(
+            matches!(offset(&c, 1.0, "o"), Err(Error::Unsupported(why)) if why.contains("apex"))
+        );
     }
 }

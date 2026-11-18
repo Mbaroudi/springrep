@@ -290,6 +290,47 @@ fn a_puck_s_rounds_moved_in_by_their_radius_or_more_close() {
     }
 }
 
+// The cone of base radius 6 at z 0 and apex at z 12, its tip rounded by the ball of radius 1
+// tangent to its side, every face moved in by 1.5: the ball closes onto the moved side's apex at
+// z 12 − 1.5√5, leaving the plain cone of height h = 10.5 − 1.5√5 and base radius h/2, πh³/12.
+#[test]
+fn a_ball_tip_moved_in_past_its_radius_closes_onto_the_cone_s_apex() {
+    use crate::profile::NamedSegment;
+    use std::f64::consts::{FRAC_PI_2, PI, TAU};
+    let s5 = 5f64.sqrt();
+    let centre = Vec2::new(0.0, 12.0 - s5);
+    let touch = Vec2::new(2.0 / s5, 12.0 - 4.0 / s5);
+    let from = (touch.y - centre.y).atan2(touch.x - centre.x);
+    let half = Profile::outline(vec![
+        NamedSegment::line(Vec2::new(0.0, 0.0), Vec2::new(6.0, 0.0), "base"),
+        NamedSegment::line(Vec2::new(6.0, 0.0), touch, "side"),
+        NamedSegment::arc(centre, 1.0, from, FRAC_PI_2 - from, "tip"),
+        NamedSegment::line(Vec2::new(0.0, 13.0 - s5), Vec2::new(0.0, 0.0), "axis"),
+    ]);
+    let plane = Frame::new(Point3::ZERO, -Vec3::Y, Vec3::X).unwrap();
+    let b = sweep::revolve(&half, &plane, Point3::ZERO, Vec3::Z, TAU, "cone").unwrap();
+    let by: HashMap<FaceId, f64> = b.face_ids().map(|f| (f, -1.5)).collect();
+    let out = offset_faces(&b, &by).unwrap();
+    assert!(check::check(&out).is_empty(), "{:?}", check::check(&out));
+    let h = 10.5 - 1.5 * s5;
+    let want = PI * h.powi(3) / 12.0;
+    assert!((measure::volume(&out) - want).abs() < 1e-7 * want);
+    assert_eq!(out.face_count(), 2);
+}
+
+// The cone of base radius 3 at z 0 and apex at z 4 with every face moved out by 1: the side's
+// apex rises 1/sin α = 5/3, α = atan(3/4), and the base drops to z −1, a cone 20/3 tall of base
+// radius 5, 500π/9.
+#[test]
+fn a_cone_moved_out_carries_its_apex_to_the_moved_cone_s() {
+    let c = crate::primitive::cone(&Frame::WORLD, 3.0, 0.0, 4.0, "cone").unwrap();
+    let by: HashMap<FaceId, f64> = c.face_ids().map(|f| (f, 1.0)).collect();
+    let out = offset_faces(&c, &by).unwrap();
+    assert!(check::check(&out).is_empty(), "{:?}", check::check(&out));
+    let want = 500.0 * std::f64::consts::PI / 9.0;
+    assert!((measure::volume(&out) - want).abs() < 1e-7 * want);
+}
+
 // A plate of radius 8 from z −4 to 0 under a post of radius 3 up to z 8, the concave edge between
 // them filleted 2, every face moved out by 3: the fillet's tube closes and the plate's top meets
 // the post square. A plate of radius 11 from z −7 to 3 and a post of radius 6 from 3 to 11.

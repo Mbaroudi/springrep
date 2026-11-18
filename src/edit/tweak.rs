@@ -178,7 +178,8 @@ pub(crate) fn planes_or_faces(b: &Brep, moved: &HashMap<FaceId, Frame>) -> Resul
     }
 }
 
-/// `b` with each face of `by` moved that far along its outward normal, onto its offset surface.
+/// `b` with each face of `by` moved that far along its outward normal, onto its offset surface;
+/// empty where every face closes on the way.
 pub fn offset_faces(b: &Brep, by: &HashMap<FaceId, f64>) -> Result<Brep> {
     offset_faces_closing(b, by).map(|(out, _)| out)
 }
@@ -750,6 +751,34 @@ fn near_uv(s: &Surface, p: Point3, last: Option<Vec2>) -> Vec2 {
     )
 }
 
+/// The `v` of the pole of `s` nearest `near`, where `u` runs round the axis and the surface closes
+/// on it: a cone's apex, a sphere's pole. `None` for a surface with no such pole in closed form.
+fn pole_v(s: &Surface, near: f64) -> Option<f64> {
+    match s {
+        Surface::Cone(c) if c.half_angle.sin().abs() > tol::ANGULAR => {
+            Some(-c.radius / c.half_angle.sin())
+        }
+        Surface::Sphere(_) => Some(std::f64::consts::FRAC_PI_2.copysign(near)),
+        _ => None,
+    }
+}
+
+/// A pole's pcurve on `from` carried onto the pole of `to`, the surface it moved to: a moved cone's
+/// apex lies at another `v` than the old one's.
+fn on_pole(from: &Surface, to: &Surface, pcurve: &PCurve) -> PCurve {
+    if let PCurve::Affine { origin, dir } = pcurve
+        && dir.y == 0.0
+        && let (Some(old), Some(new)) = (pole_v(from, origin.y), pole_v(to, origin.y))
+        && (origin.y - old).abs() <= 1e-9 * (1.0 + old.abs())
+    {
+        return PCurve::Affine {
+            origin: Vec2::new(origin.x, new),
+            dir: *dir,
+        };
+    }
+    pcurve.clone()
+}
+
 /// `b` with each face of `moved` on its new surface (natural normal on the side of its old one),
 /// its topology kept: every vertex goes where its faces' surfaces meet, and every edge becomes the
 /// meeting of its two faces' surfaces between its new vertices (a straight one stays a line where
@@ -808,8 +837,10 @@ pub(crate) fn move_faces_pinned(
         if edge.curve.is_some() || !moved.contains_key(&f) {
             continue;
         }
-        if let PCurve::Affine { origin, dir } = &co.pcurve {
-            let uv = *origin + *dir * edge.range.0;
+        if let PCurve::Affine { origin, dir } =
+            on_pole(&b.face(f).surface, surface_of(f), &co.pcurve)
+        {
+            let uv = origin + dir * edge.range.0;
             poles.insert(edge.start, surface_of(f).eval(uv.x, uv.y));
         }
     }
@@ -1046,14 +1077,15 @@ pub(crate) fn move_faces_pinned(
                     // A degenerate edge (a pole) keeps its own line across the parameter plane,
                     // and the next coedge carries on from its end.
                     if x.curve.is_none() {
-                        if let PCurve::Affine { origin, dir } = &co.pcurve {
+                        let pcurve = on_pole(&face.surface, &surface, &co.pcurve);
+                        if let PCurve::Affine { origin, dir } = &pcurve {
                             let t = if reversed { x.range.0 } else { x.range.1 };
                             last = Some(*origin + *dir * t);
                         }
                         return CoedgeSpec {
                             edge,
                             reversed,
-                            pcurve: co.pcurve.clone(),
+                            pcurve,
                         };
                     }
                     let pcurve = if changed || rebuilt[co.edge.index()] {

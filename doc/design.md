@@ -1012,8 +1012,11 @@ into a cone by its half angle. The furthest the solid gets with its topology kep
 bisection. There vertices closer than ten times the tolerance are made one, edges that then run
 together one, and edges shorter than that dropped; a face left a strip along a single edge, or lying
 on another face to face, is taken out, and a face left running along an edge and back that nothing
-else uses loses it. The move goes on from there with every vertex settled again where its faces
-meet, and faces left on one surface are merged at the end. An event that needs more, as an edge that
+else uses loses it. A closed edge shrunk round a cone's apex or a sphere's pole becomes that pole on
+the face whose surface closes there, and a face left only poles (a ball's cap shrunk onto its pole)
+is taken out; where every face closes, the solid is empty. The move goes on from there with every
+vertex settled again where its faces meet, a pole put on its moved surface's pole, and faces left on
+one surface are merged at the end. An event that needs more, as an edge that
 would turn through a vertex of four faces, ends it with the error the move gave.
 
 ## Moving whole solids
