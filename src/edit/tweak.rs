@@ -725,6 +725,44 @@ fn settle(p: Point3, on: &[&Surface]) -> Option<Point3> {
     None
 }
 
+/// The point nearest `p` where the two surfaces of `on` meet, for a point [`settle`] cannot move:
+/// where they are tangent at `p` (a wall moved off the round it ran into), their normals give its
+/// steps one direction and they turn back and forth along it. Points on the faces of `fixed`, which
+/// stay where they are, come before the rest.
+fn meet_near(b: &Brep, p: Point3, on: &[&Surface], fixed: &[FaceId]) -> Option<Point3> {
+    let [s0, s1] = on else { return None };
+    let bx = crate::measure::bbox(b);
+    let reach = bx.min.dist(bx.max) + 1.0;
+    let pad = Vec3::new(reach, reach, reach);
+    let region = crate::math::Aabb {
+        min: bx.min - pad,
+        max: bx.max + pad,
+    };
+    let crate::boolean::ssi::Ssi::Curves { curves, points } =
+        crate::boolean::ssi::intersect(s0, s1, &region, &mut || vec![p]).ok()?
+    else {
+        return None;
+    };
+    let domains: Vec<_> = fixed
+        .iter()
+        .map(|&f| crate::boolean::face_domain(b, f))
+        .collect();
+    let on_fixed = |q: Point3| {
+        domains
+            .iter()
+            .all(|d| !matches!(d.locate(q), crate::boolean::domain::Where::Outside))
+    };
+    curves
+        .iter()
+        .map(|sc| sc.curve.eval(sc.curve.project(p, sc.range.0, sc.range.1)))
+        .chain(points)
+        .min_by(|q, r| {
+            (!on_fixed(*q), q.dist(p))
+                .partial_cmp(&(!on_fixed(*r), r.dist(p)))
+                .expect("finite")
+        })
+}
+
 /// The circle through three points, if they are not on a line.
 fn circle_through(a: Point3, b: Point3, c: Point3) -> Option<crate::geom::Circle> {
     let (ab, ac) = (b - a, c - a);
@@ -859,7 +897,15 @@ pub(crate) fn move_faces_pinned(
             on.iter()
                 .all(|s| crate::boolean::csi::signed_distance(s, q).abs() <= 1e-2 * tol::LINEAR)
         });
-        let Some(q) = pinned.or_else(|| settle(p, &on)) else {
+        let fixed: Vec<FaceId> = faces
+            .iter()
+            .copied()
+            .filter(|f| !moved.contains_key(f))
+            .collect();
+        let Some(q) = pinned
+            .or_else(|| settle(p, &on))
+            .or_else(|| meet_near(b, p, &on, &fixed))
+        else {
             return unsupported("moving a corner whose faces' new surfaces do not meet near it");
         };
         shifted[v.index()] = q.dist(p) > 0.0;
@@ -959,7 +1005,12 @@ pub(crate) fn move_faces_pinned(
         // The old edge's middle and direction, carried onto both new surfaces.
         let mid_t = 0.5 * (x.range.0 + x.range.1);
         let (old_mid, old_dir) = old.d1(mid_t);
-        let Some(mid) = settle(old_mid, &on) else {
+        let fixed: Vec<FaceId> = faces
+            .iter()
+            .copied()
+            .filter(|f| !moved.contains_key(f))
+            .collect();
+        let Some(mid) = settle(old_mid, &on).or_else(|| meet_near(b, old_mid, &on, &fixed)) else {
             return unsupported("moving an edge whose faces' new surfaces do not meet near it");
         };
         let mut region = old.bbox(x.range.0, x.range.1);

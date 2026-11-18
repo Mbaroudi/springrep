@@ -384,6 +384,29 @@ fn a_ball_s_flat_closed_by_its_sphere_shrinking_through_it_is_taken_out() {
     assert_eq!(out.face_count(), 1);
 }
 
+// A cylinder of radius 5 from z 0 to 10 capped by the half ball of radius 5 about (0, 0, 10), its
+// side and base moved in by 1 and its dome kept: the side, tangent to the dome where they meet,
+// runs on as the cylinder of radius 4 up into the dome until it meets the sphere at z 13. Left is
+// that cylinder from z 1 to 13 and the ball's cap above it, 2 high: 192π + 52π/3.
+#[test]
+fn a_wall_moved_off_the_dome_it_ran_into_tangentially_runs_on_to_meet_it() {
+    use crate::profile::NamedSegment;
+    use std::f64::consts::{FRAC_PI_2, PI, TAU};
+    let half = Profile::outline(vec![
+        NamedSegment::line(Vec2::new(0.0, 0.0), Vec2::new(5.0, 0.0), "base"),
+        NamedSegment::line(Vec2::new(5.0, 0.0), Vec2::new(5.0, 10.0), "side"),
+        NamedSegment::arc(Vec2::new(0.0, 10.0), 5.0, 0.0, FRAC_PI_2, "dome"),
+        NamedSegment::line(Vec2::new(0.0, 15.0), Vec2::new(0.0, 0.0), "axis"),
+    ]);
+    let plane = Frame::new(Point3::ZERO, -Vec3::Y, Vec3::X).unwrap();
+    let b = sweep::revolve(&half, &plane, Point3::ZERO, Vec3::Z, TAU, "box").unwrap();
+    let by = HashMap::from([(face(&b, "side"), -1.0), (face(&b, "base"), -1.0)]);
+    let out = offset_faces(&b, &by).unwrap();
+    assert!(check::check(&out).is_empty(), "{:?}", check::check(&out));
+    let want = 192.0 * PI + 52.0 * PI / 3.0;
+    assert!((measure::volume(&out) - want).abs() < 1e-7 * want);
+}
+
 // A plate of radius 8 from z −4 to 0 under a post of radius 3 up to z 8, the concave edge between
 // them filleted 2, every face moved out by 3: the fillet's tube closes and the plate's top meets
 // the post square. A plate of radius 11 from z −7 to 3 and a post of radius 6 from 3 to 11.

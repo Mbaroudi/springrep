@@ -1020,7 +1020,11 @@ along its outward normal. Each moved face goes onto a new surface. Each vertex g
 new surfaces meet, found by Gauss–Newton steps along their normals from the old point: the least
 move where they leave it free (a seam's end lies on only two faces), their one meeting where three
 or more pin it. Faces tangent at a vertex (a round and the wall it runs into) stay tangent when both
-move one distance, so their equal rows count once. Each edge becomes its two faces' new meeting
+move one distance, so their equal rows count once. Where only one of two tangent faces moves (a
+capsule's side moved in, its dome kept), the steps turn back and forth along their one normal; the
+point is then the nearest on the curves the two surfaces meet in, those on a face that stays where
+it is first (the moved side's cylinder meets the dome's sphere in two circles, one on the dome and
+one below it, equally far). Each edge becomes its two faces' new meeting
 between its new vertices: a line where the line through them lies on both, else the branch of their
 intersection (closed form where one exists, traced otherwise) through the old edge's middle carried
 onto both, trimmed at the vertices and laid the way the old edge ran. A seam keeps its parameter
