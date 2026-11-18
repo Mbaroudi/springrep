@@ -372,7 +372,9 @@ at all, at an angle the tolerance cannot place: an insert placed by a pose round
 cylinders for half a millimetre at each tip. Moved onto one surface, the part sits in its seat, and
 the volume moved is at most 1e-6 mm times the face's area. Faces up to 1e-4 mm apart are moved too
 where they cross at an angle below `TANGENT`: a cylinder 1 µm off its seat's axis at 24.5 mm radius
-crosses it at 4e-8 rad. Where moving all of them at once leaves a corner whose surfaces do not meet,
+crosses it at 4e-8 rad. Two planes are not: they meet along a line found in closed form at any
+angle, and the wedge between them can be all the material there is (a cube's top and a plane 1e-6
+off it across the top share a wedge 5e-6 mm thick at its end, which moving the plane took away). Where moving all of them at once leaves a corner whose surfaces do not meet,
 each is tried alone and kept if the solid still closes; a face tangent to a neighbour cannot move
 off it, and is left for the boolean. Planes within the tolerance of each other over both faces are
 one plane however small the angle between them, and planes that cross a hair off parallel meet along

@@ -550,6 +550,32 @@ fn flush_faces_crossing_at_a_hair_meet_along_their_line() {
     }
 }
 
+#[test]
+fn a_plane_a_millionth_off_a_cube_top_cuts_a_wedge() {
+    // The half-space above z = s·y, s = 1e-6, as a 40 × 40 × 20 block, against the cube
+    // (−5, −5, −10)–(5, 5, 0): the plane crosses the top along the x axis, at a sine of just under
+    // the tangent threshold, and lies 2e-5 mm off it at the block's edges. The common part is a
+    // wedge under the top's half y < 0, 5·s thick at y = −5, and nothing of it may be moved away.
+    let s = 1e-6;
+    let cube = block("cube", [-5.0, -5.0, -10.0], [5.0, 5.0, 0.0]);
+    let f = Frame::from_axis(Vec3::ZERO, Vec3::new(0.0, -s, 1.0)).unwrap();
+    let corner = f.origin - f.x * 20.0 - f.y * 20.0;
+    let above = extrude(
+        &Profile::rect(Vec2::new(20.0, 20.0), 40.0, 40.0),
+        &Frame::new(corner, f.z, f.x).unwrap(),
+        20.0,
+        "above",
+    )
+    .unwrap();
+    let common = intersection(&cube, &above).unwrap();
+    let wedge = 10.0 * 5.0 * 5.0 * s / 2.0;
+    let area = 50.0 + 50.0 * (1.0 + s * s).sqrt() + 10.0 * 5.0 * s + 2.0 * (5.0 * 5.0 * s / 2.0);
+    assert_solid(&common, wedge, area);
+    let cut = difference(&cube, &above).unwrap();
+    assert!(check::check(&cut).is_empty());
+    assert!((measure::volume(&cut) - (1000.0 - wedge)).abs() <= 1e-9);
+}
+
 /// Two cylinders micrometres across crossing at an odd angle: a loop's parameter images meet to a
 /// gap far below the tolerance in space, however large it is in radians on so small a radius.
 /// Valid every way round, the four results agreeing: |a ∪ b| = |a| + |b| − |a ∩ b| and so on.
