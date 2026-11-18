@@ -27,7 +27,8 @@ fn moving_sides(ctx: &Ctx, e: usize) -> Vec<usize> {
     (0..2).filter(|&k| !ctx.faces[sides[k].1].still).collect()
 }
 
-/// The sides of edge `e` whose grazing curves are found: a seam's one face once.
+/// The sides of edge `e` whose grazing curves are found: a seam's one face once, and of an edge
+/// the two faces meet smoothly along, the one face's curve, which is the other's too.
 fn grazing_sides(ctx: &Ctx, e: usize) -> Vec<usize> {
     let sides = &ctx.edges[e].sides;
     if sides.len() == 2 && sides[0].1 == sides[1].1 {
@@ -37,7 +38,22 @@ fn grazing_sides(ctx: &Ctx, e: usize) -> Vec<usize> {
             vec![0]
         };
     }
-    moving_sides(ctx, e)
+    let moving = moving_sides(ctx, e);
+    if moving.len() == 2 && smooth(ctx, e) {
+        return vec![0];
+    }
+    moving
+}
+
+/// Whether the two faces beside edge `e` have one normal all along it.
+fn smooth(ctx: &Ctx, e: usize) -> bool {
+    let edge = &ctx.edges[e];
+    (0..=16).all(|k| {
+        let t = edge.range.0 + (edge.range.1 - edge.range.0) * k as f64 / 16.0;
+        let a = ctx.normal_on(edge.sides[0].0, edge.sides[0].1, t);
+        let b = ctx.normal_on(edge.sides[1].0, edge.sides[1].1, t);
+        a.dot(b) >= 1.0 - 1e-9
+    })
 }
 
 /// The rate face `side` of edge `e` moves outward at the edge's point `t` at `tau`.
@@ -290,14 +306,26 @@ fn piece(ctx: &mut Ctx, e: usize, side: usize, pts: Vec<Vec2>, ends: (usize, usi
         v1: ends.1,
         tol: tol::LINEAR,
     });
-    let face = ctx.edges[e].sides[side].1;
-    ctx.grazes.push(Graze {
-        edge: e,
-        face,
-        pts,
-        piece: ctx.pieces.len() - 1,
-        ends,
-    });
+    let piece = ctx.pieces.len() - 1;
+    let mut faces = vec![ctx.edges[e].sides[side].1];
+    // Where the faces meet smoothly the one curve is where both graze.
+    let sides = &ctx.edges[e].sides;
+    if sides.len() == 2
+        && sides[0].1 != sides[1].1
+        && moving_sides(ctx, e).len() == 2
+        && smooth(ctx, e)
+    {
+        faces.push(sides[1 - side].1);
+    }
+    for face in faces {
+        ctx.grazes.push(Graze {
+            edge: e,
+            face,
+            pts: pts.clone(),
+            piece,
+            ends,
+        });
+    }
     Ok(())
 }
 
@@ -313,7 +341,7 @@ pub(super) fn faces(ctx: &mut Ctx, feature: &str) -> Result<()> {
         let reach = 1e-3 * (g.hi.x - g.lo.x).min(g.hi.y - g.lo.y);
         let regions = plane.regions(reach)?;
         let map = |q: Vec2| ctx.pose(q.x).point(ctx.edges[e].curve.eval(q.y));
-        let sheet = region::sheet(ctx, &plane, &map)?;
+        let sheet = region::sheet(ctx, &plane, &map, &|_| true)?;
         let mut made = Vec::new();
         for region in &regions {
             let at = plane.inside(region, reach).ok_or_else(|| {
@@ -342,10 +370,13 @@ pub(super) fn faces(ctx: &mut Ctx, feature: &str) -> Result<()> {
                 } else {
                     -normal
                 };
+                let (face, folds) =
+                    region::face(ctx, &plane, region, &sheet, at, outward, feature)?;
                 made.push(Side {
-                    face: region::face(ctx, &plane, region, &sheet, at, outward, feature)?,
+                    face,
                     owner: f,
                     whole: fronts.len() == 1,
+                    folds,
                 });
             }
         }

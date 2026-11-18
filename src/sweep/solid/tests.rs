@@ -379,3 +379,19 @@ fn a_cube_carried_round_a_circle_is_a_cube_turned() {
     let got = measure::volume(&b);
     assert!(rel(got, 1.0 + 2.5 * angle) < 1e-7, "{got}");
 }
+
+// Slid along x in its own plane, a torus about z grazes along its whole meridians at u = ±90°,
+// where the rate `cos u cos v` vanishes for every v. Under a motion whose velocity may change that
+// is refused, not built wrong.
+#[test]
+fn a_torus_grazing_along_a_whole_meridian_is_refused() {
+    let ring = crate::primitive::torus(&Frame::WORLD, 2.0, 0.5, "ring").unwrap();
+    let motion = Motion::Then(
+        Box::new(Motion::Slide(Vec3::new(1.0, 0.0, 0.0))),
+        Box::new(Motion::Slide(Vec3::new(2.0, 0.0, 0.0))),
+    );
+    assert!(matches!(
+        solid(&ring, &motion, "sw"),
+        Err(crate::Error::Unsupported(_))
+    ));
+}

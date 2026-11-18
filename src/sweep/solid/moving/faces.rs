@@ -19,7 +19,7 @@ pub(super) fn faces(ctx: &mut Ctx, feature: &str) -> Result<()> {
         if ctx.faces[f].still {
             continue;
         }
-        if let Some(map) = CharMap::of(ctx, f) {
+        for map in CharMap::of(ctx, f)? {
             made.extend(branch(ctx, &map, f, feature)?);
         }
     }
@@ -63,6 +63,10 @@ fn branch(ctx: &Ctx, map: &CharMap, f: usize, feature: &str) -> Result<Vec<Side>
                 .curve
                 .as_ref()
                 .ok_or_else(|| Error::Numerical("a grazing curve with no curve".into()))?;
+            let mid = curve.eval(0.5 * (pg.range.0 + pg.range.1));
+            if !map.holds(tau, ctx.faces[f].surface.project(mid)) {
+                continue;
+            }
             // Each end read on the side of a seam its piece reaches it from.
             let near = |t: f64| curve.eval(pg.range.0 + (pg.range.1 - pg.range.0) * t);
             let hint_a = coord_of(ctx, map, f, tau, near(0.05), None);
@@ -86,6 +90,7 @@ fn branch(ctx: &Ctx, map: &CharMap, f: usize, feature: &str) -> Result<Vec<Side>
             any = true;
         }
     }
+    let mut seen: Vec<(usize, Vec2)> = Vec::new();
     for gz in ctx.grazes.iter().filter(|g| g.face == f) {
         let edge = &ctx.edges[gz.edge];
         for &(c, side_face) in &edge.sides {
@@ -95,6 +100,10 @@ fn branch(ctx: &Ctx, map: &CharMap, f: usize, feature: &str) -> Result<Vec<Side>
             let uvs = ctx
                 .body
                 .coedge_uvs(c, &gz.pts.iter().map(|q| q.y).collect::<Vec<f64>>());
+            let k = gz.pts.len() / 2;
+            if !map.holds(gz.pts[k].x, uvs[k]) {
+                continue;
+            }
             let pts = gz
                 .pts
                 .iter()
@@ -102,6 +111,16 @@ fn branch(ctx: &Ctx, map: &CharMap, f: usize, feature: &str) -> Result<Vec<Side>
                 .map(|(q, &uv)| map.coord(q.x, uv).map(|x| Vec2::new(q.x, x)))
                 .collect::<Option<Vec<Vec2>>>()
                 .ok_or_else(|| Error::Numerical("a grazing curve runs off its face".into()))?;
+            // A seam whose two sides differ only in the parameter the plane does not hold (a
+            // torus's seam along `u`) is one link.
+            let first = pts[0];
+            if seen
+                .iter()
+                .any(|s: &(usize, Vec2)| s.0 == gz.piece && s.1.dist(first) <= 0.0)
+            {
+                continue;
+            }
+            seen.push((gz.piece, first));
             let a = plane.node(pts[0], Some(gz.ends.0));
             let b = plane.node(*pts.last().expect("a piece has points"), Some(gz.ends.1));
             plane.link(a, b, pts, Along::Piece(gz.piece, true));
@@ -116,6 +135,18 @@ fn branch(ctx: &Ctx, map: &CharMap, f: usize, feature: &str) -> Result<Vec<Side>
     let place = |q: Vec2| -> Point3 {
         let p = map.point(q.x, q.y).unwrap_or(Point3::ZERO);
         ctx.pose(q.x).point(p)
+    };
+    // The surface need follow the map only where the curve's point is on or near the face: beside
+    // it the point may run off far, as where a cylinder's curve leaves past its end.
+    let (dlo, dhi) = (ctx.faces[f].dom.lo, ctx.faces[f].dom.hi);
+    let margin = (dhi - dlo) * 0.1;
+    let care = |q: Vec2| {
+        map.uv(q.x, q.y).is_some_and(|uv| {
+            uv.x >= dlo.x - margin.x
+                && uv.x <= dhi.x + margin.x
+                && uv.y >= dlo.y - margin.y
+                && uv.y <= dhi.y + margin.y
+        })
     };
     // One surface for the whole plane where the curve's map holds over all of it; else one for
     // each region.
@@ -138,20 +169,22 @@ fn branch(ctx: &Ctx, map: &CharMap, f: usize, feature: &str) -> Result<Vec<Side>
         let side = if map.rise(at.x, uv) >= 0.0 { 1.0 } else { -1.0 };
         let outward = ctx.pose(at.x).vector(map.normal(uv) * side);
         if sheet.is_none() {
-            sheet = Some(region::sheet(ctx, &plane, &place).ok());
+            sheet = Some(region::sheet(ctx, &plane, &place, &care).ok());
         }
         let own;
         let sh = match &sheet {
             Some(Some(s)) => s,
             _ => {
-                own = region::sheet_of(ctx, &plane, region, &place)?;
+                own = region::sheet_of(ctx, &plane, region, &place, &care)?;
                 &own
             }
         };
+        let (face, folds) = region::face(ctx, &plane, region, sh, at, outward, feature)?;
         made.push(Side {
-            face: region::face(ctx, &plane, region, sh, at, outward, feature)?,
+            face,
             owner: f,
             whole: true,
+            folds,
         });
     }
     Ok(made)

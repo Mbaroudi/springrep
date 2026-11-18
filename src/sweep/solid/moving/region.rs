@@ -42,6 +42,10 @@ pub(super) struct Plane {
 }
 
 impl Plane {
+    pub(super) fn scale(&self) -> Vec2 {
+        self.scale
+    }
+
     pub(super) fn new(scale: Vec2) -> Plane {
         Plane {
             nodes: Vec::new(),
@@ -100,13 +104,15 @@ pub(super) struct Sheet<'a> {
 
 /// The surface through `map` over the links of `plane` that stand for pieces, one for every face of
 /// the plane so the faces of one curve's sweep lie on one surface.
+/// `care` says where in the plane the surface must follow the map: off it, the map may run away.
 pub(super) fn sheet<'a>(
     ctx: &Ctx,
     plane: &Plane,
     map: &'a dyn Fn(Vec2) -> Point3,
+    care: &dyn Fn(Vec2) -> bool,
 ) -> Result<Sheet<'a>> {
     let all: Vec<usize> = (0..plane.links.len()).collect();
-    sheet_over(ctx, plane, &all, map)
+    sheet_over(ctx, plane, &all, map, care)
 }
 
 /// The surface through `map` over `region` of `plane` alone, where the map runs off over the
@@ -116,9 +122,10 @@ pub(super) fn sheet_of<'a>(
     plane: &Plane,
     region: &Region,
     map: &'a dyn Fn(Vec2) -> Point3,
+    care: &dyn Fn(Vec2) -> bool,
 ) -> Result<Sheet<'a>> {
     let links: Vec<usize> = region.loops.iter().flatten().map(|x| x.0).collect();
-    sheet_over(ctx, plane, &links, map)
+    sheet_over(ctx, plane, &links, map, care)
 }
 
 fn sheet_over<'a>(
@@ -126,6 +133,7 @@ fn sheet_over<'a>(
     plane: &Plane,
     links: &[usize],
     map: &'a dyn Fn(Vec2) -> Point3,
+    care: &dyn Fn(Vec2) -> bool,
 ) -> Result<Sheet<'a>> {
     let mut lo = Vec2::new(f64::INFINITY, f64::INFINITY);
     let mut hi = Vec2::new(f64::NEG_INFINITY, f64::NEG_INFINITY);
@@ -139,13 +147,13 @@ fn sheet_over<'a>(
         return Err(Error::Numerical("a face of a sweep spans nothing".into()));
     }
     Ok(Sheet {
-        surface: fit::surface(map, lo, hi, ctx.size)?,
+        surface: fit::surface(map, lo, hi, ctx.size, care)?,
         map,
     })
 }
 
 /// The face `region` of `plane` makes on `sheet`, its outside the way `outward` points at the
-/// region's point `at`.
+/// region's point `at`, and whether it folds back on itself.
 pub(super) fn face(
     ctx: &Ctx,
     plane: &Plane,
@@ -154,7 +162,7 @@ pub(super) fn face(
     at: Vec2,
     outward: Vec3,
     feature: &str,
-) -> Result<OutFace> {
+) -> Result<(OutFace, bool)> {
     let (surface, map) = (sheet.surface.clone(), sheet.map);
     let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
     for &(k, _) in region.loops.iter().flatten() {
@@ -167,9 +175,63 @@ pub(super) fn face(
         1e-6 * (ctx.span.1 - ctx.span.0),
         1e-6 * (hi - lo).max(1e-300),
     );
-    let dx = map(at + Vec2::new(h.x, 0.0)) - map(at - Vec2::new(h.x, 0.0));
-    let dy = map(at + Vec2::new(0.0, h.y)) - map(at - Vec2::new(0.0, h.y));
-    let flip = dx.cross(dy).dot(outward) < 0.0;
+    let normal = |q: Vec2| {
+        let dx = map(q + Vec2::new(h.x, 0.0)) - map(q - Vec2::new(h.x, 0.0));
+        let dy = map(q + Vec2::new(0.0, h.y)) - map(q - Vec2::new(0.0, h.y));
+        dx.cross(dy)
+    };
+    let here = normal(at);
+    let flip = here.dot(outward) < 0.0;
+    // Whether the map turns over inside the face, which then folds back on itself: the envelope
+    // has a cusp there, past which it lies inside the solid. Neighbouring samples are compared,
+    // as the normal of a face winding round may itself turn right round.
+    let (xlo, xhi) = (ctx.span.0, ctx.span.1);
+    let n = 64;
+    let sample = |i: usize, j: usize| {
+        let q = Vec2::new(
+            xlo + (xhi - xlo) * i as f64 / n as f64,
+            lo + (hi - lo) * j as f64 / n as f64,
+        );
+        graph::holds(&plane.links, region, q).then(|| normal(q))
+    };
+    let grid: Vec<Vec<Option<Vec3>>> = (1..n)
+        .map(|i| (1..n).map(|j| sample(i, j)).collect())
+        .collect();
+    let mut folds = false;
+    for i in 0..grid.len() {
+        for j in 0..grid[i].len() {
+            let Some(a) = grid[i][j] else { continue };
+            let next = [
+                grid.get(i + 1).and_then(|r| r[j]),
+                grid[i].get(j + 1).copied().flatten(),
+            ];
+            if next.iter().flatten().any(|b| a.dot(*b) < 0.0) {
+                folds = true;
+            }
+        }
+    }
+    // A region far thinner than it is long, as where a cylinder's grazing curve runs nearly along
+    // its rulings and spans almost no `u`, is a sliver of the plane on a surface stretched across
+    // it; such a face is refused.
+    let ring: Vec<Vec2> = graph::outline(&plane.links, region)
+        .iter()
+        .map(|p| Vec2::new(p.x / plane.scale().x, p.y / plane.scale().y))
+        .collect();
+    let area: f64 = (0..ring.len())
+        .map(|i| ring[i].cross(ring[(i + 1) % ring.len()]))
+        .sum::<f64>()
+        .abs()
+        * 0.5;
+    let perimeter: f64 = (0..ring.len())
+        .map(|i| ring[i].dist(ring[(i + 1) % ring.len()]))
+        .sum();
+    if area < 1e-4 * perimeter * perimeter {
+        return Err(Error::Unsupported(
+            "a sweep along a motion whose velocity changes on the body, where a face's grazing \
+             curve runs nearly along the face's second parameter"
+                .into(),
+        ));
+    }
     let fitted = matches!(surface, Surface::Nurbs(_));
     let uv_of = |q: Vec2, p: Point3| if fitted { q } else { surface.project(p) };
     let uv = uv_of(at, map(at));
@@ -229,12 +291,13 @@ pub(super) fn face(
         loops.push(trims);
     }
     let names: BTreeSet<FaceName> = [FaceName::new(feature, FaceName::SIDE)].into();
-    Ok(OutFace {
+    let face = OutFace {
         surface,
         reversed,
         names,
         loops,
         memo: None,
         side: None,
-    })
+    };
+    Ok((face, folds))
 }

@@ -162,6 +162,17 @@ pub(super) fn regions(nodes: &[Vec2], links: &[Link], reach: f64) -> Result<Vec<
     Ok(regions)
 }
 
+/// The points of `region`'s outer loop in order.
+pub(super) fn outline(links: &[Link], region: &Region) -> Vec<Vec2> {
+    points(links, &region.loops[0])
+}
+
+/// Whether `p` lies inside `region`: inside its outer loop and outside its holes.
+pub(super) fn holds(links: &[Link], region: &Region, p: Vec2) -> bool {
+    let polys: Vec<Vec<Vec2>> = region.loops.iter().map(|l| points(links, l)).collect();
+    contains(&polys[0], p) && !polys[1..].iter().any(|h| contains(h, p))
+}
+
 /// A point inside `region`, a hair to the left of one of its links.
 pub(super) fn inside(links: &[Link], region: &Region, reach: f64) -> Option<Vec2> {
     let polys: Vec<Vec<Vec2>> = region.loops.iter().map(|l| points(links, l)).collect();

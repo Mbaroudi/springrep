@@ -71,9 +71,13 @@ fn within(body: &Brep, motion: &Motion, feature: &str, whole: Span, depth: usize
     let span = whole.at;
     let mut ctx = Ctx::new(body, motion, whole)?;
     ctx.laterals(feature)?;
-    match ctx.assemble(None) {
-        Err(Error::InvalidResult(_)) => {}
-        other => return other,
+    // A face that folds back on itself cannot bound the whole: what the faces moving outward
+    // sweep is united instead.
+    if !ctx.sides.iter().any(|s| s.whole && s.folds) {
+        match ctx.assemble(None) {
+            Err(Error::InvalidResult(_)) => {}
+            other => return other,
+        }
     }
     let mut parts = Vec::new();
     for f in 0..ctx.faces.len() {
@@ -165,6 +169,8 @@ struct Side {
     face: OutFace,
     owner: usize,
     whole: bool,
+    /// Whether it folds back on itself, past a cusp of the envelope.
+    folds: bool,
 }
 
 /// A stretch of the motion's parameter, and whether a face moves within its own surface at each
@@ -318,12 +324,13 @@ impl<'a> Ctx<'a> {
                     .iter()
                     .all(|(p, nn)| nn.dot(tw.at(*p)).abs() <= 1e-9 * speed.max(1e-300))
             });
-            // A torus or sphere grazes along a whole meridian at the instants its rate's two
-            // coefficients vanish together, where its grazing curve's coordinate jumps; those
-            // are not followed yet.
             let closed = matches!(
                 face.surface,
-                Surface::Plane(_) | Surface::Cylinder(_) | Surface::Cone(_) | Surface::Extrusion(_)
+                Surface::Plane(_)
+                    | Surface::Cylinder(_)
+                    | Surface::Cone(_)
+                    | Surface::Extrusion(_)
+                    | Surface::Torus(_)
             );
             if !still && !closed {
                 return Err(Error::Unsupported(format!(

@@ -14,12 +14,14 @@ use crate::{
 /// directions run nearly together, a point off it by `d` is read off its parameters by far more.
 const SHEET_FIT: f64 = FIT / 10.0;
 
-/// The surface through `map` over the rectangle from `lo` to `hi`, whose points are `size` across.
+/// The surface through `map` over the rectangle from `lo` to `hi`, whose points are `size` across,
+/// held to the map where `care` says it matters.
 pub(super) fn surface(
     map: &dyn Fn(Vec2) -> Point3,
     lo: Vec2,
     hi: Vec2,
     size: f64,
+    care: &dyn Fn(Vec2) -> bool,
 ) -> Result<Surface> {
     let at = |i: usize, j: usize, n: usize| {
         map(Vec2::new(
@@ -61,7 +63,14 @@ pub(super) fn surface(
         let s = grid(map, lo, hi, (nx, ny))?;
         let x = |i: usize, n: usize| lo.x + (hi.x - lo.x) * i as f64 / n as f64;
         let y = |j: usize, n: usize| lo.y + (hi.y - lo.y) * j as f64 / n as f64;
-        let err = |u: f64, v: f64| s.eval(u, v).dist(map(Vec2::new(u, v)));
+        let err = |u: f64, v: f64| {
+            let q = Vec2::new(u, v);
+            if care(q) {
+                s.eval(u, v).dist(map(q))
+            } else {
+                0.0
+            }
+        };
         let ex = (0..nx)
             .flat_map(|i| (0..=ny).map(move |j| (i, j)))
             .map(|(i, j)| err(x(2 * i + 1, 2 * nx), y(j, ny)))
@@ -83,7 +92,7 @@ pub(super) fn surface(
         if !ruled && (ey > SHEET_FIT || (exy > SHEET_FIT && ey > ex)) {
             ny *= 2;
         }
-        if nx > 4096 || ny > 1024 {
+        if nx > 2048 || ny > 256 {
             break;
         }
     }
@@ -197,15 +206,7 @@ fn interpolate(pts: &[Point3], params: &[f64]) -> Result<Spline> {
     let mut knots = vec![params[0]; p + 1];
     knots.extend_from_slice(&params[skip..n - skip]);
     knots.extend(std::iter::repeat_n(params[n - 1], p + 1));
-    let rows: Vec<(usize, Vec<f64>)> = params
-        .iter()
-        .map(|&t| {
-            let b = crate::loft::rail::basis(p, &knots, t);
-            let last = b.iter().rposition(|&x| x != 0.0).unwrap_or(p).max(p);
-            let first = last - p;
-            (first, b[first..=last].to_vec())
-        })
-        .collect();
+    let rows: Vec<(usize, Vec<f64>)> = params.iter().map(|&t| local_basis(p, &knots, t)).collect();
     let rhs: Vec<f64> = pts.iter().flat_map(|q| [q.x, q.y, q.z]).collect();
     let x = crate::numeric::solve_banded(rows, rhs, 3)?;
     let ctrl = x.chunks(3).map(|c| Point3::new(c[0], c[1], c[2])).collect();
@@ -214,6 +215,33 @@ fn interpolate(pts: &[Point3], params: &[f64]) -> Result<Spline> {
         knots,
         ctrl,
     })
+}
+
+/// The basis functions of `degree` on the clamped `knots` that do not vanish at `t`, and the index
+/// of the first (de Boor, chapter X).
+fn local_basis(degree: usize, knots: &[f64], t: f64) -> (usize, Vec<f64>) {
+    let n = knots.len() - degree - 1;
+    // The span holding `t`, the last one at the domain's end.
+    let span = (degree..n)
+        .rev()
+        .find(|&i| knots[i] <= t && knots[i] < knots[i + 1])
+        .unwrap_or(degree);
+    let mut b = vec![0.0; degree + 1];
+    let mut left = vec![0.0; degree + 1];
+    let mut right = vec![0.0; degree + 1];
+    b[0] = 1.0;
+    for j in 1..=degree {
+        left[j] = t - knots[span + 1 - j];
+        right[j] = knots[span + j] - t;
+        let mut saved = 0.0;
+        for r in 0..j {
+            let tmp = b[r] / (right[r + 1] + left[j - r]);
+            b[r] = saved + right[r + 1] * tmp;
+            saved = left[j - r] * tmp;
+        }
+        b[j] = saved;
+    }
+    (span - degree, b)
 }
 
 /// The cubic B-spline through `at` over `range` at its own parameter, its points refined until it

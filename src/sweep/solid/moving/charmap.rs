@@ -1,11 +1,15 @@
 //! Where a face of the body grazes the motion at each τ, as a curve of one coordinate `x`: on a
 //! plane, the line `A x + B y + C = 0` by the place along it from its point nearest the face's
-//! middle; on a cylinder, cone or extrusion, whose rate is affine along `v`, the surface's first
-//! parameter `u`, the curve's `v` at each `u` read from that closed form (doc/design.md, "Finding
-//! the curves").
+//! middle; on a cylinder, cone or extrusion, whose rate is affine along `v`, and on a torus, whose
+//! rate is `a cos v + b sin v`, the surface's first parameter `u`, the curve's `v` at each `u` read
+//! from that closed form (doc/design.md, "Finding the curves"). A torus grazes along two curves, half
+//! a turn of `v` apart.
+
+use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 use super::Ctx;
 use crate::{
+    Error, Result,
     geom::Surface,
     math::{Point3, Vec2, Vec3},
 };
@@ -14,6 +18,10 @@ use crate::{
 enum Kind {
     Line,
     Linear,
+    /// The branch `atan2(−a, b)`, or the one half a turn of `v` on from it.
+    Harmonic {
+        half: bool,
+    },
 }
 
 /// The grazing curve of face `face` over the span.
@@ -25,19 +33,81 @@ pub(super) struct CharMap<'c, 'a> {
 }
 
 impl<'c, 'a> CharMap<'c, 'a> {
-    /// The grazing curve of face `f`, if its rate has a closed form this follows.
-    pub(super) fn of(ctx: &'c Ctx<'a>, f: usize) -> Option<CharMap<'c, 'a>> {
+    /// The grazing curves of face `f`. A torus whose rate's two coefficients vanish together at
+    /// some `u` and `τ`, where it grazes along a whole meridian and its curves' `v` turns once
+    /// round about that place, is refused.
+    pub(super) fn of(ctx: &'c Ctx<'a>, f: usize) -> Result<Vec<CharMap<'c, 'a>>> {
         let face = &ctx.faces[f];
-        let kind = match face.surface {
-            Surface::Plane(_) => Kind::Line,
-            Surface::Cylinder(_) | Surface::Cone(_) | Surface::Extrusion(_) => Kind::Linear,
-            _ => return None,
+        let kinds = match face.surface {
+            Surface::Plane(_) => vec![Kind::Line],
+            Surface::Cylinder(_) | Surface::Cone(_) | Surface::Extrusion(_) => vec![Kind::Linear],
+            Surface::Torus(_) => vec![
+                Kind::Harmonic { half: false },
+                Kind::Harmonic { half: true },
+            ],
+            _ => Vec::new(),
         };
-        Some(CharMap {
-            ctx,
-            face: f,
-            kind,
-            centre: (face.dom.lo + face.dom.hi) * 0.5,
+        let maps: Vec<CharMap> = kinds
+            .into_iter()
+            .map(|kind| CharMap {
+                ctx,
+                face: f,
+                kind,
+                centre: (face.dom.lo + face.dom.hi) * 0.5,
+            })
+            .collect();
+        if let Some(m) = maps.first()
+            && matches!(m.kind, Kind::Harmonic { .. })
+            && m.meridian()
+        {
+            return Err(Error::Unsupported(
+                "a sweep along a motion whose velocity changes on the body, of a torus that grazes \
+                 along a whole meridian"
+                    .into(),
+            ));
+        }
+        Ok(maps)
+    }
+
+    /// The torus rate's coefficients `(a, b)` at `u` at `tau`.
+    fn coefficients(&self, tau: f64, u: f64) -> Vec2 {
+        Vec2::new(
+            self.rate(tau, Vec2::new(u, 0.0)),
+            self.rate(tau, Vec2::new(u, FRAC_PI_2)),
+        )
+    }
+
+    /// Whether the coefficients wind round zero in some cell of a grid over the span and the face's
+    /// `u`: the place where they vanish together.
+    fn meridian(&self) -> bool {
+        let (n, m) = (128, 64);
+        let dom = &self.ctx.faces[self.face].dom;
+        let (lo, hi) = (dom.lo.x, dom.hi.x);
+        let span = self.ctx.span;
+        let angle = |i: usize, j: usize| {
+            let tau = span.0 + (span.1 - span.0) * i as f64 / n as f64;
+            let u = lo + (hi - lo) * j as f64 / m as f64;
+            let c = self.coefficients(tau, u);
+            c.y.atan2(c.x)
+        };
+        let turn = |a: f64, b: f64| {
+            let d = (b - a).rem_euclid(TAU);
+            if d > PI { d - TAU } else { d }
+        };
+        let grid: Vec<Vec<f64>> = (0..=n)
+            .map(|i| (0..=m).map(|j| angle(i, j)).collect())
+            .collect();
+        (0..n).any(|i| {
+            (0..m).any(|j| {
+                let ring = [
+                    grid[i][j],
+                    grid[i + 1][j],
+                    grid[i + 1][j + 1],
+                    grid[i][j + 1],
+                ];
+                let total: f64 = (0..4).map(|k| turn(ring[k], ring[(k + 1) % 4])).sum();
+                total.abs() > PI
+            })
         })
     }
 
@@ -83,6 +153,27 @@ impl<'c, 'a> CharMap<'c, 'a> {
                 }
                 Some(Vec2::new(x, v0 - g0 * (v1 - v0) / (g1 - g0)))
             }
+            Kind::Harmonic { half } => {
+                let c = self.coefficients(tau, x);
+                if c.norm() <= 1e-300 {
+                    return None;
+                }
+                Some(Vec2::new(
+                    x,
+                    (-c.x).atan2(c.y) + if half { PI } else { 0.0 },
+                ))
+            }
+        }
+    }
+
+    /// Whether the face's point `uv` lies on this curve rather than the face's other one.
+    pub(super) fn holds(&self, tau: f64, uv: Vec2) -> bool {
+        match self.kind {
+            Kind::Harmonic { .. } => self.uv(tau, uv.x).is_some_and(|on| {
+                let d = (uv.y - on.y).rem_euclid(TAU);
+                d.min(TAU - d) <= FRAC_PI_2
+            }),
+            _ => true,
         }
     }
 
@@ -99,7 +190,7 @@ impl<'c, 'a> CharMap<'c, 'a> {
                 let (foot, dir) = self.line(tau)?;
                 Some((uv - foot).dot(dir))
             }
-            Kind::Linear => Some(uv.x),
+            Kind::Linear | Kind::Harmonic { .. } => Some(uv.x),
         }
     }
 
@@ -110,7 +201,7 @@ impl<'c, 'a> CharMap<'c, 'a> {
                 let s = 2.0 * self.ctx.size.max(1.0);
                 (-s, s)
             }
-            Kind::Linear => {
+            Kind::Linear | Kind::Harmonic { .. } => {
                 let dom = &self.ctx.faces[self.face].dom;
                 (dom.lo.x, dom.hi.x)
             }

@@ -1178,8 +1178,8 @@ event is a crossing of curves:
   reaches them. Where just one face beside the edge moves outward, the region is a swept face of
   the result.
 - **A face's plane** is `(τ, x)`, `x` the place along its grazing curve: on a plane face the line
-  `A x + B y + C = 0` by the place from its point nearest the face's middle, on a cylinder, cone or
-  extrusion the curve's `u`. Its regions are bounded by the curves of the edges' planes carried
+  `A x + B y + C = 0` by the place from its point nearest the face's middle, on a cylinder, cone,
+  extrusion or torus the curve's `u`. Its regions are bounded by the curves of the edges' planes carried
   over, and the face's grazing curves where the span starts and ends; where the curve lies on the
   face, the region is a swept face. It faces the way the face does, or the other way where the
   curve's point drifts toward the side the face moves outward on (the outer side of a turn).
@@ -1198,9 +1198,14 @@ inflexion of its path), the side it carries outward turns over at once; the moti
 and each span's end reads the rate of change of the velocity instead. Where the boundary runs into
 itself, the span is the union of the body at its start with what each face sweeps where it moves
 outward (a point the body reaches is in it at the start, or was crossed by such a face), and
-where one of those runs into itself too, the union of the sweeps over its halves. A torus or
-sphere grazes along a whole meridian at the instants both coefficients of its rate vanish, where
-its curve's coordinate jumps; such faces are refused under a moving `W`.
+where one of those runs into itself too, the union of the sweeps over its halves. A swept face
+whose map turns over inside it, past a cusp of the envelope, sends the span straight to that
+union. A torus grazes along two curves of `u`, `v = atan2(−a, b)` and half a turn on; at a place
+where both coefficients vanish it grazes along a whole meridian and its curves' `v` turns once
+round about the place, which is refused, as a sphere is. Two faces meeting smoothly along an edge
+graze along one curve there, which is one piece of both their planes. A region far thinner in its
+plane than it is long, as where a cylinder's curve runs nearly along its rulings and spans almost
+no `u`, is refused rather than fitted across.
 
 ## Slabs
 
