@@ -1,0 +1,252 @@
+//! The swept solid of a body under a steady motion: the boundary of the region the motion carries
+//! outward, times the motion, capped by the rest of the body at the start and that region at the
+//! end.
+
+use std::collections::{BTreeSet, HashMap};
+use std::rc::Rc;
+
+use super::cut::Cut;
+use super::sheet::Steady;
+use crate::{
+    Error, Result,
+    boolean::{
+        domain::{Trim, UvMap},
+        sew::{self, OutFace, PieceGeom},
+    },
+    geom::Curve,
+    math::{Point3, Transform, Vec3},
+    tol,
+    topo::{Brep, FaceName},
+};
+
+/// The trims of `loops` moved by `t`, their pieces and vertices renumbered by `piece` and
+/// `vertex`, each curve the one `curves` holds for its new piece.
+fn moved_loops(
+    loops: &[Vec<Trim>],
+    t: &Transform,
+    piece: &dyn Fn(usize) -> usize,
+    vertex: &dyn Fn(usize) -> usize,
+    curves: &[Option<Rc<Curve>>],
+) -> Vec<Vec<Trim>> {
+    loops
+        .iter()
+        .map(|l| {
+            l.iter()
+                .map(|tr| {
+                    let p = piece(tr.piece);
+                    Trim {
+                        piece: p,
+                        curve: curves[p].clone(),
+                        pole: t.point(tr.pole),
+                        v0: vertex(tr.v0),
+                        v1: vertex(tr.v1),
+                        ..tr.clone()
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// Whether the face `curve` sweeps over `range` folds: somewhere inside the range the motion runs
+/// along the curve, so the face's normal, the velocity crossed with the curve's direction,
+/// vanishes and turns over. Past such a point the envelope lies inside the solid.
+fn folds(motion: &Steady, curve: &Curve, range: (f64, f64)) -> bool {
+    let n = 256;
+    let mut last: Option<Vec3> = None;
+    for k in 0..=n {
+        let t = range.0 + (range.1 - range.0) * k as f64 / n as f64;
+        let (p, d) = curve.d1(t);
+        let v = motion.velocity(p);
+        let normal = v.cross(d);
+        if normal.norm() <= 1e-12 * v.norm() * d.norm() {
+            continue;
+        }
+        if last.is_some_and(|l| l.dot(normal) <= 0.0) {
+            return true;
+        }
+        last = Some(normal);
+    }
+    false
+}
+
+/// The solid `cut` sweeps under `motion`, its swept faces named after `feature`.
+pub(super) fn product(cut: &Cut, motion: &Steady, feature: &str) -> Result<Brep> {
+    let (pose0, pose1) = (motion.pose0(), motion.pose1());
+    let n = cut.pool.len();
+    let np = cut.pieces.len();
+    // A vertex the motion holds still is one vertex at both ends, and has no path.
+    let still: Vec<bool> = cut.pool.iter().map(|&p| motion.holds(p)).collect();
+    let mut pool: Vec<Point3> = cut.pool.iter().map(|&p| pose0.point(p)).collect();
+    pool.extend(cut.pool.iter().map(|&p| pose1.point(p)));
+    let at1 = |v: usize| if still[v] { v } else { v + n };
+    let mut pieces: Vec<PieceGeom> = Vec::with_capacity(2 * np);
+    for (t, end) in [(&pose0, false), (&pose1, true)] {
+        for pg in &cut.pieces {
+            let shift = |v: usize| if end { at1(v) } else { v };
+            pieces.push(PieceGeom {
+                curve: pg.curve.as_ref().map(|c| Rc::new(c.transformed(t))),
+                range: pg.range,
+                v0: shift(pg.v0),
+                v1: shift(pg.v1),
+                tol: pg.tol,
+            });
+        }
+    }
+    let curves: Vec<Option<Rc<Curve>>> = pieces.iter().map(|p| p.curve.clone()).collect();
+    let mut faces: Vec<OutFace> = Vec::new();
+    for part in &cut.parts {
+        let (t, side) = if part.front { (&pose1, 1) } else { (&pose0, 0) };
+        let loops = if part.front {
+            moved_loops(&part.loops, t, &|p| p + np, &at1, &curves)
+        } else {
+            moved_loops(&part.loops, t, &|p| p, &|v| v, &curves)
+        };
+        faces.push(OutFace {
+            surface: part.surface.transformed(t),
+            reversed: part.reversed,
+            names: part.names.clone(),
+            loops,
+            memo: None,
+            side: Some(side),
+        });
+    }
+    // Each piece's uses by the parts: which part, and whether its trim runs along the piece.
+    let mut uses: HashMap<usize, Vec<(usize, bool)>> = HashMap::new();
+    for (pi, part) in cut.parts.iter().enumerate() {
+        for tr in part.loops.iter().flatten() {
+            uses.entry(tr.piece).or_default().push((pi, tr.forward));
+        }
+    }
+    let mut keys: Vec<usize> = uses.keys().copied().collect();
+    keys.sort_unstable();
+    // The path of each vertex the swept faces end on, made once and shared by the two faces
+    // beside it.
+    let mut paths: HashMap<usize, usize> = HashMap::new();
+    let names: BTreeSet<FaceName> = [FaceName::new(feature, FaceName::SIDE)].into();
+    for k in keys {
+        let us = &uses[&k];
+        let fronts: Vec<&(usize, bool)> = us.iter().filter(|u| cut.parts[u.0].front).collect();
+        if us.len() != 2 || fronts.len() != 1 {
+            continue;
+        }
+        let forward = fronts[0].1;
+        let pg = &cut.pieces[k];
+        let Some(curve) = pg.curve.as_ref() else {
+            continue;
+        };
+        // The piece runs from `a` to `b` with the outward-moving part on its left.
+        let (a, b) = if forward {
+            (pg.v0, pg.v1)
+        } else {
+            (pg.v1, pg.v0)
+        };
+        let (ta, tb) = if forward {
+            (pg.range.0, pg.range.1)
+        } else {
+            (pg.range.1, pg.range.0)
+        };
+        let placed = curve.transformed(&pose0);
+        if folds(motion, &placed, pg.range) {
+            return Err(Error::Unsupported(
+                "a solid sweep whose envelope folds: the motion runs along a curve of the body's \
+                 outline"
+                    .into(),
+            ));
+        }
+        let sheet = motion.sheet(&placed, pg.range)?;
+        let span = sheet.span;
+        let mut path = |v: usize, pieces: &mut Vec<PieceGeom>| -> Result<usize> {
+            if let Some(&id) = paths.get(&v) {
+                return Ok(id);
+            }
+            let curve = if still[v] {
+                // A pole of the face: its row of points at the vertex is the vertex.
+                None
+            } else {
+                Some(Rc::new(motion.path(pose0.point(cut.pool[v]))?))
+            };
+            pieces.push(PieceGeom {
+                curve,
+                range: (0.0, span),
+                v0: v,
+                v1: at1(v),
+                tol: tol::LINEAR,
+            });
+            let id = pieces.len() - 1;
+            // A pole is one face's own.
+            if !still[v] {
+                paths.insert(v, id);
+            }
+            Ok(id)
+        };
+        let (pa, pb) = (path(a, &mut pieces)?, path(b, &mut pieces)?);
+        let cap = |piece: usize, s: f64, from: f64, to: f64, fwd: bool| {
+            let pg = &pieces[piece];
+            Trim {
+                piece,
+                forward: fwd,
+                curve: pg.curve.clone(),
+                pole: pool[pg.v0],
+                t0: from,
+                t1: to,
+                map: if sheet.affine {
+                    UvMap::Affine {
+                        origin: sheet.uv(s, 0.0),
+                        dir: sheet.across,
+                    }
+                } else {
+                    UvMap::Projected
+                },
+                uv0: sheet.uv(s, from),
+                uv1: sheet.uv(s, to),
+                v0: if fwd { pg.v0 } else { pg.v1 },
+                v1: if fwd { pg.v1 } else { pg.v0 },
+            }
+        };
+        let side = |piece: usize, t: f64, up: bool| {
+            let pg = &pieces[piece];
+            let (s0, s1) = if up { (0.0, span) } else { (span, 0.0) };
+            Trim {
+                piece,
+                forward: up,
+                curve: pg.curve.clone(),
+                pole: pool[pg.v0],
+                t0: s0,
+                t1: s1,
+                map: UvMap::Affine {
+                    origin: sheet.uv(0.0, t),
+                    dir: sheet.along,
+                },
+                uv0: sheet.uv(s0, t),
+                uv1: sheet.uv(s1, t),
+                v0: if up { pg.v0 } else { pg.v1 },
+                v1: if up { pg.v1 } else { pg.v0 },
+            }
+        };
+        let lp = vec![
+            cap(k, 0.0, ta, tb, forward),
+            side(pb, tb, true),
+            cap(k + np, span, tb, ta, !forward),
+            side(pa, ta, false),
+        ];
+        // Material on the left in the parameter plane where the face is not reversed.
+        let corners = [
+            sheet.uv(0.0, ta),
+            sheet.uv(0.0, tb),
+            sheet.uv(span, tb),
+            sheet.uv(span, ta),
+        ];
+        let area: f64 = (0..4).map(|i| corners[i].cross(corners[(i + 1) % 4])).sum();
+        faces.push(OutFace {
+            surface: sheet.surface,
+            reversed: area < 0.0,
+            names: names.clone(),
+            loops: vec![lp],
+            memo: None,
+            side: None,
+        });
+    }
+    let vtol = vec![tol::LINEAR; pool.len()];
+    sew::assemble(faces, &pool, &vtol, &pieces)
+}

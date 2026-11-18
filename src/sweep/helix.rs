@@ -28,7 +28,7 @@ use crate::{
 /// crossing slides along it by its error over that angle: a ten-thousandth of the linear
 /// tolerance keeps the crossing within a hundredth of the tolerance of the true one.
 const SCREW_FIT: f64 = tol::LINEAR * 1e-4;
-const DEGREE: usize = 7;
+pub(super) const DEGREE: usize = 7;
 
 /// A screw motion: a turn of `sign·θ` about the axis through `origin` along `axis`, and a rise of
 /// `rise·θ` along it.
@@ -69,7 +69,7 @@ impl Helix {
 }
 
 /// Knots of a curve in Hermite pieces between `nodes`.
-fn knots(nodes: &[f64]) -> Vec<f64> {
+pub(super) fn knots(nodes: &[f64]) -> Vec<f64> {
     let mut k = vec![nodes[0]; DEGREE + 1];
     for &n in &nodes[1..nodes.len() - 1] {
         k.extend(std::iter::repeat_n(n, DEGREE));
@@ -92,7 +92,7 @@ fn hermite(a: [Vec3; 4], b: [Vec3; 4], h: f64) -> [Point3; 7] {
 }
 
 /// The control points of `p`'s helix in Hermite pieces between `nodes`.
-fn column(screw: &Helix, p: Point3, nodes: &[f64]) -> Vec<Point3> {
+pub(super) fn column(screw: &Helix, p: Point3, nodes: &[f64]) -> Vec<Point3> {
     let mut out = vec![screw.at(p, nodes[0])];
     for w in nodes.windows(2) {
         let (a, b) = (screw.d3(p, w[0]), screw.d3(p, w[1]));
@@ -103,7 +103,7 @@ fn column(screw: &Helix, p: Point3, nodes: &[f64]) -> Vec<Point3> {
 
 /// Evenly spaced turns from 0 to `angle`, close enough that a Hermite piece follows a helix of
 /// radius up to `radius` within `SCREW_FIT`: its error is at most `radius · (h/2)⁸ / 8!`.
-fn nodes(angle: f64, radius: f64) -> Vec<f64> {
+pub(super) fn nodes(angle: f64, radius: f64) -> Vec<f64> {
     let h = 2.0 * (40320.0 * SCREW_FIT / radius.max(tol::LINEAR)).powf(1.0 / 8.0);
     let n = (angle / h).ceil().max(1.0) as usize;
     (0..=n).map(|k| angle * k as f64 / n as f64).collect()

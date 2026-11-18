@@ -14,7 +14,7 @@
 //!    operation selects pieces, and `sew` joins them, merges faces on one surface, and checks the
 //!    result.
 
-mod arrange;
+pub(crate) mod arrange;
 pub(crate) mod classify;
 mod contact;
 pub(crate) mod csi;
@@ -24,7 +24,7 @@ mod march;
 mod near;
 mod plane;
 mod same;
-mod sew;
+pub(crate) mod sew;
 mod simplify;
 mod snap;
 pub(crate) mod ssi;
@@ -758,7 +758,7 @@ fn coedge_uv_at(b: &Brep, c: CoedgeId, ts: &[f64]) -> Vec<Vec2> {
 }
 
 /// A trim for coedge `c` over curve parameters `t0 → t1`, at `uv0 → uv1`, between vertices `v`.
-fn coedge_trim_with(
+pub(crate) fn coedge_trim_with(
     b: &Brep,
     c: CoedgeId,
     piece: usize,

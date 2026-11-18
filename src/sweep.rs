@@ -1,12 +1,15 @@
 //! Sweeps of planar profiles into solids: straight, turned about an axis, along a path of legs
 //! and bends, along a helix, and along a space curve. Every side face takes the names of the
-//! profile segment that sweeps it; caps are `start` (on the sketch plane) and `end`.
+//! profile segment that sweeps it; caps are `start` (on the sketch plane) and `end`. A whole solid
+//! moved rigidly sweeps the solid [`solid`] builds.
 
 mod curve;
 mod helix;
+mod solid;
 
 pub use curve::along_curve;
 pub use helix::{Helix, helix};
+pub use solid::{Motion, solid};
 
 use std::f64::consts::TAU;
 
