@@ -1027,7 +1027,9 @@ it is first (the moved side's cylinder meets the dome's sphere in two circles, o
 one below it, equally far). Each edge becomes its two faces' new meeting
 between its new vertices: a line where the line through them lies on both, else the branch of their
 intersection (closed form where one exists, traced otherwise) through the old edge's middle carried
-onto both, trimmed at the vertices and laid the way the old edge ran. A seam keeps its parameter
+onto both, trimmed at the vertices and laid the way the old edge ran. Faces moved by a rigid motion
+carry the middle by the motion first: settled from where it was, the middle of a round's arc moved
+further than its radius lands on the far side of the circle, and the edge would take the rest of it. A seam keeps its parameter
 line on the new surface, through its moved ends. Faces whose loops were rebuilt take parameter
 curves projected along each edge in turn, so a loop round a period keeps one image of its
 parameters. Planar moves keep the older all-planes path, whose edges are lines by construction.

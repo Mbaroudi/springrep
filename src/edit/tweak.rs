@@ -910,7 +910,7 @@ pub fn move_faces_by(b: &Brep, faces: &[FaceId], motion: &Transform) -> Result<B
         .iter()
         .map(|&f| (f, b.face(f).surface.transformed(motion)))
         .collect();
-    move_faces(b, &moved)
+    move_faces_carried(b, &moved, &HashMap::new(), Some(motion))
 }
 
 /// [`move_faces`], with each vertex of `pins` put at its point where that lies on every new surface
@@ -920,6 +920,18 @@ pub(crate) fn move_faces_pinned(
     b: &Brep,
     moved: &HashMap<FaceId, Surface>,
     pins: &HashMap<VertexId, Point3>,
+) -> Result<Brep> {
+    move_faces_carried(b, moved, pins, None)
+}
+
+/// [`move_faces_pinned`], each edge of a face carried by `motion` found through its old middle
+/// carried by it too. Settled from where it was, the middle of an arc moved further than its
+/// radius lands on the far side of the arc's circle, and the edge would take the rest of it.
+fn move_faces_carried(
+    b: &Brep,
+    moved: &HashMap<FaceId, Surface>,
+    pins: &HashMap<VertexId, Point3>,
+    motion: Option<&Transform>,
 ) -> Result<Brep> {
     clear_of_contacts(b, moved.keys())?;
     let surface_of = |f: FaceId| moved.get(&f).unwrap_or(&b.face(f).surface);
@@ -1078,7 +1090,11 @@ pub(crate) fn move_faces_pinned(
             .copied()
             .filter(|f| !moved.contains_key(f))
             .collect();
-        let Some(mid) = settle(old_mid, &on).or_else(|| meet_near(b, old_mid, &on, &fixed)) else {
+        let (from, old_dir) = match motion {
+            Some(m) if fixed.len() < faces.len() => (m.point(old_mid), m.vector(old_dir)),
+            _ => (old_mid, old_dir),
+        };
+        let Some(mid) = settle(from, &on).or_else(|| meet_near(b, from, &on, &fixed)) else {
             return unsupported("moving an edge whose faces' new surfaces do not meet near it");
         };
         let mut region = old.bbox(x.range.0, x.range.1);

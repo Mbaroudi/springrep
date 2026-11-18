@@ -428,6 +428,32 @@ fn holes_widened_until_they_merge_leave_one_opening() {
     assert!((measure::volume(&out) - want).abs() < 1e-7 * want);
 }
 
+// The box 40 × 30 × 10, the edge of its top and its back rounded 3, the top and the round moved up
+// 6, further than the round's radius: the round's arcs on the ends are carried up whole, not taken
+// as the rest of their circles. The box 40 × 30 × 16 less the round's corner, (1 − π/4)·9 by 40.
+#[test]
+fn a_round_moved_further_than_its_radius_keeps_its_arcs() {
+    use std::f64::consts::PI;
+    let body = crate::primitive::block(&Frame::WORLD, Vec3::new(40.0, 30.0, 10.0), "box").unwrap();
+    let b = crate::blend::fillet(&body, &[("box.end", "box.v_max")], 3.0, "round").unwrap();
+    let faces: Vec<FaceId> = b
+        .face_ids()
+        .filter(|&f| {
+            let names = &b.face(f).names;
+            names.contains(&FaceName::new("box", "end"))
+                || names.iter().any(|n| n.feature == "round")
+        })
+        .collect();
+    let out = move_faces_by(
+        &b,
+        &faces,
+        &Transform::translation(Vec3::new(0.0, 0.0, 6.0)),
+    )
+    .unwrap();
+    let want = 40.0 * 30.0 * 16.0 - (1.0 - PI / 4.0) * 9.0 * 40.0;
+    assert!((measure::volume(&out) - want).abs() < 1e-7 * want);
+}
+
 // A plate of radius 8 from z −4 to 0 under a post of radius 3 up to z 8, the concave edge between
 // them filleted 2, every face moved out by 3: the fillet's tube closes and the plate's top meets
 // the post square. A plate of radius 11 from z −7 to 3 and a post of radius 6 from 3 to 11.
