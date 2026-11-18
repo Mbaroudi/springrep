@@ -8,7 +8,7 @@ use crate::{
     boolean::{
         classify,
         csi::{curve_surface, signed_distance},
-        domain::Domain,
+        domain::{Domain, Where},
         face_domain,
     },
     geom::{Curve, Surface, distance_to},
@@ -302,6 +302,16 @@ fn check_with(b: &Brep, each: bool, sides: Option<&[Option<usize>]>, crossing: b
                 ));
             }
         }
+        if u.len() > 2
+            && let Some((f, g)) = lying_on_each_other(b, u)
+        {
+            issue(format!(
+                "faces {} and {} lie on each other from edge {}",
+                f.index(),
+                g.index(),
+                e.index()
+            ));
+        }
     }
 
     for f in b.face_ids() {
@@ -521,6 +531,28 @@ fn check_with(b: &Brep, each: bool, sides: Option<&[Option<usize>]>, crossing: b
         }
     }
     out
+}
+
+/// Two faces beside each other across an empty wedge round an edge more than two faces use, where
+/// every interior point of one lies on the other's surface inside it: the wedge has no width, and
+/// the faces lie inside the solid, as a union that kept both of two coincident faces leaves them.
+/// Faces that touch along the edge part away from it; partners lying on each other bound a sliver.
+fn lying_on_each_other(b: &Brep, uses: &[CoedgeId]) -> Option<(FaceId, FaceId)> {
+    let on = |f: FaceId, g: FaceId| {
+        let (d, o) = (face_domain(b, f), face_domain(b, g));
+        let pts = d.interior_points();
+        !pts.is_empty()
+            && pts.iter().all(|uv| {
+                let p = d.surface.eval(uv.x, uv.y);
+                signed_distance(&o.surface, p).abs() <= tol::LINEAR
+                    && matches!(o.locate(p), Where::Inside(_))
+            })
+    };
+    uses.iter().find_map(|&c| {
+        let n = b.beside(c)?;
+        let (f, g) = (b.coedge_face(c), b.coedge_face(n));
+        (c < n && f != g && (on(f, g) || on(g, f))).then_some((f, g))
+    })
 }
 
 /// The first inner loop of face `f` that the region bounded by its other loops does not hold,

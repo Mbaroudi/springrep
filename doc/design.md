@@ -191,7 +191,10 @@ wherever it does not touch a tolerant entity.
 - every non-degenerate edge is used by two coedges, in opposite directions, of faces in the same
   shell (closed, consistently oriented), or, where pieces of the solid touch along it, by an even
   number paired off into partners that run opposite ways in one shell
-  ([Results that touch](#results-that-touch)); every degenerate edge by one;
+  ([Results that touch](#results-that-touch)); every degenerate edge by one; and no two faces beside
+  each other across an empty wedge round such an edge lie on each other, every interior point of
+  one on the other's surface inside it: they would be faces inside the solid (a union that kept
+  both of a spline bore and the cylinder it lies on passed without this);
 - every loop is connected vertex to vertex and closes in its face's parameter plane;
 - each edge's curve ends at its vertices, and each coedge lies on its surface, within `LINEAR`;
 - no intersection curve turns back on itself: its direction at neighbouring samples a quarter of a
