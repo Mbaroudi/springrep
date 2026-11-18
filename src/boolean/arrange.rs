@@ -162,10 +162,10 @@ fn bend(x: Departure) -> f64 {
 /// `ka` and `kb`. Two whose turns are closer than they bend over their chords are ordered by the
 /// chords of `ab`, both taken at one reach.
 fn turn_order(ka: f64, kb: f64, ab: impl Fn() -> (Departure, Departure)) -> std::cmp::Ordering {
-    if (ka - kb).abs() > 1e-6 {
+    let (a, b) = ab();
+    if (ka - kb).abs() > 1e-6_f64.max(bend(a) + bend(b)) {
         return ka.total_cmp(&kb);
     }
-    let (a, b) = ab();
     let same = |x: f64, y: f64| signed_angle(x - y).abs() <= 1e-13;
     if same(ka, kb) && same(a.tangent, b.tangent) && same(a.chord, b.chord) {
         // Of two leaving along one line to the last bit, the further counter-clockwise is met
@@ -339,13 +339,18 @@ pub(crate) fn split(
         let at = nodes[end[h]].1;
         let dep = |t: &Trim, r: f64| g.departure(t, r.min(1e300), at);
         let turn = |c: usize, r: f64| clockwise_turn(dep(&hs[h].reversed(), r), dep(&hs[c], r));
-        let own: Vec<(usize, f64)> = pool
+        let own: Vec<(usize, f64, f64)> = pool
             .into_iter()
-            .map(|c| (c, turn(c, 0.05 * lengths[h].min(lengths[c]))))
+            .map(|c| {
+                let r = 0.05 * lengths[h].min(lengths[c]);
+                (c, turn(c, r), bend(dep(&hs[c], r)))
+            })
             .collect();
         own.into_iter()
-            .min_by(|&(a, ka), &(b, kb)| {
-                if (ka - kb).abs() > 1e-6 {
+            .min_by(|&(a, ka, ba), &(b, kb, bb)| {
+                // A fitted cut's tangent is good only to its fit, so turns closer than the two
+                // departures bend over their chords are read again by the chords.
+                if (ka - kb).abs() > 1e-6_f64.max(ba + bb) {
                     return ka.total_cmp(&kb);
                 }
                 // Two turning well away from the arrival are ordered between themselves; the
@@ -503,5 +508,17 @@ mod tests {
         let back = dep(0.0, 0.0);
         let along = dep(7e-7, -0.04);
         assert!(clockwise_turn(back, along) < 1e-6);
+    }
+
+    #[test]
+    fn a_fitted_tangent_off_by_more_than_a_micro_radian_yields_to_its_chord() {
+        // A cut leaving a corner tangent to the boundary edge it bends away from (a handle's end
+        // touching a body at one point): its fitted tangent lies 1.6e-6 rad on the wrong side of
+        // the edge, but its chord bends 9e-3 rad inside the face, so it is met first.
+        let back = dep(PI, PI);
+        let edge = dep(0.5 * PI, 0.5 * PI);
+        let cut = dep(0.5 * PI - 1.6e-6, 0.5 * PI + 9e-3);
+        assert_eq!(order(back, cut, edge), Ordering::Less);
+        assert_eq!(order(back, edge, cut), Ordering::Greater);
     }
 }

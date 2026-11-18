@@ -608,7 +608,11 @@ far, a twentieth of its shortest curved trim, so they compare how the trims bend
 long they are. The chord's end is found at that distance from the node, not at that fraction of the
 trim's length: a chord's angle grows with its length, and two trims that leave tangentially and bend
 alike (a cut and an edge 1e-4 mm apart) are told apart by less than a parameter's unevenness changes
-it.
+it. This holds between any two departures, not only those a micro-radian apart: two trims of the
+graph cross only at nodes, so their first crossings of a small sphere about the node come in the
+order they leave it. Where a handle's end touches a teapot's body at one point, the cut leaves the
+corner tangent to the end's edge; its fitted tangent lay 1.6e-6 rad on the wrong side of the edge
+while its chord bent 9e-3 rad into the face, and the turn read from the tangents closed no region.
 
 Surface pairs with a closed form use it, and decide their contact (crossing, touching at points,
 tangent along a curve, coincident or apart) from distances in closed form, never from a trace; see
