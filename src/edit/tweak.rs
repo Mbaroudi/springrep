@@ -595,58 +595,148 @@ fn offset_fitted(s: &Surface, d: f64, (u, v): ((f64, f64), (f64, f64))) -> Resul
             })))
         }
         _ => {
-            let mut n = 9;
-            while n <= 257 {
-                let us: Vec<f64> = (0..n)
-                    .map(|k| u.0 + (u.1 - u.0) * k as f64 / (n - 1) as f64)
-                    .collect();
-                let vs: Vec<f64> = (0..n)
-                    .map(|k| v.0 + (v.1 - v.0) * k as f64 / (n - 1) as f64)
-                    .collect();
-                // Rows through the grid, then columns through the rows' control points: the
-                // tensor-product cubic through every grid point.
-                let mut rows = Vec::with_capacity(n);
-                for &b in &vs {
-                    let pts: Vec<Point3> = us.iter().map(|&a| at(a, b)).collect();
-                    rows.push(crate::geom::BSpline::interpolate_at(&pts, &us)?);
-                }
-                let ku = rows[0].knots().to_vec();
-                let mut cols = Vec::with_capacity(n);
-                for i in 0..n {
-                    let pts: Vec<Point3> = rows.iter().map(|r| r.control_points()[i]).collect();
-                    cols.push(crate::geom::BSpline::interpolate_at(&pts, &vs)?);
-                }
-                let kv = cols[0].knots().to_vec();
-                let (pu, pv) = (rows[0].degree(), cols[0].degree());
-                let ctrl: Vec<Point3> = cols
-                    .iter()
-                    .flat_map(|c| c.control_points().iter().copied())
-                    .collect();
-                let fit = crate::geom::NurbsSurface::new((pu, pv), (ku, kv), (n, n), ctrl, None)?;
+            // The surface's own knots cut the box into blocks: across one the offset's curvature
+            // jumps, so an interpolant through it would converge only as h². Each block is fitted
+            // on its own and the blocks are joined at triple knots, along the curves both share.
+            let cuts = |(lo, hi): (f64, f64), breaks: Vec<f64>| {
+                let mut c = vec![lo];
+                c.extend(
+                    breaks
+                        .into_iter()
+                        .filter(|&k| k > lo + 1e-12 && k < hi - 1e-12),
+                );
+                c.push(hi);
+                c
+            };
+            let (ucuts, vcuts) = (
+                cuts(u, s.u_breakpoints(u.0, u.1)),
+                cuts(v, s.v_breakpoints(v.0, v.1)),
+            );
+            let mut per = 8;
+            while (ucuts.len() - 1).max(vcuts.len() - 1) * per <= 512 {
+                // Even steps, each block's end steps halved: a not-a-knot interpolant's error is
+                // largest there, and at a block's corner both directions' ends meet.
+                let nodes = |c: &[f64]| -> Vec<Vec<f64>> {
+                    c.windows(2)
+                        .map(|w| {
+                            let h = (w[1] - w[0]) / per as f64;
+                            let mut n: Vec<f64> = (0..=per).map(|k| w[0] + h * k as f64).collect();
+                            n.insert(1, w[0] + 0.5 * h);
+                            n.insert(n.len() - 1, w[1] - 0.5 * h);
+                            n
+                        })
+                        .collect()
+                };
+                let (ubl, vbl) = (nodes(&ucuts), nodes(&vcuts));
+                let fit = fit_blocks(&at, &ubl, &vbl)?;
                 let mut worst = 0.0f64;
-                for w in us.windows(2) {
-                    for z in vs.windows(2) {
-                        for (a, b) in [
-                            (0.5 * (w[0] + w[1]), 0.5 * (z[0] + z[1])),
-                            (0.5 * (w[0] + w[1]), z[0]),
-                            (w[0], 0.5 * (z[0] + z[1])),
-                        ] {
-                            worst = worst.max(fit.eval(a, b).dist(at(a, b)));
+                for us in &ubl {
+                    for vs in &vbl {
+                        for w in us.windows(2) {
+                            for z in vs.windows(2) {
+                                for (a, b) in [
+                                    (0.5 * (w[0] + w[1]), 0.5 * (z[0] + z[1])),
+                                    (0.5 * (w[0] + w[1]), z[0]),
+                                    (w[0], 0.5 * (z[0] + z[1])),
+                                ] {
+                                    worst = worst.max(fit.eval(a, b).dist(at(a, b)));
+                                }
+                            }
                         }
                     }
                 }
                 if worst <= OFFSET_FIT {
                     return Ok(Surface::Nurbs(Box::new(fit)));
                 }
-                n = 2 * n - 1;
+                per *= 2;
             }
             unsupported("offsetting a face whose offset no spline holds to the tolerance")
         }
     }
 }
 
-/// The box of `f`'s boundary in its surface's parameters, each side grown by a tenth of its span
-/// so the moved edges stay inside, and held to the surface's own domain where it has one.
+/// The bicubic through `at` on the grid of every block of `ubl` × `vbl`, the parameter nodes of
+/// each block in each direction: each block's tensor-product interpolant (rows through the grid,
+/// then columns through the rows' control points), joined to the next at a triple knot. Blocks
+/// that meet share their boundary nodes, so their nets agree along the join.
+fn fit_blocks(
+    at: &dyn Fn(f64, f64) -> Point3,
+    ubl: &[Vec<f64>],
+    vbl: &[Vec<f64>],
+) -> Result<crate::geom::NurbsSurface> {
+    use crate::geom::BSpline;
+    // One block's knots in each direction and its net, u-major.
+    let block = |us: &[f64], vs: &[f64]| -> Result<(Vec<f64>, Vec<f64>, Vec<Point3>)> {
+        let mut rows = Vec::with_capacity(vs.len());
+        for &b in vs {
+            let pts: Vec<Point3> = us.iter().map(|&a| at(a, b)).collect();
+            rows.push(BSpline::interpolate_at(&pts, us)?);
+        }
+        let n = rows[0].control_points().len();
+        let mut cols = Vec::with_capacity(n);
+        for i in 0..n {
+            let pts: Vec<Point3> = rows.iter().map(|r| r.control_points()[i]).collect();
+            cols.push(BSpline::interpolate_at(&pts, vs)?);
+        }
+        let ctrl = cols
+            .iter()
+            .flat_map(|c| c.control_points().iter().copied())
+            .collect();
+        Ok((rows[0].knots().to_vec(), cols[0].knots().to_vec(), ctrl))
+    };
+    // Clamped cubic knot vectors joined end to start, the join's knot kept three times.
+    let join = |parts: &[Vec<f64>]| -> Vec<f64> {
+        let mut out = Vec::new();
+        for (k, p) in parts.iter().enumerate() {
+            let from = if k == 0 { 0 } else { 4 };
+            let to = if k + 1 == parts.len() {
+                p.len()
+            } else {
+                p.len() - 1
+            };
+            out.extend_from_slice(&p[from..to]);
+        }
+        out
+    };
+    let mut blocks = Vec::new();
+    for us in ubl {
+        let mut row = Vec::new();
+        for vs in vbl {
+            row.push(block(us, vs)?);
+        }
+        blocks.push(row);
+    }
+    let ku = join(&blocks.iter().map(|r| r[0].0.clone()).collect::<Vec<_>>());
+    let kv = join(&blocks[0].iter().map(|b| b.1.clone()).collect::<Vec<_>>());
+    let counts: Vec<(usize, usize)> = blocks[0]
+        .iter()
+        .map(|b| (b.0.len() - 4, b.1.len() - 4))
+        .collect();
+    let nus: Vec<usize> = blocks.iter().map(|r| r[0].0.len() - 4).collect();
+    let nvs: Vec<usize> = counts.iter().map(|c| c.1).collect();
+    let nu = nus.iter().sum::<usize>() + 1 - nus.len();
+    let nv = nvs.iter().sum::<usize>() + 1 - nvs.len();
+    let mut ctrl = vec![Point3::ZERO; nu * nv];
+    let mut i0 = 0;
+    for (bi, row) in blocks.iter().enumerate() {
+        let mut j0 = 0;
+        for (bj, (_, _, net)) in row.iter().enumerate() {
+            for i in 0..nus[bi] {
+                for j in 0..nvs[bj] {
+                    ctrl[(i0 + i) * nv + j0 + j] = net[i * nvs[bj] + j];
+                }
+            }
+            j0 += nvs[bj] - 1;
+        }
+        i0 += nus[bi] - 1;
+    }
+    crate::geom::NurbsSurface::new((3, 3), (ku, kv), (nu, nv), ctrl, None)
+}
+
+/// The box of `f`'s boundary in its surface's parameters, read from its pcurves (a pole's among
+/// them, so a face closing on one spans all of it), each side grown by a tenth of its span so the
+/// moved edges stay inside. Along a period the face wraps whole, it is that one period; along one
+/// it does not, it may run past the period's ends; otherwise it is held to the surface's domain.
 fn face_box(b: &Brep, f: FaceId) -> ((f64, f64), (f64, f64)) {
     let face = b.face(f);
     let s = &face.surface;
@@ -655,36 +745,36 @@ fn face_box(b: &Brep, f: FaceId) -> ((f64, f64), (f64, f64)) {
         Vec2::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
     );
     for &lp in &face.loops {
-        let mut last = None;
         for &c in &b.lp(lp).coedges {
-            let x = b.edge(b.coedge(c).edge);
-            let Some(cv) = &x.curve else { continue };
-            for k in 0..=16 {
-                let p = cv.eval(x.range.0 + (x.range.1 - x.range.0) * k as f64 / 16.0);
-                let uv = near_uv(s, p, last);
-                last = Some(uv);
+            for uv in b.coedge_uvs(c, &check::coedge_params(b, c, 16)) {
                 lo = Vec2::new(lo.x.min(uv.x), lo.y.min(uv.y));
                 hi = Vec2::new(hi.x.max(uv.x), hi.y.max(uv.y));
             }
         }
     }
-    let grow = |a: f64, z: f64| {
-        let m = 0.1 * (z - a).max(1e-6);
-        (a - m, z + m)
-    };
-    let (mut u, mut v) = (grow(lo.x, hi.x), grow(lo.y, hi.y));
-    let clamp = |r: (f64, f64), dom: (f64, f64)| (r.0.max(dom.0), r.1.min(dom.1));
-    match s {
-        Surface::Extrusion(e) => u = clamp(u, e.curve.domain()),
-        Surface::Revolution(r) => v = clamp(v, r.curve.domain()),
+    let (du, dv) = match s {
+        Surface::Extrusion(e) => (Some(e.curve.domain()), None),
+        Surface::Revolution(r) => (None, Some(r.curve.domain())),
         Surface::Nurbs(n) => {
             let (du, dv) = n.domain();
-            u = clamp(u, du);
-            v = clamp(v, dv);
+            (Some(du), Some(dv))
         }
-        _ => {}
-    }
-    (u, v)
+        _ => (None, None),
+    };
+    let side = |a: f64, z: f64, period: Option<f64>, dom: Option<(f64, f64)>| {
+        if let Some(p) = period.filter(|&p| z - a >= p - 1e-9 * p) {
+            return (a, a + p);
+        }
+        let m = 0.1 * (z - a).max(1e-6);
+        match (period, dom) {
+            (None, Some(d)) => ((a - m).max(d.0), (z + m).min(d.1)),
+            _ => (a - m, z + m),
+        }
+    };
+    (
+        side(lo.x, hi.x, s.u_period(), du),
+        side(lo.y, hi.y, s.v_period(), dv),
+    )
 }
 
 /// `s` moved `d` along its natural normal: for planes and the analytic surfaces of revolution the

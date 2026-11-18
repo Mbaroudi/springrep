@@ -1047,8 +1047,16 @@ refused. An extrusion's offset is the extrusion of its curve's offset and a revo
 revolution of its meridian's, so only that curve is fitted: a C¹ cubic through the true offset and
 its derivative at nodes that include the curve's own knots (where the offset's curvature jumps, so a
 C² interpolant would converge only as h²), with a double knot at each node. Any other surface
-(ruled, a spline) is fitted as a bicubic through a grid over the face's parameter box. A spline
-sphere octant offset this way lies on the grown sphere to 2e-8 wherever it is sampled.
+(ruled, a spline) is fitted as a bicubic through a grid over the face's parameter box. The box is
+read from the face's pcurves, poles among them, so a face that wraps a whole period (a spline ball,
+closed on its seam) spans that period, where projecting its edges' points reads only a sliver round
+the seam; along a period it does not wrap the box may run past the period's ends. The surface's
+own knots cut the box into blocks, each fitted on its own and joined to the next at a triple knot
+along the curve both share: across a rational sphere's double knots the offset's curvature jumps,
+and a grid through them converges only as h², one cut there as h⁴. Each block's end steps are
+halved, where a not-a-knot interpolant errs most. A spline sphere octant offset this way lies on the
+grown sphere to 2e-8 wherever it is sampled, and the whole biquadratic ball grown by 2 lies on the
+ball of radius 7 to 2e-8.
 
 ### Faces that close on the way
 

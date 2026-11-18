@@ -168,6 +168,63 @@ fn a_spline_sphere_octant_offset_is_the_octant_of_the_grown_sphere() {
     assert!(worst <= 2.0 * OFFSET_FIT, "{worst:e}");
 }
 
+// The ball of radius 5 as one biquadratic rational spline face, closed on its seam and pinched at
+// its poles, offset 2: its pcurves span the whole period and both poles, so the fit covers the
+// whole face, and the fit cut at the circles' double knots holds the ball of radius 7.
+#[test]
+fn a_spline_ball_offset_whole_is_the_grown_ball() {
+    use std::f64::consts::FRAC_1_SQRT_2 as H;
+    let circle = [
+        (1., 0.),
+        (1., 1.),
+        (0., 1.),
+        (-1., 1.),
+        (-1., 0.),
+        (-1., -1.),
+        (0., -1.),
+        (1., -1.),
+        (1., 0.),
+    ];
+    let cw = [1., H, 1., H, 1., H, 1., H, 1.];
+    let meridian = [(0., -5.), (5., -5.), (5., 0.), (5., 5.), (0., 5.)];
+    let mw = [1., H, 1., H, 1.];
+    let mut ctrl = Vec::new();
+    let mut weights = Vec::new();
+    for (&(cx, cy), &wi) in circle.iter().zip(&cw) {
+        for (&(rho, z), &wj) in meridian.iter().zip(&mw) {
+            ctrl.push(Vec3::new(rho * cx, rho * cy, z));
+            weights.push(wi * wj);
+        }
+    }
+    let ku = vec![0., 0., 0., 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1., 1., 1.];
+    let kv = vec![0., 0., 0., 0.5, 0.5, 1., 1., 1.];
+    let skin =
+        crate::geom::NurbsSurface::new((2, 2), (ku, kv), (9, 5), ctrl, Some(weights)).unwrap();
+    let piece = crate::sew::Piece::whole(skin, "skin").unwrap();
+    let ball = crate::sew::sew(&[piece], 0.0, "ball").unwrap();
+    let by: HashMap<FaceId, f64> = ball.face_ids().map(|f| (f, 2.0)).collect();
+    let out = offset_faces(&ball, &by).unwrap();
+    assert!(check::check(&out).is_empty(), "{:?}", check::check(&out));
+    let f = out.face_ids().next().unwrap();
+    let crate::geom::Surface::Nurbs(n) = &out.face(f).surface else {
+        panic!("the offset is a spline")
+    };
+    let ((u0, u1), (v0, v1)) = n.domain();
+    let mut worst = 0.0f64;
+    for i in 0..=37 {
+        for j in 0..=37 {
+            let (u, v) = (
+                u0 + (u1 - u0) * i as f64 / 37.0,
+                v0 + (v1 - v0) * j as f64 / 37.0,
+            );
+            worst = worst.max((n.eval(u, v).norm() - 7.0).abs());
+        }
+    }
+    assert!(worst <= 2.0 * OFFSET_FIT, "{worst:e}");
+    // The fit spans the whole period, not the sliver round the seam a projection reads.
+    assert!(u1 - u0 >= 1.0 && v1 - v0 >= 1.0);
+}
+
 /// A box 4 wide in x, 6 deep and 4 tall, its walls in `walls` drafted about their feet by 45°:
 /// the walls lean in 1 per 1 of height.
 fn drafted_box(walls: &[&str]) -> Result<Brep> {
