@@ -159,19 +159,34 @@ pub(crate) fn boolean_with(a: &Brep, b: &Brep, op: Op, facts: &Facts) -> Result<
 fn combined(a: &Brep, b: &Brep, op: Op, facts: &Facts) -> Result<Brep> {
     // Facts name `b`'s own faces and edges, which a snapped copy would renumber.
     if !facts.on_face.is_empty() {
-        return combined_as(a, b, op, facts);
+        return combined_as(a, b, op, facts).and_then(|out| not_lost(a, b, op, out));
     }
     let snapped = snap::snapped(a, b, snap::Reach::Exact);
-    let first = combined_as(a, snapped.as_ref().unwrap_or(b), op, facts);
+    let used = snapped.as_ref().unwrap_or(b);
+    let first = combined_as(a, used, op, facts).and_then(|out| not_lost(a, used, op, out));
     if first.is_ok() {
         return first;
     }
     // Shapes a hair off each other that the boolean could not place, retried with them on one
     // surface: the answer then differs from the exact one by at most the gap times their area.
     match snap::snapped(a, b, snap::Reach::Grazing) {
-        Some(wide) => combined_as(a, &wide, op, facts).or(first),
+        Some(wide) => combined_as(a, &wide, op, facts)
+            .and_then(|out| not_lost(a, &wide, op, out))
+            .or(first),
         None => first,
     }
+}
+
+/// `out`, the result of `op` on `a` and `b`, unless it is empty where the two share material.
+fn not_lost(a: &Brep, b: &Brep, op: Op, out: Brep) -> Result<Brep> {
+    if out.solid_ids().next().is_some() || !classify::material_lost(a, b, op) {
+        return Ok(out);
+    }
+    Err(Error::Numerical(
+        "the result is empty, but a point of one solid lies well inside the other: an \
+         intersection was missed"
+            .into(),
+    ))
 }
 
 fn combined_as(a: &Brep, b: &Brep, op: Op, facts: &Facts) -> Result<Brep> {

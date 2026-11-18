@@ -720,7 +720,10 @@ traced against each other.
 
 A result with no material (a solid minus itself or a copy within tolerance, the common part of
 disjoint solids) is `Ok` with an empty arena: no solids, faces or edges. It is valid, and callers
-that need a solid check for one; measuring it gives zero.
+that need a solid check for one; measuring it gives zero. An empty intersection or difference is
+refused where a vertex or an edge's middle of one input lies inside the other (outside it, for the
+first input of a difference) farther than `LINEAR` from every surface of its faces: material is
+there, and an intersection the boolean missed took it away.
 
 Degenerate contact follows two rules:
 
