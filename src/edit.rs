@@ -9,22 +9,22 @@ use crate::{
     blend,
     blend::shaped::plane_of,
     boolean,
-    boolean::half_space,
     error::{Error, Result},
     geom::{Curve, Surface},
-    math::{Aabb, Frame, Point3, Vec2, Vec3},
-    measure,
+    math::{Frame, Point3, Vec2, Vec3},
     pick::convex_edges,
     profile::{NamedSegment, Profile, ProfileLoop, Segment},
-    sweep::{extrude, revolve},
+    sweep::revolve,
     tol,
-    topo::{Brep, EdgeId, FaceId, FaceName},
+    topo::{Brep, FaceId, FaceName},
 };
 
 mod affine;
+mod delete;
 pub(crate) mod tweak;
 
 pub use affine::{Affine, affine};
+pub use delete::delete_faces;
 pub use tweak::{draft, move_faces, move_faces_by, offset_faces};
 
 fn named(segment: Segment, name: &str) -> NamedSegment {
@@ -182,156 +182,10 @@ pub fn thicken(s: &Brep, faces: &[FaceId], thickness: f64) -> Result<Brep> {
     }
 }
 
-/// `s` with `faces` taken out and the gap they leave closed by their neighbours: the box round
-/// them, square to the neighbouring planes or a cylinder's axis, cut to the inside of every face
-/// across their edges, joined to the solid. The faces must be a recess, a hole, or a corner cut
-/// away; a plane or a cylinder bulging outward must bound it.
-pub fn delete_faces(s: &Brep, faces: &[FaceId]) -> Result<Brep> {
-    let mut near: Vec<FaceId> = Vec::new();
-    let mut rims: Vec<EdgeId> = Vec::new();
-    for &f in faces {
-        for &lp in &s.face(f).loops {
-            for &c in &s.lp(lp).coedges {
-                let e = s.coedge(c).edge;
-                rims.push(e);
-                for g in s
-                    .coedge_ids()
-                    .filter(|&o| s.coedge(o).edge == e)
-                    .map(|o| s.coedge_face(o))
-                {
-                    if !faces.contains(&g) && !near.contains(&g) {
-                        near.push(g);
-                    }
-                }
-            }
-        }
-    }
-    let axes: Vec<Vec3> = near
-        .iter()
-        .chain(faces)
-        .filter_map(|&f| match &s.face(f).surface {
-            Surface::Plane(pl) => Some(pl.frame.z),
-            Surface::Cylinder(c) => Some(c.frame.z),
-            _ => None,
-        })
-        .collect();
-    let z = axes.first().copied().unwrap_or(Vec3::Z);
-    let x = axes
-        .iter()
-        .copied()
-        .find(|a| a.cross(z).norm() > 1e-6)
-        .unwrap_or_else(|| z.any_perpendicular());
-    let axes = Frame::new(Point3::ZERO, z, x)?;
-    let mut bounds = Aabb::EMPTY;
-    for &e in &rims {
-        edge_bounds(s, e, &axes, &mut bounds);
-    }
-    let (lo, hi) = (bounds.min, bounds.max);
-    let size = hi - lo;
-    let frame = Frame::new(axes.to_world(lo), axes.z, axes.x)?;
-    let rect = Profile::rect(Vec2::new(size.x / 2.0, size.y / 2.0), size.x, size.y);
-    let mut fill = extrude(&rect, &frame, size.z, "fill")?;
-    for f in near {
-        let inside = match &s.face(f).surface {
-            Surface::Plane(_) => {
-                let (o, n) = plane_of(s, f)?;
-                half_space(s, o, -n)?
-            }
-            Surface::Cylinder(c) if !s.face(f).reversed => {
-                let b = measure::bbox(s);
-                let reach = b.diagonal() + b.center().dist(c.frame.origin) + 1.0;
-                let base = c.frame.origin - c.frame.z * reach;
-                let fr = Frame::new(base, c.frame.z, c.frame.x)?;
-                extrude(
-                    &Profile::circle(Vec2::ZERO, 2.0 * c.radius),
-                    &fr,
-                    2.0 * reach,
-                    "cyl",
-                )?
-            }
-            other => {
-                return Err(Error::Unsupported(format!(
-                    "closing a gap against a {} face",
-                    other.kind()
-                )));
-            }
-        };
-        fill = boolean::intersection(&fill, &inside)?;
-    }
-    boolean::union(s, &fill)
-}
-
-/// Grows `b`, in `axes`' coordinates, to hold edge `e`: its ends, and each place between them
-/// where its coordinate along an axis turns back, from the curve itself. Samples along the edge
-/// stop short of such a place by the sag of a chord, which a fill block sized by them then lacks.
-fn edge_bounds(s: &Brep, e: EdgeId, axes: &Frame, b: &mut Aabb) {
-    let edge = s.edge(e);
-    let Some(c) = &edge.curve else {
-        b.add(axes.to_local(s.vertex(edge.start).point));
-        return;
-    };
-    let (t0, t1) = (
-        edge.range.0.min(edge.range.1),
-        edge.range.0.max(edge.range.1),
-    );
-    let mut ts = vec![t0, t1];
-    for axis in [axes.x, axes.y, axes.z] {
-        ts.extend(c.extremes(axis, t0, t1));
-    }
-    for t in ts {
-        b.add(axes.to_local(c.eval(t)));
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::topo::FaceName;
-
-    #[test]
-    fn an_arcs_reach_along_an_axis_is_its_own_extreme_not_its_nearest_sample() {
-        use crate::profile::{NamedSegment, ProfileLoop, Segment};
-        // A half disc of radius 10, extruded: its rim is a half circle. Along an axis that points
-        // midway between two of 256 even samples of the rim, the rim reaches the full radius.
-        let named = |segment: Segment, name: &str| NamedSegment::new(segment, name);
-        let half = Profile {
-            loops: vec![ProfileLoop {
-                segments: vec![
-                    named(
-                        Segment::Arc {
-                            center: Vec2::ZERO,
-                            radius: 10.0,
-                            start: 0.0,
-                            sweep: std::f64::consts::PI,
-                        },
-                        "rim",
-                    ),
-                    named(
-                        Segment::Line {
-                            a: Vec2::new(-10.0, 0.0),
-                            b: Vec2::new(10.0, 0.0),
-                        },
-                        "chord",
-                    ),
-                ],
-            }],
-        };
-        let b = extrude(&half, &Frame::WORLD, 3.0, "h").unwrap();
-        let rim = b
-            .edge_ids()
-            .find(|&e| {
-                let edge = b.edge(e);
-                matches!(edge.curve, Some(Curve::Circle(_)))
-                    && b.vertex(edge.start).point.z.abs() < 1e-9
-            })
-            .unwrap();
-        let towards = std::f64::consts::PI * 100.5 / 256.0;
-        let x = Vec3::new(towards.cos(), towards.sin(), 0.0);
-        let axes = Frame::new(Point3::ZERO, Vec3::Z, x).unwrap();
-        let mut bounds = Aabb::EMPTY;
-        edge_bounds(&b, rim, &axes, &mut bounds);
-        assert!((bounds.max.x - 10.0).abs() < 1e-9, "{}", bounds.max.x);
-    }
+    use crate::{boolean::half_space, measure, sweep::extrude};
 
     /// A prism on the polygon `pts`, `h` tall, its sides named `e0`, `e1`, … from the first edge.
     fn prism(pts: &[[f64; 2]], h: f64) -> Brep {
@@ -513,6 +367,95 @@ mod tests {
         );
         let notch = [face(&b, "e3"), face(&b, "e4"), face(&b, "e5")];
         close(measure::volume(&delete_faces(&b, &notch).unwrap()), 24.0);
+    }
+
+    fn feature_faces(b: &Brep, feature: &str) -> Vec<FaceId> {
+        b.face_ids()
+            .filter(|&f| b.face(f).names.iter().any(|n| n.feature == feature))
+            .collect()
+    }
+
+    /// `b` with the faces of `feature` deleted: its volume and area.
+    fn deleted(b: &Brep, feature: &str) -> (f64, f64) {
+        let out = delete_faces(b, &feature_faces(b, feature)).unwrap();
+        assert!(
+            crate::check::check(&out).is_empty(),
+            "{:?}",
+            crate::check::check(&out)
+        );
+        (measure::volume(&out), measure::area(&out))
+    }
+
+    #[test]
+    fn a_boss_and_a_concave_round_deleted_take_material_away() {
+        use crate::primitive::cylinder;
+        let at = |z: f64| Frame::new(Point3::new(0.0, 0.0, z), Vec3::Z, Vec3::X).unwrap();
+        // A plate of radius 8 and 4 thick with a boss of radius 3 and 8 tall standing on it.
+        let plate = cylinder(&at(-4.0), 8.0, 4.0, "plate").unwrap();
+        let boss = cylinder(&at(0.0), 3.0, 8.0, "boss").unwrap();
+        let solid = boolean::union(&plate, &boss).unwrap();
+        let (v, a) = deleted(&solid, "boss");
+        close(v, 256.0 * PI);
+        close(a, 192.0 * PI);
+        // An L of outline area 150 and perimeter 70, 8 tall, its inside corner rounded 2.
+        let pts = [
+            [0.0, 0.0],
+            [20.0, 0.0],
+            [20.0, 5.0],
+            [5.0, 5.0],
+            [5.0, 15.0],
+            [0.0, 15.0],
+        ];
+        let l = prism(&pts, 8.0);
+        let rounded = blend::fillet(&l, &[("p.e2", "p.e3")], 2.0, "round").unwrap();
+        let (v, a) = deleted(&rounded, "round");
+        close(v, 150.0 * 8.0);
+        close(a, 2.0 * 150.0 + 70.0 * 8.0);
+    }
+
+    #[test]
+    fn deleted_flats_close_where_the_surfaces_round_them_bulge_past_their_edges() {
+        use crate::primitive::{cone, cylinder, sphere};
+        // A shaft of radius 5 and 20 long with |x| > 4 milled away: whole again, 500π.
+        let shaft = cylinder(&Frame::WORLD, 5.0, 20.0, "shaft").unwrap();
+        let right = half_space(&shaft, Point3::new(4.0, 0.0, 0.0), Vec3::X).unwrap();
+        let left = half_space(&shaft, Point3::new(-4.0, 0.0, 0.0), -Vec3::X).unwrap();
+        let milled = boolean::difference_all(&shaft, &[&right, &left]).unwrap();
+        let (v, a) = deleted(&milled, "half");
+        close(v, 500.0 * PI);
+        close(a, 250.0 * PI);
+        // A ball of radius 5 cut flat at z = 3: its flat's edge lies in its own plane.
+        let ball = sphere(&Frame::WORLD, 5.0, "ball").unwrap();
+        let above = half_space(&ball, Point3::new(0.0, 0.0, 3.0), Vec3::Z).unwrap();
+        let (v, a) = deleted(&boolean::difference(&ball, &above).unwrap(), "half");
+        close(v, 500.0 * PI / 3.0);
+        close(a, 100.0 * PI);
+        // A frustum of radii 6 and 3, 6 tall, its top rim rounded 1: (π·6/3)(6² + 6·3 + 3²).
+        let frustum = cone(&Frame::WORLD, 6.0, 3.0, 6.0, "f").unwrap();
+        let rounded = blend::fillet(&frustum, &[("f.top", "f.side")], 1.0, "round").unwrap();
+        let (v, a) = deleted(&rounded, "round");
+        close(v, 126.0 * PI);
+        close(a, 45.0 * PI + 9.0 * PI * 45f64.sqrt());
+    }
+
+    #[test]
+    fn a_rounded_box_s_top_rim_deleted_runs_its_corner_cylinders_up_only() {
+        // The box 20 × 12 × 8, its upright edges rounded 3, then its top rim rounded 1. Deleted,
+        // the rim leaves the box with its outline a rectangle with quarter circles of radius 3 at
+        // its corners: area 20·12 − (4 − π)·3², perimeter 2(14 + 6) + 2π·3.
+        let body = crate::primitive::block(&Frame::WORLD, Vec3::new(20.0, 12.0, 8.0), "b");
+        let uprights = [
+            ("b.u_min", "b.v_min"),
+            ("b.v_min", "b.u_max"),
+            ("b.u_max", "b.v_max"),
+            ("b.v_max", "b.u_min"),
+        ];
+        let walls = blend::fillet(&body.unwrap(), &uprights, 3.0, "corner").unwrap();
+        let rounded = blend::fillet(&walls, &[("b.end", "b.v_min")], 1.0, "rim").unwrap();
+        let outline = 240.0 - (4.0 - PI) * 9.0;
+        let (v, a) = deleted(&rounded, "rim");
+        close(v, 8.0 * outline);
+        close(a, 2.0 * outline + 8.0 * (40.0 + 6.0 * PI));
     }
 
     #[test]
