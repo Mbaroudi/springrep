@@ -303,12 +303,15 @@ pub(super) fn product(
         lp.extend(side(&pb, tb, true));
         lp.push(cap(k + np, span, tb, ta, !forward));
         lp.extend(side(&pa, ta, false));
-        // Material on the left in the parameter plane where the face is not reversed.
+        // Material on the left in the parameter plane where the face is not reversed. A small
+        // patch in the middle of the face, as the corners of a plane turned past half a turn
+        // wind the other way.
+        let (sm, tm, ds, dt) = (span / 2.0, (ta + tb) / 2.0, span * 1e-3, (tb - ta) * 1e-3);
         let corners = [
-            sheet.uv(0.0, ta),
-            sheet.uv(0.0, tb),
-            sheet.uv(span, tb),
-            sheet.uv(span, ta),
+            sheet.uv(sm - ds, tm - dt),
+            sheet.uv(sm - ds, tm + dt),
+            sheet.uv(sm + ds, tm + dt),
+            sheet.uv(sm + ds, tm - dt),
         ];
         let area: f64 = (0..4).map(|i| corners[i].cross(corners[(i + 1) % 4])).sum();
         faces.push(OutFace {

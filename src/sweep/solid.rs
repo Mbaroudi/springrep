@@ -16,7 +16,9 @@ mod tests;
 
 pub use motion::Motion;
 
-use crate::{Error, Result, boolean, error::invalid, topo::Brep};
+use std::f64::consts::{PI, TAU};
+
+use crate::{Error, Result, boolean, error::invalid, tol, topo::Brep};
 
 /// The solid `body` passes through as `motion` carries it, `τ` from 0 to 1: the union of
 /// `M(τ)·body`. The faces the body's faces are cut from keep their names; each face a curve sweeps
@@ -29,6 +31,26 @@ pub fn solid(body: &Brep, motion: &Motion, feature: &str) -> Result<Brep> {
     };
     if body.solid(s).shells.len() != 1 {
         return Err(Error::Unsupported("a sweep of a solid with a void".into()));
+    }
+    // A whole turn ends where it starts, so its two ends would be one; it is two half turns.
+    if let Motion::Turn {
+        origin,
+        axis,
+        from,
+        to,
+    } = *motion
+        && (to - from).abs() >= TAU - tol::ANGULAR
+    {
+        let half = |a: f64| Motion::Turn {
+            origin,
+            axis,
+            from: a,
+            to: a + PI,
+        };
+        let a = solid(body, &half(from), feature)?;
+        let b = solid(body, &half(from + PI), feature)?;
+        let facts = crate::blend::shared_edges(&a, &b);
+        return boolean::boolean_with(&a, &b, boolean::Op::Union, &facts);
     }
     let (Some(steady), Some(twist)) = (sheet::Steady::of(motion), motion.steady()) else {
         return Err(Error::Unsupported(

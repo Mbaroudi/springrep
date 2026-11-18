@@ -9,14 +9,14 @@ use super::grazing::{self, Arrival, Rate};
 use crate::{
     Error, Result,
     boolean::{
-        arrange, coedge_trim_with,
-        domain::{Domain, Trim},
+        arrange, coedge_trim_with, csi,
+        domain::{Domain, Trim, Where},
         face_domain,
         sew::PieceGeom,
         split_poles,
     },
     check::coedge_params,
-    geom::{Curve, Surface},
+    geom::{Curve, Line, Surface},
     math::{Point3, Vec2, Vec3},
     measure, tol,
     topo::{Brep, CoedgeId, EdgeId, FaceId, FaceName},
@@ -278,6 +278,32 @@ pub(super) fn cut(
             }
         }
     }
+    // Where the held line pierces a face, the velocity vanishes and turns over: a curve through
+    // there grazes on both sides of it, and its two halves sweep apart from a pole.
+    let pierces: Vec<Vec<Point3>> = match held {
+        Some((o, axis)) => {
+            let c = (measure::bbox(b).center() - o).dot(axis);
+            let line = Curve::Line(Line {
+                origin: o,
+                dir: axis,
+            });
+            doms.iter()
+                .enumerate()
+                .map(|(i, d)| {
+                    if still[i] {
+                        return Vec::new();
+                    }
+                    let hits = csi::curve_surface(&line, (c - size, c + size), &d.surface);
+                    hits.ts
+                        .iter()
+                        .map(|&t| line.eval(t))
+                        .filter(|&p| matches!(d.locate(p), Where::Inside(_)))
+                        .collect()
+                })
+                .collect()
+        }
+        None => vec![Vec::new(); faces.len()],
+    };
     let mut traced: Vec<Vec<CutCurve>> = Vec::with_capacity(faces.len());
     for (i, &f) in faces.iter().enumerate() {
         // Each place a curve meets the boundary: a vertex where the boundary passes it, so one
@@ -302,7 +328,8 @@ pub(super) fn cut(
                 lo: doms[i].lo,
                 hi: doms[i].hi,
             };
-            closed_cuts(b, f, &closed, &doms[i], &roots, &mut places, eps)?
+            let marks = (&roots[..], &pierces[i][..]);
+            closed_cuts(b, f, &closed, &doms[i], marks, &mut places, eps)?
         } else {
             traced_cuts(b, f, &rates[i], &doms[i], &roots, &mut places)?
         };
@@ -515,16 +542,18 @@ struct CutCurve {
 }
 
 /// A face's characteristic curves where they have a closed form: each run of a branch inside the
-/// face, cut where a line of the form crosses another branch, fitted through its exact points.
+/// face, cut where a line of the form crosses another branch or the held line pierces the face
+/// (`marks`, with the roots on its boundary), fitted through its exact points.
 fn closed_cuts(
     b: &Brep,
     f: FaceId,
     closed: &Closed,
     dom: &Domain,
-    roots: &[Root],
+    marks: (&[Root], &[Point3]),
     places: &mut Places,
     eps: f64,
 ) -> Result<Vec<CutCurve>> {
+    let (roots, pierces) = marks;
     let size = closed.rate.size;
     let mut runs: Vec<Run> = Vec::new();
     for (branch, range) in closed.branches(eps) {
@@ -579,6 +608,20 @@ fn closed_cuts(
         }
     }
     let surface = closed.rate.surface;
+    for &q in pierces {
+        let uv = surface.project(q);
+        let mut vertex = None;
+        for (run, stop) in runs.iter().zip(stops.iter_mut()) {
+            let at = closed.param_of(run.branch, uv);
+            let on = closed
+                .point(run.branch, at)
+                .map(|x| x.0.dist(q) <= 1e-7 * size);
+            if at > run.s.0 + near && at < run.s.1 - near && on == Some(true) {
+                let v = *vertex.get_or_insert_with(|| places.inside(q));
+                stop.push((at, Some(v)));
+            }
+        }
+    }
     let mut out = Vec::new();
     for (run, mut stop) in runs.into_iter().zip(stops) {
         stop.sort_by(|a, b| a.0.total_cmp(&b.0));

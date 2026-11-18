@@ -145,21 +145,63 @@ fn a_ball_turned_about_a_line_adds_a_piece_of_torus() {
     );
 }
 
+// The axis passes through the ball, so the circles about it that the ball holds whole stay whole,
+// and the rest each meet it in one arc the turn widens by θ: the same πr²Rθ is added. The axis
+// pierces the sphere where its grazing great circle passes, which the turn holds still.
+#[test]
+fn a_ball_turned_about_a_line_through_it_adds_a_piece_of_torus() {
+    let (r, big, angle) = (1.0, 0.5, 1.0);
+    let ball = sphere(
+        &Frame::WORLD.translated(Vec3::new(big, 0.0, 0.0)),
+        r,
+        "ball",
+    )
+    .unwrap();
+    let b = solid(&ball, &about_z(angle), "sw").unwrap();
+    assert!(check::check(&b).is_empty());
+    let want = 4.0 / 3.0 * PI * r.powi(3) + angle * PI * r * r * big;
+    assert!(
+        rel(measure::volume(&b), want) < 1e-9,
+        "{} {want}",
+        measure::volume(&b)
+    );
+}
+
 // The unit cube from (1, 0, 0) turned about the z axis: its shadow spans radii 1 to √5 at every
 // height, a moment of (5 − 1)/2.
 #[test]
 fn a_cube_turned_about_a_line_beside_it() {
-    let angle = 0.9;
+    // Past half a turn the faces the turn carries round lie beyond the axis from where they start.
+    for angle in [0.9, 4.0] {
+        let cube = block(
+            &Frame::WORLD.translated(Vec3::X),
+            Vec3::new(1.0, 1.0, 1.0),
+            "cube",
+        )
+        .unwrap();
+        let b = solid(&cube, &about_z(angle), "sw").unwrap();
+        assert!(check::check(&b).is_empty());
+        assert!(
+            rel(measure::volume(&b), 1.0 + 2.0 * angle) < 1e-9,
+            "{angle} {}",
+            measure::volume(&b)
+        );
+    }
+}
+
+// The same cube turned a whole turn fills the ring between radii 1 and √5: 4π.
+#[test]
+fn a_cube_turned_a_whole_turn_is_a_ring() {
     let cube = block(
         &Frame::WORLD.translated(Vec3::X),
         Vec3::new(1.0, 1.0, 1.0),
         "cube",
     )
     .unwrap();
-    let b = solid(&cube, &about_z(angle), "sw").unwrap();
+    let b = solid(&cube, &about_z(2.0 * PI), "sw").unwrap();
     assert!(check::check(&b).is_empty());
     assert!(
-        rel(measure::volume(&b), 1.0 + 2.0 * angle) < 1e-9,
+        rel(measure::volume(&b), 4.0 * PI) < 1e-9,
         "{}",
         measure::volume(&b)
     );

@@ -1103,7 +1103,12 @@ until it reaches another root, and the traced points are fitted the same way. A 
 round to its start through a seam is a periodic spline.
 
 Under a turn, a point of an edge on the axis is held still. Each edge is cut where it touches the
-axis, so each such point is a vertex.
+axis, so each such point is a vertex. Where the axis pierces a face, `V` vanishes and changes sign
+across the point, so `g` vanishes there and a characteristic curve passes through it; the curve is
+cut there, and its two halves sweep apart from a pole at the point.
+
+A turn of a whole turn or more ends where it starts, so its two ends would be one face; it is built
+as the union of the sweeps of its two halves.
 
 The faces are split along the curves by the booleans' arrangement
 ([`arrange.rs`](../src/boolean/arrange.rs)), each piece is in `W` or not by the sign of `g` at a
