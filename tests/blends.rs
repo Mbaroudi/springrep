@@ -705,6 +705,79 @@ fn a_blend_that_takes_a_whole_end_closes_it_to_a_point_on_the_axis() {
     assert_eq!((b.face_count(), kinds(&b, "sphere")), (3, 1));
 }
 
+/// The octahedron |x| + |y| + |z| ≤ `a`, its eight faces planes.
+fn octahedron(a: f64) -> Brep {
+    let p = [
+        Vec3::new(a, 0.0, 0.0),
+        Vec3::new(-a, 0.0, 0.0),
+        Vec3::new(0.0, a, 0.0),
+        Vec3::new(0.0, -a, 0.0),
+        Vec3::new(0.0, 0.0, a),
+        Vec3::new(0.0, 0.0, -a),
+    ];
+    let mut tris = Vec::new();
+    for (x, y, z) in [(0, 2, 4), (1, 3, 4), (0, 3, 5), (1, 2, 5)] {
+        tris.push([x, y, z]);
+    }
+    for (x, y, z) in [(1, 2, 4), (0, 3, 4), (0, 2, 5), (1, 3, 5)] {
+        tris.push([y, x, z]);
+    }
+    mesh::solid(&p, &tris).unwrap()
+}
+
+#[test]
+fn edges_chamfered_one_after_another_meet_at_each_corner_in_a_point() {
+    use springrep::{blend::chamfer_edges, measure::edge_at, primitive};
+    // A cube of side 10, its edges chamfered 2 one at a time: each later chamfer ends on the
+    // earlier ones' faces. Twelve prisms of section 2 along the edges, and in each corner's cube
+    // of side 2 all but the points whose distances from the faces pair up to at least 2, which
+    // fill a quarter of it: 1000 − 12·2·(10 − 4) − 8·3·8/4. Each face keeps its 6 × 6 square and
+    // each chamfer is a rectangle 6 by 2√2 with a triangle of base 2√2 and height 1 at each end.
+    let cube = primitive::block(&Frame::WORLD, Vec3::new(10.0, 10.0, 10.0), "cube").unwrap();
+    let sides = ["cube.v_min", "cube.u_max", "cube.v_max", "cube.u_min"];
+    let mut b = cube;
+    for (i, side) in sides.iter().enumerate() {
+        for pair in [
+            (*side, sides[(i + 1) % 4]),
+            ("cube.start", *side),
+            ("cube.end", *side),
+        ] {
+            b = chamfer(&b, &[pair], 2.0, "c").unwrap();
+        }
+    }
+    let sqrt2 = 2f64.sqrt();
+    assert_solid(&b, 1000.0 - 144.0 - 48.0, 216.0 + 12.0 * 14.0 * sqrt2);
+    assert_eq!(b.face_count(), 18);
+    // The octahedron |x| + |y| + |z| ≤ 10, its edges chamfered √6 across each face one at a time:
+    // four faces meet at each corner. In each octant the three wedges past the chamfers
+    // x + y ≤ 8, ..., each ∫ s(10 − s) ds over 8 ≤ s ≤ 10 = 52/3, less the three regions two of
+    // them share, each 8/3. Each face keeps the triangle of side 4√2 and each chamfer is a
+    // rectangle 4√2 by 4 with a triangle of base 4 and height 2√2 at each end.
+    let mut b = octahedron(10.0);
+    let mids = [
+        (5.0, 5.0, 0.0),
+        (5.0, -5.0, 0.0),
+        (-5.0, 5.0, 0.0),
+        (-5.0, -5.0, 0.0),
+        (5.0, 0.0, 5.0),
+        (5.0, 0.0, -5.0),
+        (-5.0, 0.0, 5.0),
+        (-5.0, 0.0, -5.0),
+        (0.0, 5.0, 5.0),
+        (0.0, 5.0, -5.0),
+        (0.0, -5.0, 5.0),
+        (0.0, -5.0, -5.0),
+    ];
+    for (x, y, z) in mids {
+        let (e, _) = edge_at(&b, Vec3::new(x, y, z)).unwrap();
+        b = chamfer_edges(&b, &[e], 6f64.sqrt(), "c").unwrap();
+    }
+    let volume = 4000.0 / 3.0 - 8.0 * (3.0 * 52.0 / 3.0 - 8.0);
+    let area = 8.0 * 3f64.sqrt() / 4.0 * 32.0 + 12.0 * (4.0 * sqrt2 * 4.0 + 4.0 * 2.0 * sqrt2);
+    assert_solid(&b, volume, area);
+    assert_eq!(b.face_count(), 20);
+}
+
 #[test]
 fn a_straight_edge_between_a_plane_and_a_bore_takes_a_chamfer_by_the_chord() {
     // The key standing in a bore, as above, the root of each side chamfered 1 on both faces: 1

@@ -603,6 +603,7 @@ fn blend_picked(
     let mut creases: Vec<[(usize, usize); 2]> = Vec::new();
     let mut beyonds: Vec<[std::result::Result<run::Beyond, String>; 2]> =
         vec![[Ok(run::Beyond::default()), Ok(run::Beyond::default())]; picked.len()];
+    let mut cornered = false;
     let mut vertices: Vec<&VertexId> = by_vertex.keys().collect();
     vertices.sort();
     for &v in vertices {
@@ -612,6 +613,17 @@ fn blend_picked(
                 let end = end_index(body, picked[*i].edge, v);
                 if let Some(&clip) = corner_ends.get(&(picked[*i].edge, v)) {
                     ends[*i][end] = End::Trim(clip);
+                    continue;
+                }
+                if let Some((first, extra)) =
+                    corner_trims(body, &picked[*i], &sections[*i], &outlines[*i], v)?
+                {
+                    ends[*i][end] = End::Trim(first);
+                    beyonds[*i][end] = Ok(run::Beyond {
+                        extra,
+                        ..Default::default()
+                    });
+                    cornered = true;
                     continue;
                 }
                 ends[*i][end] = free_end(body, &picked[*i], &outlines[*i], v)?;
@@ -745,6 +757,8 @@ fn blend_picked(
         Err("a concave blend that runs over the edge of its face".to_string())
     } else if outlines.iter().any(|o| o.pole) {
         Err("a blend that closes a face to a point on its axis".to_string())
+    } else if cornered {
+        Err("a blend that ends at a corner of several planes".to_string())
     } else {
         sewing_tools(
             body,
@@ -2114,6 +2128,61 @@ fn free_end(body: &Brep, pk: &Picked, o: &Outline, v: VertexId) -> Result<End> {
     Ok(End::Trim(clip))
 }
 
+/// The end of a straight piece at a corner `v` where several planes besides its edge's own two
+/// meet, every edge there convex: the body there is the region inside all the corner's planes, so
+/// the piece runs past the vertex and is trimmed by each other plane, keeping the side its edge
+/// lies on. The trim that needs the longest run, and the rest. None at any other vertex.
+fn corner_trims(
+    body: &Brep,
+    pk: &Picked,
+    s: &Section,
+    o: &Outline,
+    v: VertexId,
+) -> Result<Option<(Clip, Vec<Clip>)>> {
+    if !matches!(s.path, Path::Prism { .. }) || !s.convex {
+        return Ok(None);
+    }
+    let others: Vec<FaceId> = faces_at(body, v)
+        .into_iter()
+        .filter(|f| !pk.faces.contains(f))
+        .collect();
+    if others.len() < 2
+        || others
+            .iter()
+            .any(|&f| !matches!(body.face(f).surface, Surface::Plane(_)))
+    {
+        return Ok(None);
+    }
+    let all_convex = body
+        .coedge_ids()
+        .filter(|&c| body.coedge_start(c) == v)
+        .all(|c| run::convex(body, c) == Some(true));
+    if !all_convex {
+        return Ok(None);
+    }
+    let at = body.vertex(v).point;
+    let along = leaving(body, pk.edge, v)
+        .ok_or_else(|| Error::Numerical("an edge with no tangent".into()))?;
+    let q = inward_point(body, pk.edge, v, o.radius);
+    let mut clips: Vec<(f64, Clip)> = Vec::new();
+    for f in others {
+        let Surface::Plane(p) = &body.face(f).surface else {
+            unreachable!("every other face is a plane");
+        };
+        let n = outward(body, f, at);
+        let keep = if (q - at).dot(n) >= 0.0 { n } else { -n };
+        let clip = Clip::Plane {
+            origin: p.frame.origin,
+            keep,
+        };
+        clips.push((overrun(o, &clip, at, along)?, clip));
+    }
+    clips.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let mut clips = clips.into_iter().map(|(_, c)| c);
+    let first = clips.next().expect("two or more planes");
+    Ok(Some((first, clips.collect())))
+}
+
 /// The cylinder or cone about `frame.z`, keeping the side of it `q` lies on.
 fn about(frame: Frame, r0: f64, slope: f64, q: Point3) -> Clip {
     let l = frame.to_local(q);
@@ -2454,6 +2523,9 @@ fn sewing_tools(
         }
         if b.iter().any(|bk| bk.overhung) {
             return Err("a blend that runs on past a short edge under an overhang".into());
+        }
+        if b.iter().any(|bk| bk.on_vertex) {
+            return Err("a blend whose contact ends on a vertex past its edge".into());
         }
         let tool = if ends[i] == e.ends[i] {
             tool.clone()

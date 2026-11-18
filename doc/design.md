@@ -794,6 +794,9 @@ Three ends need more than the edge's own corner, and each is still read from top
   convex edges, so the trims together keep what the body keeps; a concave piece does not walk. A
   chamfer of 1 on a notch's rim runs past a 0.8 chamfer of the flange below it onto the flange's
   cylinder, and the notch's 2 mm round runs past that chamfer's 0.28 mm ellipse edge onto its cone.
+  A contact curve that ends exactly on the far vertex of a walked edge (an earlier chamfer's corner
+  that a later chamfer's contact line runs through) leaves that vertex on the contact; the trims
+  are the same, and the tools cut the piece.
 - **Opening the face beyond.** Where the face a piece ends on turns more than a half turn at the
   vertex (a lug's edge meeting the wall it stands on, a chamfer into an inner corner), the end
   section lies past the face's corner, on the face's own surface. The line or circle edge between
@@ -837,7 +840,11 @@ Each piece ends where its edge does, in one of seven ways:
   them at the crease, above.
 - **On another face.** A piece whose edge runs into exactly one other face ends square on it when
   that face is a plane square to the edge; otherwise it runs past and is trimmed by that face's
-  plane, cylinder or cone, keeping the side its edge lies on.
+  plane, cylinder or cone, keeping the side its edge lies on. A straight convex piece whose edge
+  runs into a corner of several other planes, every edge there convex (an octahedron's apex, or a
+  corner earlier chamfers have cut), runs past it and is trimmed by each of those planes: the body
+  there is the region inside all of them. The tools cut such a piece; chamfering a solid's edges
+  one after another this way mitres each corner.
 - **At a sphere.** Three fillets on three convex edges of three planes, at any angles, stop short of
   the corner where a sphere closes it. The ball `r` inside all three planes has its centre on each
   fillet's spine, since each spine runs `r` from both its planes; so each fillet stops on the
@@ -935,7 +942,8 @@ What the region form cannot reach comes back as `Error::Unsupported`, never as a
   (the exact path reaches past the corner's axis);
 - blends meeting at a vertex other than as a tangent chain, a mirrored mitre, a convex corner they
   run through or a three-plane corner (the error names the vertex and the faces), and an edge ending
-  where several other faces, or a face other than a plane, cylinder or cone, meet it;
+  where several other faces meet it other than at a convex corner of planes, or where a face other
+  than a plane, cylinder or cone meets it;
 - a blend wider than a face it sits on, including one whose strip would cross onto the next face
   along its edge, such as where its edge runs on, tangent, as a curve other than a line or circle.
 
