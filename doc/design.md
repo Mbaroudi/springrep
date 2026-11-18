@@ -767,7 +767,10 @@ edge. The section's sides follow the two faces: lines on planes, and on a cylind
 edge its circle, so a round between a plane and a bore is the circle tangent to both. A chamfer's
 setback is the straight distance from the edge in the section, so on a circular side (a bore, or a
 sphere about a circular edge's axis) it ends a chord that long from the edge, and the bevel is the
-line or cone between the two ends. Each piece is swept as a tool solid, so its blend face, the contact curves where that face leaves the two faces
+line or cone between the two ends. A chamfer by a distance and an angle sets back the distance on
+one face and leaves it at the angle to it, turned back toward the edge, to where the line first
+meets the other face's trace (a line or circle); it is the chamfer of two distances whose second is
+the straight distance from the edge to that point. Each piece is swept as a tool solid, so its blend face, the contact curves where that face leaves the two faces
 the edge joins, and its end sections are exact by construction.
 
 The result is made from the pieces by surgery, the blend sewn in as a face (Jackson 1995, section

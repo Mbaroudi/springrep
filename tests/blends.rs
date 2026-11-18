@@ -649,6 +649,31 @@ fn a_chamfer_sets_back_along_a_ball_by_the_chord() {
 }
 
 #[test]
+fn a_chamfer_by_a_distance_and_an_angle_runs_to_where_its_bevel_meets_the_other_face() {
+    use springrep::{
+        blend::chamfer_distance_angle,
+        measure::{edge_at, face_at},
+        primitive,
+    };
+    // The upper half of the ball of radius 5, its rim set back 1 on the flat at 45° to it: the
+    // bevel z = ρ − 4 meets the ball where (4 + u)² + u² = 25, u = (√34 − 4)/2. The ring it takes
+    // has, at height z below u, the radii from z + 4 out to √(25 − z²).
+    let ball = primitive::sphere(&Frame::WORLD, 5.0, "ball").unwrap();
+    let corner = Frame::new(Vec3::new(-6.0, -6.0, -6.0), Vec3::Z, Vec3::X).unwrap();
+    let below = primitive::block(&corner, Vec3::new(12.0, 12.0, 6.0), "cut").unwrap();
+    let half = difference(&ball, &below).unwrap();
+    let (edge, _) = edge_at(&half, Vec3::new(5.0, 0.0, 0.0)).unwrap();
+    let (flat, _) = face_at(&half, Vec3::new(1.0, 1.0, 0.0)).unwrap();
+    let b = chamfer_distance_angle(&half, edge, flat, 1.0, PI / 4.0, "cha").unwrap();
+    let u = (34f64.sqrt() - 4.0) / 2.0;
+    let ring = PI * (9.0 * u - 4.0 * u * u - 2.0 * u.powi(3) / 3.0);
+    let area = 16.0 * PI + 50.0 * PI - 10.0 * PI * u + PI * (8.0 + u) * 2f64.sqrt() * u;
+    assert_solid(&b, 250.0 * PI / 3.0 - ring, area);
+    // An angle of a half turn or more leaves no bevel.
+    assert!(chamfer_distance_angle(&half, edge, flat, 1.0, PI, "cha").is_err());
+}
+
+#[test]
 fn a_chamfer_of_one_rim_of_a_bore_leaves_the_other_sharp() {
     use springrep::{
         blend::chamfer_two_edges,

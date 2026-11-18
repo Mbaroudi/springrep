@@ -198,6 +198,108 @@ pub fn chamfer_two_edges(
     Ok(own_names(body, out))
 }
 
+/// A chamfer of `edge` itself set back `distance` on face `first`, one of the two it lies between,
+/// whose bevel leaves that face at `angle` (radians) to it, turned back toward the edge, in the
+/// section square to the edge, and runs to where it first meets the other face. It is the chamfer
+/// of two distances whose second is the straight distance from the edge to that point.
+pub fn chamfer_distance_angle(
+    body: &Brep,
+    edge: EdgeId,
+    first: FaceId,
+    distance: f64,
+    angle: f64,
+    feature: &str,
+) -> Result<Brep> {
+    if !(angle > tol::ANGULAR && angle < PI - tol::ANGULAR) {
+        return invalid("a chamfer's angle must lie strictly between 0 and a half turn");
+    }
+    let (apart, names, skip) = apart_names(body, &[edge])?;
+    let (a, b) = &names[0];
+    let on = format!("{APART}.f{}", first.index());
+    let (a, b) = if on == *a {
+        (a, b)
+    } else if on == *b {
+        (b, a)
+    } else {
+        return invalid("the face a chamfer's distance lies on must be one of the edge's");
+    };
+    let pair = EdgeName { a, b, exact: true };
+    let picked = pick(&apart, &[pair], &skip, true)?;
+    let pk = picked
+        .iter()
+        .find(|pk| pk.edge == edge)
+        .ok_or_else(|| Error::Numerical("a chamfered edge not picked".into()))?;
+    let s = section(&apart, pk)?;
+    let other = bevel_reach(&s, distance, angle)?;
+    let kind = Kind::Chamfer {
+        setback: [distance, other],
+    };
+    let out = blend_with(&apart, &[pair], &skip, kind, feature, true)?;
+    Ok(own_names(body, out))
+}
+
+/// The straight distance from the edge to where a bevel set back `distance` on face 0 at `angle`
+/// to it first meets face 1, in the section `s`.
+fn bevel_reach(s: &Section, distance: f64, angle: f64) -> Result<f64> {
+    let p = s.p;
+    // Where the bevel leaves face 0, and that face's direction there back toward the edge and its
+    // outward normal.
+    let (t0, back, normal) = match s.trace[0] {
+        Trace::Line => (p + s.m[0] * distance, -s.m[0], s.n[0]),
+        Trace::Circle { centre, radius } => {
+            let t0 = chord_end(centre, radius, p, s.m[0], distance)?;
+            let away = s.n[0].dot(p - centre).signum();
+            let normal = unit2(t0 - centre).unwrap_or(s.n[0]) * away;
+            let tangent = normal.perp();
+            let back = if tangent.dot(p - t0) >= 0.0 {
+                tangent
+            } else {
+                -tangent
+            };
+            (t0, back, normal)
+        }
+    };
+    // Into the material at a convex edge, into the groove the chamfer fills at a concave one.
+    let into = if s.convex { -normal } else { normal };
+    let (sin, cos) = angle.sin_cos();
+    let turned = |sign: f64| {
+        Vec2::new(
+            back.x * cos - sign * back.y * sin,
+            sign * back.x * sin + back.y * cos,
+        )
+    };
+    let dir = if turned(1.0).dot(into) >= turned(-1.0).dot(into) {
+        turned(1.0)
+    } else {
+        turned(-1.0)
+    };
+    let hit = match s.trace[1] {
+        Trace::Line => {
+            // t0 + λ·dir = p + μ·m₁.
+            let det = dir.cross(s.m[1]);
+            if det.abs() <= tol::ANGULAR {
+                None
+            } else {
+                let lambda = (p - t0).cross(s.m[1]) / det;
+                (lambda > tol::LINEAR).then(|| t0 + dir * lambda)
+            }
+        }
+        Trace::Circle { centre, radius } => {
+            let w = t0 - centre;
+            let (bq, cq) = (w.dot(dir), w.dot(w) - radius * radius);
+            let disc = bq * bq - cq;
+            (disc >= 0.0)
+                .then(|| [-bq - disc.sqrt(), -bq + disc.sqrt()])
+                .and_then(|roots| roots.into_iter().find(|&l| l > tol::LINEAR))
+                .map(|l| t0 + dir * l)
+        }
+    };
+    match hit {
+        Some(t1) if (t1 - p).dot(s.m[1]) > tol::LINEAR => Ok(t1.dist(p)),
+        _ => invalid("a chamfer whose bevel does not meet the edge's other face"),
+    }
+}
+
 /// [`fillet_edges`] whose rounds meet over a concave edge in the crease where they cross, the
 /// ball kept from swinging round it: the solid `body` grown by `radius` rounds this way, whose
 /// faces moved out meet over the concave edge where the growth leaves it sharp.
