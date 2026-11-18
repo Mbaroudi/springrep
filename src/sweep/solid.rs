@@ -9,6 +9,7 @@ mod contour;
 mod cut;
 mod grazing;
 mod motion;
+mod moving;
 mod product;
 mod sheet;
 #[cfg(test)]
@@ -41,21 +42,20 @@ pub fn solid(body: &Brep, motion: &Motion, feature: &str) -> Result<Brep> {
     } = *motion
         && (to - from).abs() >= TAU - tol::ANGULAR
     {
+        let step = PI.copysign(to - from);
         let half = |a: f64| Motion::Turn {
             origin,
             axis,
             from: a,
-            to: a + PI,
+            to: a + step,
         };
         let a = solid(body, &half(from), feature)?;
-        let b = solid(body, &half(from + PI), feature)?;
+        let b = solid(body, &half(from + step), feature)?;
         let facts = crate::blend::shared_edges(&a, &b);
         return boolean::boolean_with(&a, &b, boolean::Op::Union, &facts);
     }
     let (Some(steady), Some(twist)) = (sheet::Steady::of(motion), motion.steady()) else {
-        return Err(Error::Unsupported(
-            "a sweep along a motion whose velocity changes on the body".into(),
-        ));
+        return moving::sweep(body, motion, feature);
     };
     let field = move |p| twist.at(p);
     let cut = cut::cut(body, &field, steady.held())?;

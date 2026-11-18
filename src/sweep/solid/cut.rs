@@ -30,6 +30,8 @@ pub(super) struct Part {
     pub loops: Vec<Vec<Trim>>,
     /// Whether the motion carries it outward.
     pub front: bool,
+    /// The place among the body's faces of the face it is cut from.
+    pub face: usize,
 }
 
 /// The body cut along its characteristic curves: its vertices (the body's own first), its edge
@@ -41,6 +43,10 @@ pub(super) struct Cut {
     /// that pieces of one curve sweep lie on the one surface that curve sweeps.
     pub whole: Vec<(f64, f64)>,
     pub parts: Vec<Part>,
+    /// The pieces of each edge, in order along it.
+    pub edges: HashMap<EdgeId, Vec<usize>>,
+    /// The pieces of characteristic curve across each face, by the face's place among the body's.
+    pub curves: Vec<Vec<usize>>,
 }
 
 /// Samples along each coedge where the rate is looked for roots.
@@ -231,18 +237,34 @@ pub(super) fn cut(
     field: &dyn Fn(Point3) -> Vec3,
     held: Option<(Point3, Vec3)>,
 ) -> Result<Cut> {
+    let fields = vec![field; b.face_ids().count()];
+    cut_by(b, &fields, held)
+}
+
+/// [`cut`] with each face's own field, in the order of the body's faces.
+pub(super) fn cut_by(
+    b: &Brep,
+    fields: &[&dyn Fn(Point3) -> Vec3],
+    held: Option<(Point3, Vec3)>,
+) -> Result<Cut> {
     let size = measure::bbox(b).diagonal();
-    let speed = b
-        .vertex_ids()
-        .map(|v| field(b.vertex(v).point).norm())
-        .fold(0.0, f64::max)
-        .max(field(measure::bbox(b).center()).norm());
-    let eps = tol::ANGULAR * speed.max(f64::MIN_POSITIVE);
     let faces: Vec<FaceId> = b.face_ids().collect();
+    let epss: Vec<f64> = fields
+        .iter()
+        .map(|field| {
+            let speed = b
+                .vertex_ids()
+                .map(|v| field(b.vertex(v).point).norm())
+                .fold(0.0, f64::max)
+                .max(field(measure::bbox(b).center()).norm());
+            tol::ANGULAR * speed.max(f64::MIN_POSITIVE)
+        })
+        .collect();
     let doms: Vec<Domain> = faces.iter().map(|&f| face_domain(b, f)).collect();
     let rates: Vec<Rate> = faces
         .iter()
-        .map(|&f| Rate {
+        .zip(fields)
+        .map(|(&f, &field)| Rate {
             surface: &b.face(f).surface,
             out: if b.face(f).reversed { -1.0 } else { 1.0 },
             field,
@@ -252,7 +274,8 @@ pub(super) fn cut(
     let still: Vec<bool> = doms
         .iter()
         .zip(&rates)
-        .map(|(d, r)| {
+        .zip(&epss)
+        .map(|((d, r), &eps)| {
             let mut pts = d.interior_points();
             pts.extend(d.samples().iter().flatten().flatten().copied());
             pts.iter().all(|&uv| r.at(uv).abs() <= eps)
@@ -264,7 +287,7 @@ pub(super) fn cut(
         meets.push(if still[i] {
             Vec::new()
         } else {
-            boundary_roots(b, f, &rates[i], eps)
+            boundary_roots(b, f, &rates[i], epss[i])
         });
     }
     let mut places = Places {
@@ -329,7 +352,7 @@ pub(super) fn cut(
                 hi: doms[i].hi,
             };
             let marks = (&roots[..], &pierces[i][..]);
-            closed_cuts(b, f, &closed, &doms[i], marks, &mut places, eps)?
+            closed_cuts(b, f, &closed, &doms[i], marks, &mut places, epss[i])?
         } else {
             traced_cuts(b, f, &rates[i], &doms[i], &roots, &mut places)?
         };
@@ -362,6 +385,7 @@ pub(super) fn cut(
         }
     }
     let mut parts = Vec::new();
+    let mut curves = Vec::with_capacity(faces.len());
     for (i, &f) in faces.iter().enumerate() {
         let face = b.face(f);
         let mut boundary: Vec<Vec<Trim>> = face
@@ -404,6 +428,7 @@ pub(super) fn cut(
             })
             .collect();
         let mut cuts = Vec::new();
+        curves.push((pieces.len()..pieces.len() + traced[i].len()).collect());
         for tc in &traced[i] {
             let curve = Rc::new(tc.curve.clone());
             whole.push(tc.range);
@@ -450,7 +475,7 @@ pub(super) fn cut(
                         "a piece of a face cut along its grazing curve is empty".into(),
                     )
                 })?;
-                rates[i].at(uv) > eps
+                rates[i].at(uv) > epss[i]
             };
             parts.push(Part {
                 surface: face.surface.clone(),
@@ -458,14 +483,21 @@ pub(super) fn cut(
                 names: face.names.clone(),
                 loops,
                 front,
+                face: i,
             });
         }
     }
+    let edges = of_edge
+        .into_iter()
+        .map(|(e, list)| (e, list.into_iter().map(|x| x.0).collect()))
+        .collect();
     Ok(Cut {
         pool,
         pieces,
         whole,
         parts,
+        edges,
+        curves,
     })
 }
 

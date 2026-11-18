@@ -334,3 +334,48 @@ fn a_bar_screwed_a_turn_cuts_a_square_thread() {
     let got = measure::volume(&thread);
     assert!(rel(got, want) < 1e-9, "{got} {want}");
 }
+
+// Two slides at once are the slide by their sum: the unit cube slid by (2, 1, 0) adds the prism
+// of its shadow along the slide, 2 + 1. Built as a motion whose velocity may change.
+#[test]
+fn a_cube_slid_two_ways_at_once_adds_the_prism_of_its_shadow() {
+    let cube = block(&Frame::WORLD, Vec3::new(1.0, 1.0, 1.0), "cube").unwrap();
+    let motion = Motion::Then(
+        Box::new(Motion::Slide(Vec3::new(2.0, 0.0, 0.0))),
+        Box::new(Motion::Slide(Vec3::new(0.0, 1.0, 0.0))),
+    );
+    let b = solid(&cube, &motion, "sw").unwrap();
+    assert!(check::check(&b).is_empty());
+    assert!(
+        rel(measure::volume(&b), 4.0) < 1e-9,
+        "{}",
+        measure::volume(&b)
+    );
+}
+
+// A frame riding a circle about the z axis turns about the axis as it goes, so a cube it carries
+// sweeps what the cube turned through the same angle does. The unit cube from (1, ½, 0) casts a
+// square on a half-plane through the axis from radius √(5/4) to radius 5/2: a moment of 5/2.
+#[test]
+fn a_cube_carried_round_a_circle_is_a_cube_turned() {
+    let angle = 0.9;
+    let cube = block(
+        &Frame::WORLD.translated(Vec3::new(1.0, 0.5, 0.0)),
+        Vec3::new(1.0, 1.0, 1.0),
+        "cube",
+    )
+    .unwrap();
+    let circle = crate::geom::Curve::Circle(crate::geom::Circle {
+        frame: Frame::WORLD,
+        radius: 3.0,
+    });
+    let motion = Motion::Along {
+        path: circle,
+        range: (0.0, angle),
+        up: Vec3::Z,
+    };
+    let b = solid(&cube, &motion, "sw").unwrap();
+    assert!(check::check(&b).is_empty());
+    let got = measure::volume(&b);
+    assert!(rel(got, 1.0 + 2.5 * angle) < 1e-7, "{got}");
+}

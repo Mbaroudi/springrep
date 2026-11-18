@@ -1140,12 +1140,8 @@ the parts. A swept face folds where the motion runs along its curve, the velocit
 the curve's direction turning over; past the fold the envelope lies inside the solid, and such a
 sweep is refused.
 
-For the motions with no such form, the face is a tensor-product B-spline fitted to the true points
-`M(τ)·c(τ, σ)`, `σ` running across the curve from end to end at each `τ`, on a grid refined until
-the surface lies within a tenth of `LINEAR` of the points between the grid's; a fixed curve under
-such a motion takes columns fitted to its control points' paths, so its face is a rigid image of
-the curve at every `τ`. A characteristic curve is fitted only where no closed form exists, so a
-case whose curves are lines and circles under a slide, turn or screw is exact throughout.
+A characteristic curve is fitted only where no closed form exists, so a case whose curves are lines
+and circles under a slide, turn or screw is exact throughout.
 
 The faces are joined by construction: each curve of the boundary of `W` has its piece of the cap
 at the start on one side and its piece at the end on the other, and the paths of its ends are
@@ -1169,11 +1165,42 @@ since the sweep of a union is the union of the sweeps.
 
 ### Motions whose `W` moves
 
-Under a frame along a curve or two motions at once, each curve of the boundary of `W` is found
-again at each `τ` by Newton steps from its place at the last `τ`, ends included (an end slides along
-the edge it lies on). The product's structure holds while no curve passes through a vertex of the
-body, appears or vanishes; a sample at which the curves change their structure is an event, and
-the motion is cut there and its parts united as above.
+Under a frame along a curve or two motions at once ([`moving`](../src/sweep/solid/moving.rs)), `W(τ)`
+slides over the body, its curves appear, vanish and pass through vertices as `τ` runs. Rather than
+follow them from event to event, the boundary is found in planes of two parameters, where every
+event is a crossing of curves:
+
+- **An edge's plane** is `(τ, t)`, `t` the edge's parameter, carried to `M(τ)·e(t)`. In it, the
+  curves where a face beside the edge grazes, `g(τ, e(t)) = 0`, are found on a grid as marching
+  squares finds a contour (Lorensen and Cline 1987, in two dimensions), each crossing of a grid
+  line pinned by bisection and a saddle on the zero set made a vertex. The plane's sides are the
+  edge cut where the span starts and ends, and the paths of its two vertices, cut wherever a curve
+  reaches them. Where just one face beside the edge moves outward, the region is a swept face of
+  the result.
+- **A face's plane** is `(τ, x)`, `x` the place along its grazing curve: on a plane face the line
+  `A x + B y + C = 0` by the place from its point nearest the face's middle, on a cylinder, cone or
+  extrusion the curve's `u`. Its regions are bounded by the curves of the edges' planes carried
+  over, and the face's grazing curves where the span starts and ends; where the curve lies on the
+  face, the region is a swept face. It faces the way the face does, or the other way where the
+  curve's point drifts toward the side the face moves outward on (the outer side of a turn).
+
+A curve shared by two planes is one piece of the result, so the faces join by construction. The
+planes' regions are traced as the faces of a planar graph, each a loop with its inside on its
+left. Each plane's surface is the one map fitted once: a plane or an extrusion where the points lie
+on one, else the quintic B-spline interpolating a grid of them at the plane's own parameters
+(de Boor 1978),
+refined until it lies within a hundredth of `LINEAR` of the points between, so the plane's
+straight sides are exact parameter lines of it. The caps are the body cut at the span's ends as for
+a steady motion.
+
+Where a face moves within its own surface for an instant (the sides of a key carried round an
+inflexion of its path), the side it carries outward turns over at once; the motion is cut there
+and each span's end reads the rate of change of the velocity instead. Where the boundary runs into
+itself, the span is the union of the body at its start with what each face sweeps where it moves
+outward (a point the body reaches is in it at the start, or was crossed by such a face), and
+where one of those runs into itself too, the union of the sweeps over its halves. A torus or
+sphere grazes along a whole meridian at the instants both coefficients of its rate vanish, where
+its curve's coordinate jumps; such faces are refused under a moving `W`.
 
 ## Slabs
 
@@ -1470,6 +1497,7 @@ The papers this document and the source cite by author and year.
 - **Blackmore, Leu and Wang 1997.** D. Blackmore, M. C. Leu and L. P. Wang, "The sweep-envelope
   differential equation algorithm and its application to NC machining verification",
   _Computer-Aided Design_ 29(9), 1997, pp. 629–637.
+- **de Boor 1978.** C. de Boor, _A Practical Guide to Splines_, Springer, 1978.
 - **Gregory 1974.** J. A. Gregory, "Smooth interpolation without twist constraints", in R. E.
   Barnhill and R. F. Riesenfeld (eds.), _Computer Aided Geometric Design_, Academic Press, 1974.
 - **Hartmann 2001.** E. Hartmann, "Parametric Gⁿ blending of curves and surfaces", _The Visual
@@ -1480,6 +1508,8 @@ The papers this document and the source cite by author and year.
   1995, pp. 247–253.
 - **Kronrod 1965.** A. S. Kronrod, _Nodes and Weights of Quadrature Formulas_, Consultants
   Bureau, 1965.
+- **Lorensen and Cline 1987.** W. E. Lorensen and H. E. Cline, "Marching cubes: a high resolution 3D
+  surface construction algorithm", _Computer Graphics_ 21(4) (SIGGRAPH '87), 1987, pp. 163–169.
 - **Martin and Stephenson 1990.** R. R. Martin and P. C. Stephenson, "Sweeping of three-dimensional
   objects", _Computer-Aided Design_ 22(4), 1990, pp. 223–234.
 - **Shewchuk 1997.** J. R. Shewchuk, "Adaptive precision floating-point arithmetic and fast robust
