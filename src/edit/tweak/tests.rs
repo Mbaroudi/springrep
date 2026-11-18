@@ -407,6 +407,27 @@ fn a_wall_moved_off_the_dome_it_ran_into_tangentially_runs_on_to_meet_it() {
     assert!((measure::volume(&out) - want).abs() < 1e-7 * want);
 }
 
+// A plate 40 × 30 × 8 drilled through by two holes of radius 3 whose axes are 10 apart, both walls
+// moved 3 into the plate: the holes of radius 6 run into each other. Left is the plate less the
+// union of the two disks, of area 72(π − α) + 10√11, α = acos(5/6) the half angle each disk's
+// centre sees the other's chord in.
+#[test]
+fn holes_widened_until_they_merge_leave_one_opening() {
+    use std::f64::consts::PI;
+    let holes = vec![
+        Profile::named_circle(Vec2::new(15.0, 15.0), 6.0, "a").loops[0].clone(),
+        Profile::named_circle(Vec2::new(25.0, 15.0), 6.0, "b").loops[0].clone(),
+    ];
+    let section = Profile::rect(Vec2::new(20.0, 15.0), 40.0, 30.0).with_holes(holes);
+    let b = sweep::extrude(&section, &Frame::WORLD, 8.0, "box").unwrap();
+    let by = HashMap::from([(face(&b, "a"), -3.0), (face(&b, "b"), -3.0)]);
+    let out = offset_faces(&b, &by).unwrap();
+    assert!(check::check(&out).is_empty(), "{:?}", check::check(&out));
+    let alpha = (5.0f64 / 6.0).acos();
+    let want = 8.0 * (1200.0 - 72.0 * (PI - alpha) - 10.0 * 11f64.sqrt());
+    assert!((measure::volume(&out) - want).abs() < 1e-7 * want);
+}
+
 // A plate of radius 8 from z −4 to 0 under a post of radius 3 up to z 8, the concave edge between
 // them filleted 2, every face moved out by 3: the fillet's tube closes and the plate's top meets
 // the post square. A plate of radius 11 from z −7 to 3 and a post of radius 6 from 3 to 11.

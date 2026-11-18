@@ -207,8 +207,76 @@ pub(crate) fn offset_faces_closing(
                     }),
                 );
             }
-            through::through(b, &paths).map_err(|_| e)
+            through::through(b, &paths)
+                .or_else(|_| slabbed(b, by).map(|out| (out, Vec::new())))
+                .map_err(|_| e)
         })
+}
+
+/// [`offset_faces`] as `b` with the slabs of the faces moved out added and those of the faces
+/// moved in taken away (Rossignac and Requicha 1986), where moved faces run into faces they did not
+/// meet (holes widened until they merge) and the move cannot be followed. That is the moved solid
+/// only where every edge a moved face is on keeps the corner the slabs make: a face beside one
+/// that stays meets it square, so the slab's side lies on the other face; two faces moved by one
+/// distance meet where the slabs leave a sharp corner (moved in at a convex edge, out at a concave
+/// one) or tangentially. Otherwise an error.
+fn slabbed(b: &Brep, by: &HashMap<FaceId, f64>) -> Result<Brep> {
+    let refuse = || unsupported("moving faces whose slabs do not make the moved solid");
+    let convex = crate::pick::convex_edges(b)?;
+    let concave = crate::pick::concave_edges(b)?;
+    let outward = |f: FaceId, p: Point3| {
+        let s = &b.face(f).surface;
+        let uv = s.project(p);
+        let n = s.normal(uv.x, uv.y);
+        if b.face(f).reversed { -n } else { n }
+    };
+    for e in b.edge_ids() {
+        let uses: Vec<FaceId> = b
+            .coedge_ids()
+            .filter(|&c| b.coedge(c).edge == e)
+            .map(|c| b.coedge_face(c))
+            .collect();
+        let [f, g] = uses[..] else {
+            return refuse();
+        };
+        let (df, dg) = (
+            by.get(&f).copied().unwrap_or(0.0),
+            by.get(&g).copied().unwrap_or(0.0),
+        );
+        if f == g || (df == 0.0 && dg == 0.0) {
+            continue;
+        }
+        let x = b.edge(e);
+        let Some(c) = &x.curve else { continue };
+        let sharp = if df < 0.0 { &convex } else { &concave };
+        let kept = if df != 0.0 && dg != 0.0 {
+            df == dg && (sharp.contains(&e) || !convex.contains(&e) && !concave.contains(&e))
+        } else {
+            (0..=4).all(|k| {
+                let p = c.eval(x.range.0 + (x.range.1 - x.range.0) * k as f64 / 4.0);
+                outward(f, p).dot(outward(g, p)).abs() <= tol::ANGULAR
+            })
+        };
+        if !kept {
+            return refuse();
+        }
+    }
+    let feature = "moved";
+    let mut grow = vec![b.clone()];
+    let mut cut = Vec::new();
+    for f in b.face_ids() {
+        match by.get(&f).copied().unwrap_or(0.0) {
+            d if d > 0.0 => grow.push(super::near::slab(b, f, d, feature)?),
+            d if d < 0.0 => cut.push(super::near::slab(b, f, d, feature)?),
+            _ => {}
+        }
+    }
+    let grown = crate::boolean::union_all(&grow.iter().collect::<Vec<_>>())?;
+    if cut.is_empty() {
+        return Ok(grown);
+    }
+    let cut = crate::boolean::union_all(&cut.iter().collect::<Vec<_>>())?;
+    crate::boolean::difference(&grown, &cut)
 }
 
 /// [`offset_faces`] with the solid's topology kept.

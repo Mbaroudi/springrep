@@ -1105,6 +1105,13 @@ face beside it that closes (the sharp shell has no corner to meet there, and the
 wall of the edge round it) and every open face meets the walls at a right angle or less, so the
 walls' slabs reach it as the moved walls would.
 
+Faces moved by `offset_faces` that run into faces they did not meet (two holes widened until they
+merge) cannot be followed either. The moved solid is then the solid with the slabs of the faces
+moved out added and those of the faces moved in taken away, where that is the moved solid: every
+face beside one that stays meets it square, so the slab's side lies on the other face, and two
+faces moved by one distance meet where the slabs leave a sharp corner (moved in at a convex edge,
+out at a concave one) or tangentially.
+
 ## Moving whole solids
 
 `Brep::transform` moves a solid rigidly and leaves every parameter alone. `transform_similar`
