@@ -937,7 +937,9 @@ that face's loop in more than one run of its edges, and each run takes the conta
 the crossings at its two ends.
 
 An open chain ends where one other face meets each end, a plane or any curved face. Past the end the
-chain runs on straight along its tangent, so the ball keeps rolling between the same two surfaces,
+chain runs on straight along its tangent, so the ball keeps rolling between the same two surfaces (a
+spline surface runs on past the edge of its parameters as its end spans' polynomials, the foot found
+there by Gauss–Newton steps, so the contact stays smooth instead of stopping at that edge),
 and the blend is trimmed by that face's surface: `s*(v)` is where each true section crosses it,
 measured along the surface's normal, and the trim curve is fitted like the blend. A trim may cut
 across several segments, leaving a crescent of one where it touches a section arc. The end face

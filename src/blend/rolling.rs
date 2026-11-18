@@ -206,10 +206,19 @@ impl Roll<'_> {
         &self.body.face(f).surface
     }
 
-    /// The nearest point to `q` on face `f`'s surface, and the outward normal there.
+    /// The nearest point to `q` on face `f`'s surface, and the outward normal there. A spline
+    /// surface runs on past the edge of its parameters as its end spans' polynomials, so a ball
+    /// rolling on past the chain's end keeps a smooth contact instead of one held at that edge.
     fn foot_on(&self, f: FaceId, q: Point3) -> (Point3, Vec3) {
         let s = self.surface(f);
         let uv = s.project(q);
+        if let Surface::Nurbs(n) = s
+            && let Some(uv) = extended_foot(n, q, uv)
+        {
+            let face = self.body.face(f);
+            let nrm = s.normal(uv.x, uv.y);
+            return (s.eval(uv.x, uv.y), if face.reversed { -nrm } else { nrm });
+        }
         let p = s.eval(uv.x, uv.y);
         (p, outward(self.body, f, p))
     }
@@ -441,6 +450,38 @@ impl Roll<'_> {
         }
         unsupported("whose end face never crosses it")
     }
+}
+
+/// Where the foot of `q` on spline surface `n` lies past the edge of its parameters, the
+/// projection `uv` having stopped on that edge: Gauss–Newton steps on the surface's polynomial
+/// continuation. None where `uv` lies inside, or the steps do not settle.
+fn extended_foot(n: &NurbsSurface, q: Point3, uv: Vec2) -> Option<Vec2> {
+    let ((u0, u1), (v0, v1)) = n.domain();
+    let edge = |x: f64, a: f64, b: f64| {
+        (x - a).abs() <= 1e-12 * (b - a) || (b - x).abs() <= 1e-12 * (b - a)
+    };
+    let periodic = (n.u_period().is_some(), n.v_period().is_some());
+    let on_edge = (!periodic.0 && edge(uv.x, u0, u1)) || (!periodic.1 && edge(uv.y, v0, v1));
+    if !on_edge {
+        return None;
+    }
+    let mut uv = uv;
+    for _ in 0..40 {
+        let (p, su, sv) = n.d1(uv.x, uv.y);
+        let r = q - p;
+        let (a, b, c) = (su.dot(su), su.dot(sv), sv.dot(sv));
+        let det = a * c - b * b;
+        if det.abs() <= 1e-300 {
+            return None;
+        }
+        let (gu, gv) = (su.dot(r), sv.dot(r));
+        let step = Vec2::new((c * gu - b * gv) / det, (a * gv - b * gu) / det);
+        uv = uv + step;
+        if step.x.abs() * su.norm() + step.y.abs() * sv.norm() <= 1e-3 * tol::LINEAR {
+            return Some(uv);
+        }
+    }
+    None
 }
 
 /// The root of `g` between `lo` and `hi`, `g(lo)` having the sign of `glo`.
