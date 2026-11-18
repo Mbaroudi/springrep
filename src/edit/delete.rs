@@ -392,9 +392,9 @@ fn gap_pieces(x: &Brep, holders: bool) -> Result<Option<Brep>> {
         }
         let bad = fs.iter().any(|&f| {
             let names = &x.face(f).names;
-            !names.contains(&gone())
-                && !names.contains(&run_on())
-                && !(holders && names.contains(&holder()))
+            !(names.contains(&gone())
+                || names.contains(&run_on())
+                || holders && names.contains(&holder()))
         });
         if bad {
             return Err(Error::Unsupported(

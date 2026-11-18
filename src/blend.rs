@@ -136,28 +136,34 @@ pub fn fillet(body: &Brep, pairs: &[(&str, &str)], radius: f64, feature: &str) -
 
 /// [`fillet`] of `edges` themselves, each between two faces. Every face keeps its names.
 pub fn fillet_edges(body: &Brep, edges: &[EdgeId], radius: f64, feature: &str) -> Result<Brep> {
-    let (apart, names) = apart_names(body, edges)?;
+    let (apart, names, skip) = apart_names(body, edges)?;
     let pairs: Vec<EdgeName> = names
         .iter()
         .map(|(a, b)| EdgeName { a, b, exact: true })
         .collect();
-    Ok(own_names(
-        body,
-        fillet_named(&apart, &pairs, radius, feature)?,
-    ))
+    let out = blend_with(
+        &apart,
+        &pairs,
+        &skip,
+        Kind::Fillet { radius },
+        feature,
+        true,
+    )?;
+    Ok(own_names(body, out))
 }
 
 /// [`chamfer`] of `edges` themselves, each between two faces, set back `distance` on both.
 pub fn chamfer_edges(body: &Brep, edges: &[EdgeId], distance: f64, feature: &str) -> Result<Brep> {
-    let (apart, names) = apart_names(body, edges)?;
+    let (apart, names, skip) = apart_names(body, edges)?;
     let pairs: Vec<EdgeName> = names
         .iter()
         .map(|(a, b)| EdgeName { a, b, exact: true })
         .collect();
-    Ok(own_names(
-        body,
-        chamfer_named(&apart, &pairs, distance, feature)?,
-    ))
+    let kind = Kind::Chamfer {
+        setback: [distance; 2],
+    };
+    let out = blend_with(&apart, &pairs, &skip, kind, feature, true)?;
+    Ok(own_names(body, out))
 }
 
 /// A chamfer of `edge` itself set back `along_first` on face `first`, one of the two it lies
@@ -170,7 +176,7 @@ pub fn chamfer_two_edges(
     along_other: f64,
     feature: &str,
 ) -> Result<Brep> {
-    let (apart, names) = apart_names(body, &[edge])?;
+    let (apart, names, skip) = apart_names(body, &[edge])?;
     let (a, b) = &names[0];
     let on = format!("{APART}.f{}", first.index());
     let (a, b) = if on == *a {
@@ -181,7 +187,10 @@ pub fn chamfer_two_edges(
         return invalid("the face a chamfer's first distance lies on must be one of the edge's");
     };
     let pair = EdgeName { a, b, exact: true };
-    let out = chamfer_two_named(&apart, &[pair], along_first, along_other, feature)?;
+    let kind = Kind::Chamfer {
+        setback: [along_first, along_other],
+    };
+    let out = blend_with(&apart, &[pair], &skip, kind, feature, true)?;
     Ok(own_names(body, out))
 }
 
@@ -194,12 +203,19 @@ pub(crate) fn fillet_edges_mitred(
     radius: f64,
     feature: &str,
 ) -> Result<Brep> {
-    let (apart, names) = apart_names(body, edges)?;
+    let (apart, names, skip) = apart_names(body, edges)?;
     let pairs: Vec<EdgeName> = names
         .iter()
         .map(|(a, b)| EdgeName { a, b, exact: true })
         .collect();
-    let out = blend_with(&apart, &pairs, Kind::Fillet { radius }, feature, false)?;
+    let out = blend_with(
+        &apart,
+        &pairs,
+        &skip,
+        Kind::Fillet { radius },
+        feature,
+        false,
+    )?;
     Ok(own_names(body, out))
 }
 
@@ -229,8 +245,13 @@ fn own_names(body: &Brep, mut out: Brep) -> Brep {
     out
 }
 
-/// `body` with its faces named apart, and the pair of names of each of `edges`.
-fn apart_names(body: &Brep, edges: &[EdgeId]) -> Result<(Brep, Vec<(String, String)>)> {
+/// A body with its faces named apart, the pair of names of each edge to blend, and a point on each
+/// edge those names pick that is not to be blended.
+type Apart = (Brep, Vec<(String, String)>, Vec<Point3>);
+
+/// `body` with its faces named apart, the pair of names of each of `edges`, and a point on each
+/// other edge between the same two faces (a bore's other rim), which the names would also pick.
+fn apart_names(body: &Brep, edges: &[EdgeId]) -> Result<Apart> {
     let mut apart = body.clone();
     let name = |f: FaceId| format!("{APART}.f{}", f.index());
     for f in body.face_ids() {
@@ -251,7 +272,23 @@ fn apart_names(body: &Brep, edges: &[EdgeId]) -> Result<(Brep, Vec<(String, Stri
         };
         names.push((name(f), name(g)));
     }
-    Ok((apart, names))
+    let faces_of = |e: EdgeId| -> BTreeSet<FaceId> {
+        body.edge_uses(e)
+            .iter()
+            .map(|&c| body.coedge_face(c))
+            .collect()
+    };
+    let wanted: Vec<BTreeSet<FaceId>> = edges.iter().map(|&e| faces_of(e)).collect();
+    let skip = body
+        .edge_ids()
+        .filter(|e| !edges.contains(e) && wanted.contains(&faces_of(*e)))
+        .filter_map(|e| {
+            let edge = body.edge(e);
+            let c = edge.curve.as_ref()?;
+            Some(c.eval(0.5 * (edge.range.0 + edge.range.1)))
+        })
+        .collect();
+    Ok((apart, names, skip))
 }
 
 /// [`fillet`] of the edges `pairs` name.
@@ -377,13 +414,15 @@ enum Clip {
 }
 
 pub(crate) fn blend(body: &Brep, pairs: &[EdgeName], kind: Kind, feature: &str) -> Result<Brep> {
-    blend_with(body, pairs, kind, feature, true)
+    blend_with(body, pairs, &[], kind, feature, true)
 }
 
-/// [`blend`], the ball's swing round concave edges between its rounds put back where `swing`.
+/// [`blend`], the ball's swing round concave edges between its rounds put back where `swing`, and
+/// no edge through a point of `skip` picked by the pairs' names.
 fn blend_with(
     body: &Brep,
     pairs: &[EdgeName],
+    skip: &[Point3],
     kind: Kind,
     feature: &str,
     swing: bool,
@@ -395,7 +434,7 @@ fn blend_with(
     if !(size.is_finite() && size > tol::LINEAR) {
         return invalid("a blend's size must be positive");
     }
-    let picked = pick(body, pairs, true)?;
+    let picked = pick(body, pairs, skip, true)?;
     // Concave and convex edges meeting at a vertex: the concave ones are blended first, and the
     // convex ones then run on round the rounds those leave, as a tangent chain picked again.
     let convex: Vec<Option<bool>> = picked
@@ -428,11 +467,11 @@ fn blend_with(
             .filter(|(_, c)| **c == Some(false))
             .map(|(pk, _)| pk.clone())
             .collect();
-        let out = blend_picked(body, pairs, concave, kind, feature, swing)?;
-        let again = pick(&out, pairs, false)?;
-        return blend_picked(&out, pairs, again, kind, feature, swing);
+        let out = blend_picked(body, pairs, skip, concave, kind, feature, swing)?;
+        let again = pick(&out, pairs, skip, false)?;
+        return blend_picked(&out, pairs, skip, again, kind, feature, swing);
     }
-    blend_picked(body, pairs, picked, kind, feature, swing)
+    blend_picked(body, pairs, skip, picked, kind, feature, swing)
 }
 
 /// [`blend`] of the edges `picked` from `pairs`; where `swing`, a fillet's ball swings round each
@@ -440,6 +479,7 @@ fn blend_with(
 fn blend_picked(
     body: &Brep,
     pairs: &[EdgeName],
+    skip: &[Point3],
     picked: Vec<Picked>,
     kind: Kind,
     feature: &str,
@@ -490,11 +530,11 @@ fn blend_picked(
                 return Ok(out);
             }
             // The rest picked again under their own indices, which name their faces.
-            let rest = pick(&out, pairs, false)?;
+            let rest = pick(&out, pairs, skip, false)?;
             return if rest.is_empty() {
                 Ok(out)
             } else {
-                blend_picked(&out, pairs, rest, kind, feature, swing)
+                blend_picked(&out, pairs, skip, rest, kind, feature, swing)
             };
         }
     }
@@ -542,11 +582,11 @@ fn blend_picked(
         && let Some((a, b)) = swallowed_strip(body, &picked, &o)
     {
         let out = shaped::fillet_faces(body, a, b, radius, feature)?;
-        let rest = pick(&out, pairs, false)?;
+        let rest = pick(&out, pairs, skip, false)?;
         return if rest.is_empty() {
             Ok(out)
         } else {
-            blend_picked(&out, pairs, rest, kind, feature, swing)
+            blend_picked(&out, pairs, skip, rest, kind, feature, swing)
         };
     }
     check_apart(body, &picked, &sections, &outlines)?;
@@ -1107,7 +1147,7 @@ pub(crate) fn has_name(body: &Brep, f: FaceId, name: &str) -> bool {
 }
 
 pub(crate) fn picked_edges(body: &Brep, pair: &EdgeName) -> Result<Vec<EdgeId>> {
-    Ok(pick(body, &[*pair], true)?
+    Ok(pick(body, &[*pair], &[], true)?
         .into_iter()
         .map(|pk| pk.edge)
         .collect())
@@ -1116,7 +1156,14 @@ pub(crate) fn picked_edges(body: &Brep, pair: &EdgeName) -> Result<Vec<EdgeId>> 
 /// Every edge each pair names, in edge order, then every edge a picked one runs on into
 /// tangentially: a blend runs round the whole tangent chain of each edge it names. An edge two pairs pick is blended once and carries both
 /// pairs' names.
-fn pick(body: &Brep, pairs: &[EdgeName], strict: bool) -> Result<Vec<Picked>> {
+fn pick(body: &Brep, pairs: &[EdgeName], skip: &[Point3], strict: bool) -> Result<Vec<Picked>> {
+    let skipped = |e: EdgeId| {
+        let edge = body.edge(e);
+        edge.curve.as_ref().is_some_and(|c| {
+            skip.iter()
+                .any(|&q| c.eval(c.project(q, edge.range.0, edge.range.1)).dist(q) <= tol::LINEAR)
+        })
+    };
     let mut uses: HashMap<EdgeId, Vec<CoedgeId>> = HashMap::new();
     for c in body.coedge_ids() {
         uses.entry(body.coedge(c).edge).or_default().push(c);
@@ -1145,6 +1192,9 @@ fn pick(body: &Brep, pairs: &[EdgeName], strict: bool) -> Result<Vec<Picked>> {
             let Some((fs, cs)) = two_faced(e) else {
                 continue;
             };
+            if skipped(e) {
+                continue;
+            }
             let order = if on_a.contains(&fs[0]) && on_b.contains(&fs[1]) {
                 [0, 1]
             } else if on_a.contains(&fs[1]) && on_b.contains(&fs[0]) {
@@ -1550,22 +1600,49 @@ fn fillet_centre(s: &Section, radius: f64, sign: f64) -> Result<Vec2> {
         .ok_or_else(|| Error::InvalidInput("a fillet that touches neither face".into()))
 }
 
+/// The point of the circle about `centre` through `p` a chord `length` from `p`, on the side the
+/// circle leaves `p` along `m`.
+fn chord_end(centre: Vec2, radius: f64, p: Vec2, m: Vec2, length: f64) -> Result<Vec2> {
+    if length > 2.0 * radius + tol::LINEAR {
+        return Err(Error::InvalidInput(format!(
+            "a chamfer of {length} on a face curved to a diameter of {}",
+            2.0 * radius
+        )));
+    }
+    let half = (length / (2.0 * radius)).min(1.0).asin();
+    let r = p - centre;
+    let (sin, cos) = (2.0 * half).sin_cos();
+    let turned =
+        |sign: f64| centre + Vec2::new(r.x * cos - sign * r.y * sin, sign * r.x * sin + r.y * cos);
+    let (a, b) = (turned(1.0), turned(-1.0));
+    Ok(if (a - p).dot(m) >= (b - p).dot(m) {
+        a
+    } else {
+        b
+    })
+}
+
 /// The cross-section of the blend's material.
 fn outline(s: &Section, kind: Kind) -> Result<Outline> {
     let p = s.p;
     let (segments, t) = match kind {
         Kind::Chamfer { setback } => {
-            if s.trace.iter().any(|t| matches!(t, Trace::Circle { .. })) {
-                return Err(Error::Unsupported(
-                    "a chamfer on a straight edge of a cylinder".into(),
-                ));
+            // A setback is the straight distance from the edge in the section, so on a curved
+            // trace it is a chord.
+            let mut t = [Vec2::ZERO; 2];
+            for (k, tk) in t.iter_mut().enumerate() {
+                *tk = match s.trace[k] {
+                    Trace::Line => p + s.m[k] * setback[k],
+                    Trace::Circle { centre, radius } => {
+                        chord_end(centre, radius, p, s.m[k], setback[k])?
+                    }
+                };
             }
-            let t = [p + s.m[0] * setback[0], p + s.m[1] * setback[1]];
             (
                 vec![
-                    line(p, t[0], SIDES[0]),
+                    along_face(s, 0, p, t[0]),
                     line(t[0], t[1], "blend"),
-                    line(t[1], p, SIDES[1]),
+                    along_face(s, 1, t[1], p),
                 ],
                 t,
             )
@@ -3274,7 +3351,7 @@ mod tests {
             "box",
         )
         .unwrap();
-        let picked = pick(&body, &by_surface(&[("box.end", "box.v_min")]), true).unwrap();
+        let picked = pick(&body, &by_surface(&[("box.end", "box.v_min")]), &[], true).unwrap();
         let s = section(&body, &picked[0]).unwrap();
         let o = outline(&s, Kind::Fillet { radius: 5.0 }).unwrap();
         let tool = piece(&s, &o, [End::Exact; 2], "f").unwrap();

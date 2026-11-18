@@ -620,3 +620,112 @@ fn a_chamfer_of_two_distances_sets_the_first_back_on_the_face_named() {
     let (bottom, _) = face_at(&b, Vec3::new(5.0, 4.0, 0.0)).unwrap();
     assert!(chamfer_two_edges(&b, edge, bottom, 2.0, 1.0, "cha").is_err());
 }
+
+#[test]
+fn a_chamfer_sets_back_along_a_ball_by_the_chord() {
+    use springrep::{
+        blend::chamfer_two_edges,
+        measure::{edge_at, face_at},
+        primitive,
+    };
+    // The upper half of the ball of radius 5, its rim set back 2 on the flat and 1 on the ball. The
+    // chord 1 from the rim turns 2·asin(1/10) about the centre, to the circle of radius 4.9 at
+    // height h = 3√11/10; the cone runs from there to the circle of radius 3 on the flat.
+    let ball = primitive::sphere(&Frame::WORLD, 5.0, "ball").unwrap();
+    let corner = Frame::new(Vec3::new(-6.0, -6.0, -6.0), Vec3::Z, Vec3::X).unwrap();
+    let below = primitive::block(&corner, Vec3::new(12.0, 12.0, 6.0), "cut").unwrap();
+    let half = difference(&ball, &below).unwrap();
+    let (edge, _) = edge_at(&half, Vec3::new(5.0, 0.0, 0.0)).unwrap();
+    let (flat, _) = face_at(&half, Vec3::new(1.0, 1.0, 0.0)).unwrap();
+    let b = chamfer_two_edges(&half, edge, flat, 2.0, 1.0, "cha").unwrap();
+    let h = 3.0 * 11f64.sqrt() / 10.0;
+    let (r0, r1) = (3.0, 4.9);
+    let volume = 250.0 * PI / 3.0 - PI * (25.0 * h - h.powi(3) / 3.0)
+        + PI * h * (r0 * r0 + r0 * r1 + r1 * r1) / 3.0;
+    let slant = ((r1 - r0).powi(2) + h * h).sqrt();
+    let area = PI * r0 * r0 + 2.0 * PI * 5.0 * (5.0 - h) + PI * (r0 + r1) * slant;
+    assert_solid(&b, volume, area);
+    assert_eq!(kinds(&b, "cone"), 1);
+}
+
+#[test]
+fn a_chamfer_of_one_rim_of_a_bore_leaves_the_other_sharp() {
+    use springrep::{
+        blend::chamfer_two_edges,
+        measure::{edge_at, face_at},
+        primitive,
+    };
+    // A ball of radius 5 bored through by radius 2; its rims are circles of radius 2 at
+    // z = ±√21, both between the same two faces. Only the upper one is set back, 2 down the bore
+    // and 1 on the ball, to the circle of radius ρ₁ at z₁ that the chord 1 reaches.
+    let ball = primitive::sphere(&Frame::WORLD, 5.0, "ball").unwrap();
+    let bore = primitive::cylinder(&at_z(-6.0), 2.0, 12.0, "bore").unwrap();
+    let body = difference(&ball, &bore).unwrap();
+    let top = 21f64.sqrt();
+    let (edge, _) = edge_at(&body, Vec3::new(2.0, 0.0, top)).unwrap();
+    let (wall, _) = face_at(&body, Vec3::new(2.0, 0.0, 0.0)).unwrap();
+    let b = chamfer_two_edges(&body, edge, wall, 2.0, 1.0, "cha").unwrap();
+    // The rim (2, √21) turned by 2·asin(1/10) away from the bore, about the ball's centre.
+    let turn = 2.0 * (0.1f64).asin();
+    let (rho1, z1) = (
+        2.0 * turn.cos() + top * turn.sin(),
+        top * turn.cos() - 2.0 * turn.sin(),
+    );
+    // The bored ball, πH³/6 for its bore's length H = 2√21, less the ring between the bore, the
+    // ball and the cone: the ball's zone over the frustum's and the bore's cylinder.
+    let zone = |a: f64, b: f64| PI * (25.0 * (b - a) - (b.powi(3) - a.powi(3)) / 3.0);
+    let (za, zb) = (top - 2.0, z1);
+    let frustum = PI * (zb - za) * (4.0 + 2.0 * rho1 + rho1 * rho1) / 3.0;
+    let ring = zone(za, top) - PI * 4.0 * (top - za) - (zone(za, zb) - frustum);
+    let volume = PI * (2.0 * top).powi(3) / 6.0 - ring;
+    let slant = ((rho1 - 2.0).powi(2) + (zb - za).powi(2)).sqrt();
+    let area = 2.0 * PI * 5.0 * (2.0 * top) + 2.0 * PI * 2.0 * (2.0 * top)
+        - 2.0 * PI * 5.0 * (top - z1)
+        - 2.0 * PI * 2.0 * 2.0
+        + PI * (2.0 + rho1) * slant;
+    assert_solid(&b, volume, area);
+    assert_eq!(kinds(&b, "cone"), 1);
+}
+
+#[test]
+fn a_straight_edge_between_a_plane_and_a_bore_takes_a_chamfer_by_the_chord() {
+    // The key standing in a bore, as above, the root of each side chamfered 1 on both faces: 1
+    // along the side, and a chord 1 long on the bore's wall, which turns 2·asin(1/40) about its
+    // axis.
+    let plate = extrude(
+        &Profile::rect(Vec2::ZERO, 60.0, 60.0),
+        &at_z(0.0),
+        10.0,
+        "plate",
+    );
+    let bore = extrude(&Profile::circle(Vec2::ZERO, 40.0), &at_z(0.0), 10.0, "bore");
+    let key = extrude(
+        &Profile::rect(Vec2::new(18.0, 0.0), 6.0, 6.0),
+        &at_z(0.0),
+        10.0,
+        "key",
+    );
+    let body = union(
+        &difference(&plate.unwrap(), &bore.unwrap()).unwrap(),
+        &key.unwrap(),
+    )
+    .unwrap();
+    let pairs = [("key.v_max", "bore.side"), ("key.v_min", "bore.side")];
+    let b = chamfer(&body, &pairs, 1.0, "c").unwrap();
+    let p = Vec2::new(391f64.sqrt(), 3.0);
+    let t0 = Vec2::new(p.x - 1.0, 3.0);
+    let turn = 2.0 * (1.0f64 / 40.0).asin();
+    let t1 = Vec2::new(
+        p.x * turn.cos() - p.y * turn.sin(),
+        p.x * turn.sin() + p.y * turn.cos(),
+    );
+    let (g_bore, bore_len) = arc_green(Vec2::ZERO, 20.0, t1, p);
+    let spandrel = (0.5 * (p.cross(t0) + t0.cross(t1)) + g_bore).abs();
+    let in_bore = |y: f64| y / 2.0 * (400.0 - y * y).sqrt() + 200.0 * (y / 20.0).asin();
+    let key_in_bore = in_bore(3.0) - in_bore(-3.0) - 15.0 * 6.0;
+    let volume = 10.0 * (3600.0 - 400.0 * PI + key_in_bore + 2.0 * spandrel);
+    let area = measure::area(&body) + 4.0 * spandrel + 20.0 * ((t1 - t0).norm() - 1.0 - bore_len);
+    assert_solid(&b, volume, area);
+    assert_eq!(names(&b, "c.bevel_0"), 1);
+    assert_eq!(names(&b, "c.bevel_1"), 1);
+}

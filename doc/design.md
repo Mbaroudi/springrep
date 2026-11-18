@@ -754,7 +754,8 @@ tangent chain; such an edge's blend face carries the names of the pair that reac
 pairs pick is blended once, its face named for both. An exact pair takes only the edges where faces
 carrying the two names themselves meet, not every face on their surfaces: where a boss's underside
 lies on the block's top plane, the pair of the boss's side and the underside picks the convex edge
-below the boss and not the concave one where the side stands on the block.
+below the boss and not the concave one where the side stands on the block. The forms that take edges
+themselves pick only those: another edge between the same two faces (a bore's other rim) is left.
 
 Where concave and convex picked edges meet at a vertex (other than at a saddle, below), the concave
 ones are blended first, and the convex ones are picked again on the result, where they run on round
@@ -763,8 +764,10 @@ the concave rounds as tangent chains; each keeps its pair's index, which names i
 Each picked edge's blend is a piece: the region between the edge and the bevel line or round arc,
 swept along the edge, a prism along a straight edge, a ring or a sector of one about a circular
 edge. The section's sides follow the two faces: lines on planes, and on a cylinder along a straight
-edge its circle, so a round between a plane and a bore is the circle tangent to both. Each piece is
-swept as a tool solid, so its blend face, the contact curves where that face leaves the two faces
+edge its circle, so a round between a plane and a bore is the circle tangent to both. A chamfer's
+setback is the straight distance from the edge in the section, so on a circular side (a bore, or a
+sphere about a circular edge's axis) it ends a chord that long from the edge, and the bevel is the
+line or cone between the two ends. Each piece is swept as a tool solid, so its blend face, the contact curves where that face leaves the two faces
 the edge joins, and its end sections are exact by construction.
 
 The result is made from the pieces by surgery, the blend sewn in as a face (Jackson 1995, section
@@ -918,8 +921,7 @@ design that picks several such chains has them filleted one after another.
 
 What the region form cannot reach comes back as `Error::Unsupported`, never as a wrong solid:
 
-- a straight edge between faces other than planes and cylinders along it, and a chamfer on a
-  cylinder along a straight edge;
+- a straight edge between faces other than planes and cylinders along it;
 - a circular edge between faces other than planes, cylinders, cones and spheres about its axis,
   unless it is filleted as a rolling ball;
 - a rolling-ball fillet through a chain vertex another face meets, or whose contact runs past more

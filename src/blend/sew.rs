@@ -473,7 +473,7 @@ pub(super) fn sewn(
                     specs.push(if convex[i] {
                         CoedgeSpec {
                             edge: m.edge,
-                            reversed: !(co.reversed != m.flipped),
+                            reversed: co.reversed == m.flipped,
                             pcurve: pcurve(true),
                         }
                     } else {
