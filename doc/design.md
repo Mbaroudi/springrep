@@ -1125,6 +1125,10 @@ at the end, and the paths of its two ends. It is exact where the motion has a cl
   points, as [`helix`](../src/sweep/helix.rs) builds a screwed face, within its `SCREW_FIT`; a
   line along the screw's axis sweeps the exact cylinder.
 
+Under a turn or a screw, a curve that stays at one distance from the axis sweeps a strip of the
+cylinder about the axis at that distance. The path of a vertex under a screw is a helix, cut at each
+whole turn, so that no edge of the result runs more than once round the axis.
+
 Every piece of one curve (an edge cut at several roots) sweeps a face on the one surface the whole
 curve sweeps, so faces that two parts of the sweep share are one surface to the booleans that unite
 the parts. A swept face folds where the motion runs along its curve, the velocity crossed with

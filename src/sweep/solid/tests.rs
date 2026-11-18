@@ -220,3 +220,75 @@ fn a_box_turned_about_a_line_beside_it_is_built_in_parts() {
     let got = measure::volume(&swept);
     assert!(rel(got, want) < 1e-9, "{got} {want}");
 }
+
+/// The right-hand screw about the z axis that rises `lead` a turn.
+fn screw_z(lead: f64) -> crate::sweep::Helix {
+    crate::sweep::Helix {
+        origin: Vec3::ZERO,
+        axis: Vec3::Z,
+        rise: lead / (2.0 * PI),
+        sign: 1.0,
+    }
+}
+
+// A ball screwed along a helix no tighter than itself sweeps the tube about its centre's helix,
+// π r² times the helix's length θ√(R² + c²), and a ball at each end.
+#[test]
+fn a_ball_screwed_along_a_helix_is_a_tube() {
+    let (r, big, lead, angle) = (1.0, 5.0, 6.0, 4.0);
+    let ball = sphere(
+        &Frame::WORLD.translated(Vec3::new(big, 0.0, 0.0)),
+        r,
+        "ball",
+    )
+    .unwrap();
+    let screw = screw_z(lead);
+    let motion = Motion::Screw {
+        screw,
+        from: 0.0,
+        to: angle,
+    };
+    let b = solid(&ball, &motion, "sw").unwrap();
+    assert!(check::check(&b).is_empty());
+    let length = angle * (big * big + screw.rise * screw.rise).sqrt();
+    let want = 4.0 / 3.0 * PI * r.powi(3) + PI * r * r * length;
+    assert!(
+        rel(measure::volume(&b), want) < 1e-9,
+        "{} {want}",
+        measure::volume(&b)
+    );
+}
+
+// The bar 4 ≤ x ≤ 12, |y| ≤ 8, |z| ≤ 1 screwed one turn of lead 6 about the z axis, within the
+// cylinder of radius 5. A point at radius ρ is in the bar at turn t while its angle from the bar's
+// is within a = acos(4/ρ), so at each angle the turn covers heights 2 + 2ca long, c the rise a
+// radian, or two such runs 2 + c(a ± φ) long within a of where the bar starts. Over the turn that is
+// 4π + 4πca + 4a a unit of ρ dρ: 18π from radius 4 to 5, and with ∫ρ acos(4/ρ) dρ = 8(25φ₁/16 −
+// 3/4), φ₁ = acos(4/5), (4πc + 4)·8(25φ₁/16 − 3/4) = 200φ₁ − 96 more.
+#[test]
+fn a_bar_screwed_a_turn_cuts_a_square_thread() {
+    let bar = block(
+        &Frame::WORLD.translated(Vec3::new(4.0, -8.0, -1.0)),
+        Vec3::new(8.0, 16.0, 2.0),
+        "bar",
+    )
+    .unwrap();
+    let motion = Motion::Screw {
+        screw: screw_z(6.0),
+        from: 0.0,
+        to: 2.0 * PI,
+    };
+    let b = solid(&bar, &motion, "sw").unwrap();
+    assert!(check::check(&b).is_empty());
+    let rod = cylinder(
+        &Frame::WORLD.translated(Vec3::new(0.0, 0.0, -2.0)),
+        5.0,
+        10.0,
+        "rod",
+    )
+    .unwrap();
+    let thread = crate::boolean::intersection(&b, &rod).unwrap();
+    let want = 18.0 * PI + 200.0 * 0.8f64.acos() - 96.0;
+    let got = measure::volume(&thread);
+    assert!(rel(got, want) < 1e-9, "{got} {want}");
+}

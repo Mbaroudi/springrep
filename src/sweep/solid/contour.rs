@@ -192,47 +192,51 @@ impl Closed<'_> {
     }
 
     /// The values of `u` in the window where both coefficients vanish, so the rate does all along
-    /// the line `u = const`: the roots of the second coefficient at which the first is zero too,
-    /// or, where the second vanishes everywhere (`flat`), the roots of the first.
+    /// the line `u = const`: the roots of either coefficient at which the other is zero too, since
+    /// one may only touch zero there, or, where the second vanishes everywhere (`flat`), the roots
+    /// of the first.
     fn whole_lines(&self, eps: f64, flat: bool, coef: impl Fn(f64) -> (f64, f64)) -> Vec<f64> {
-        let main = |u: f64| if flat { coef(u).0 } else { coef(u).1 };
-        let other = |u: f64| if flat { 0.0 } else { coef(u).0 };
         let n = 720;
         let (lo, hi) = (self.lo.x, self.hi.x);
         let at = |k: usize| lo + (hi - lo) * k as f64 / n as f64;
-        let mut out: Vec<f64> = Vec::new();
-        let mut prev = main(at(0));
-        for k in 1..=n {
-            let cur = main(at(k));
-            let root = if prev == 0.0 {
-                Some(at(k - 1))
-            } else if cur.signum() != prev.signum() && cur != 0.0 {
-                let (mut a, mut b) = (at(k - 1), at(k));
-                for _ in 0..80 {
-                    let m = 0.5 * (a + b);
-                    if main(m).signum() == prev.signum() {
-                        a = m;
-                    } else {
-                        b = m;
+        let roots = |f: &dyn Fn(f64) -> f64| -> Vec<f64> {
+            let mut out = Vec::new();
+            let mut prev = f(at(0));
+            if prev == 0.0 {
+                out.push(lo);
+            }
+            for k in 1..=n {
+                let cur = f(at(k));
+                if cur == 0.0 {
+                    out.push(at(k));
+                } else if prev != 0.0 && cur.signum() != prev.signum() {
+                    let (mut a, mut b) = (at(k - 1), at(k));
+                    for _ in 0..80 {
+                        let m = 0.5 * (a + b);
+                        if f(m).signum() == prev.signum() {
+                            a = m;
+                        } else {
+                            b = m;
+                        }
                     }
+                    out.push(0.5 * (a + b));
                 }
-                Some(0.5 * (a + b))
-            } else {
-                None
-            };
-            if let Some(u) = root
-                && other(u).abs() <= eps
-                && out.last().is_none_or(|&w| (u - w).abs() > 1e-9)
-            {
+                prev = cur;
+            }
+            out
+        };
+        let mut found = roots(&|u| coef(u).0);
+        if !flat {
+            found.extend(roots(&|u| coef(u).1));
+        }
+        found.sort_by(f64::total_cmp);
+        let mut out: Vec<f64> = Vec::new();
+        for u in found {
+            let (a, b) = coef(u);
+            let zero = a.abs() <= eps && (flat || b.abs() <= eps);
+            if zero && out.last().is_none_or(|&w| (u - w).abs() > 1e-9) {
                 out.push(u);
             }
-            prev = cur;
-        }
-        if main(hi) == 0.0
-            && other(hi).abs() <= eps
-            && out.last().is_none_or(|&w| (hi - w).abs() > 1e-9)
-        {
-            out.push(hi);
         }
         out
     }
@@ -316,6 +320,32 @@ impl Closed<'_> {
     pub(super) fn point(&self, b: Branch, s: f64) -> Option<(Point3, Vec2)> {
         let uv = self.uv(b, s)?;
         Some((self.rate.surface.eval(uv.x, uv.y), uv))
+    }
+
+    /// Where branch `b`, coming from the side of `u = at` that `side` gives the sign of, meets the
+    /// whole line `u = at`, on which both coefficients vanish: there the branch's own reading is
+    /// `0/0`, and it is the limit of the coefficients' ratio, their derivatives' ratio.
+    pub(super) fn crossing(&self, b: Branch, at: f64, side: f64) -> Option<(Point3, Vec2)> {
+        let h = 1e-6 * (self.hi.x - self.lo.x).max(1e-9);
+        let rate = |f: &dyn Fn(f64) -> (f64, f64)| {
+            let (p, m) = (f(at + h), f(at - h));
+            ((p.0 - m.0) / (2.0 * h), (p.1 - m.1) / (2.0 * h))
+        };
+        let v = match b {
+            Branch::Ratio => {
+                let (dn, dd) = rate(&|u| self.linear(u));
+                -dn / dd
+            }
+            Branch::Angle { shift } => {
+                let (da, db) = rate(&|u| self.harmonic(u));
+                self.in_window_v((side * db).atan2(side * da) + shift)
+            }
+            _ => return None,
+        };
+        v.is_finite().then(|| {
+            let uv = Vec2::new(at, v);
+            (self.rate.surface.eval(uv.x, uv.y), uv)
+        })
     }
 
     /// The parameter of `b` at surface parameters `uv`, which lie on it.

@@ -54,7 +54,8 @@ fn moved_loops(
 fn folds(motion: &Steady, curve: &Curve, range: (f64, f64)) -> bool {
     let n = 256;
     let mut last: Option<Vec3> = None;
-    for k in 0..=n {
+    // An end may be where the motion runs along the curve: a characteristic curve ends there.
+    for k in 1..n {
         let t = range.0 + (range.1 - range.0) * k as f64 / n as f64;
         let (p, d) = curve.d1(t);
         let v = motion.velocity(p);
@@ -160,8 +161,11 @@ pub(super) fn product(
     keys.sort_unstable();
     // The path of each vertex the swept faces end on, made once and shared by the two faces
     // beside it.
-    let mut paths: HashMap<usize, usize> = HashMap::new();
+    let mut paths: HashMap<usize, Vec<usize>> = HashMap::new();
     let names: BTreeSet<FaceName> = [FaceName::new(feature, FaceName::SIDE)].into();
+    // A path is cut at each whole turn of a screw, as a screwed profile's are, so no edge winds
+    // round the axis more than once.
+    let stops = motion.stops();
     for k in keys {
         let us = &uses[&k];
         let inside: Vec<&(usize, bool)> = us.iter().filter(|u| swept(u.0)).collect();
@@ -194,31 +198,47 @@ pub(super) fn product(
         }
         let sheet = motion.sheet(&placed, cut.whole[k])?;
         let span = sheet.span;
-        let mut path = |v: usize, pieces: &mut Vec<PieceGeom>| -> Result<usize> {
-            if let Some(&id) = paths.get(&v) {
-                return Ok(id);
-            }
-            let curve = if still[v] {
-                // A pole of the face: its row of points at the vertex is the vertex.
-                None
-            } else {
-                Some(Rc::new(motion.path(pose0.point(cut.pool[v]))?))
+        let mut path =
+            |v: usize, pieces: &mut Vec<PieceGeom>, pool: &mut Vec<Point3>| -> Result<Vec<usize>> {
+                if let Some(ids) = paths.get(&v) {
+                    return Ok(ids.clone());
+                }
+                if still[v] {
+                    // A pole of the face, its own: its row of points at the vertex is the vertex.
+                    pieces.push(PieceGeom {
+                        curve: None,
+                        range: (0.0, span),
+                        v0: v,
+                        v1: v,
+                        tol: tol::LINEAR,
+                    });
+                    return Ok(vec![pieces.len() - 1]);
+                }
+                let curve = Rc::new(motion.path(pose0.point(cut.pool[v]))?);
+                let mut ids = Vec::with_capacity(stops.len() - 1);
+                let mut from = v;
+                for (i, w) in stops.windows(2).enumerate() {
+                    let to = if i + 2 == stops.len() {
+                        at1(v)
+                    } else {
+                        pool.push(curve.eval(w[1]));
+                        pool.len() - 1
+                    };
+                    pieces.push(PieceGeom {
+                        curve: Some(curve.clone()),
+                        range: (w[0], w[1]),
+                        v0: from,
+                        v1: to,
+                        tol: tol::LINEAR,
+                    });
+                    ids.push(pieces.len() - 1);
+                    from = to;
+                }
+                paths.insert(v, ids.clone());
+                Ok(ids)
             };
-            pieces.push(PieceGeom {
-                curve,
-                range: (0.0, span),
-                v0: v,
-                v1: at1(v),
-                tol: tol::LINEAR,
-            });
-            let id = pieces.len() - 1;
-            // A pole is one face's own.
-            if !still[v] {
-                paths.insert(v, id);
-            }
-            Ok(id)
-        };
-        let (pa, pb) = (path(a, &mut pieces)?, path(b, &mut pieces)?);
+        let pa = path(a, &mut pieces, &mut pool)?;
+        let pb = path(b, &mut pieces, &mut pool)?;
         let cap = |piece: usize, s: f64, from: f64, to: f64, fwd: bool| {
             let pg = &pieces[piece];
             Trim {
@@ -242,36 +262,47 @@ pub(super) fn product(
                 v1: if fwd { pg.v1 } else { pg.v0 },
             }
         };
-        let side = |piece: usize, t: f64, up: bool| {
-            let pg = &pieces[piece];
-            let (s0, s1) = if up { (0.0, span) } else { (span, 0.0) };
-            Trim {
-                piece,
-                forward: up,
-                curve: pg.curve.clone(),
-                pole: pool[pg.v0],
-                t0: s0,
-                t1: s1,
-                map: if sheet.turned.is_some() {
-                    UvMap::Projected
-                } else {
-                    UvMap::Affine {
-                        origin: sheet.uv(0.0, t),
-                        dir: sheet.along,
+        let side = |ids: &[usize], t: f64, up: bool| -> Vec<Trim> {
+            let mut trims: Vec<Trim> = ids
+                .iter()
+                .map(|&piece| {
+                    let pg = &pieces[piece];
+                    let (s0, s1) = if up {
+                        pg.range
+                    } else {
+                        (pg.range.1, pg.range.0)
+                    };
+                    Trim {
+                        piece,
+                        forward: up,
+                        curve: pg.curve.clone(),
+                        pole: pool[pg.v0],
+                        t0: s0,
+                        t1: s1,
+                        map: if !sheet.along_affine {
+                            UvMap::Projected
+                        } else {
+                            UvMap::Affine {
+                                origin: sheet.uv(0.0, t),
+                                dir: sheet.along,
+                            }
+                        },
+                        uv0: sheet.uv(s0, t),
+                        uv1: sheet.uv(s1, t),
+                        v0: if up { pg.v0 } else { pg.v1 },
+                        v1: if up { pg.v1 } else { pg.v0 },
                     }
-                },
-                uv0: sheet.uv(s0, t),
-                uv1: sheet.uv(s1, t),
-                v0: if up { pg.v0 } else { pg.v1 },
-                v1: if up { pg.v1 } else { pg.v0 },
+                })
+                .collect();
+            if !up {
+                trims.reverse();
             }
+            trims
         };
-        let lp = vec![
-            cap(k, 0.0, ta, tb, forward),
-            side(pb, tb, true),
-            cap(k + np, span, tb, ta, !forward),
-            side(pa, ta, false),
-        ];
+        let mut lp = vec![cap(k, 0.0, ta, tb, forward)];
+        lp.extend(side(&pb, tb, true));
+        lp.push(cap(k + np, span, tb, ta, !forward));
+        lp.extend(side(&pa, ta, false));
         // Material on the left in the parameter plane where the face is not reversed.
         let corners = [
             sheet.uv(0.0, ta),

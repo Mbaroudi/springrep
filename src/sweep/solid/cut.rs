@@ -72,9 +72,23 @@ fn boundary_roots(b: &Brep, f: FaceId, rate: &Rate, eps: f64) -> Vec<Meet> {
     for &lp in &b.face(f).loops {
         // The loop's samples in order: each coedge's, without its last, which is the next one's
         // first.
+        // A pole is one point with one rate, whatever its row of parameters reads, and a normal
+        // there taken from a parameter a hair along can come from past the pole, turned over: the
+        // rate is not read at poles.
+        let poles: Vec<_> = b
+            .lp(lp)
+            .coedges
+            .iter()
+            .map(|&c| b.edge(b.coedge(c).edge))
+            .filter(|e| e.curve.is_none())
+            .map(|e| e.start)
+            .collect();
         let mut samples: Vec<(CoedgeId, f64, Vec2, f64)> = Vec::new();
         for &c in &b.lp(lp).coedges {
             let e = b.edge(b.coedge(c).edge);
+            if e.curve.is_none() {
+                continue;
+            }
             let pieces = e
                 .curve
                 .as_ref()
@@ -82,7 +96,8 @@ fn boundary_roots(b: &Brep, f: FaceId, rate: &Rate, eps: f64) -> Vec<Meet> {
             let n = SAMPLES * (pieces + 1);
             let ts = coedge_params(b, c, n);
             let uvs = b.coedge_uvs(c, &ts);
-            for k in 0..n {
+            let from_pole = poles.contains(&b.coedge_start(c));
+            for k in usize::from(from_pole)..n {
                 samples.push((c, ts[k], uvs[k], rate.at(uvs[k])));
             }
         }
@@ -435,10 +450,13 @@ struct Places {
 
 impl Places {
     /// The point at `t` on `edge` as a vertex: an end of the edge where it lies on one, an
-    /// earlier split where it lies on one, else a new vertex splitting the edge there.
+    /// earlier split where it lies on one, else a new vertex splitting the edge there. On a pole
+    /// it is the pole's vertex.
     fn on_edge(&mut self, b: &Brep, edge: EdgeId, t: f64) -> (usize, Point3) {
         let e = b.edge(edge);
-        let curve = e.curve.as_ref().expect("roots lie on edges with curves");
+        let Some(curve) = e.curve.as_ref() else {
+            return (e.start.index(), b.vertex(e.start).point);
+        };
         let p = curve.eval(t);
         for v in [e.start, e.end] {
             let q = b.vertex(v).point;
@@ -517,25 +535,47 @@ fn closed_cuts(
         .iter()
         .map(|r| vec![(r.s.0, None), (r.s.1, None)])
         .collect();
+    // Where both coefficients vanish on a whole line, a branch crossing it may have no value on
+    // it (a torus's two angles trade places there), so the crossing is its limit from the side it
+    // runs on; a run that stops at the line ends at the crossing.
+    let width = closed.hi.x - closed.lo.x;
+    let near = 1e-7 * width;
+    let mut crossings: Vec<(Point3, usize)> = Vec::new();
     for i in 0..runs.len() {
         let Branch::AtU { at } = runs[i].branch else {
             continue;
         };
         for j in 0..runs.len() {
+            let (s0, s1) = runs[j].s;
             if matches!(runs[j].branch, Branch::AtU { .. } | Branch::Line { .. })
-                || !(runs[j].s.0 < at && at < runs[j].s.1)
+                || at < s0 - near
+                || at > s1 + near
             {
                 continue;
             }
-            let Some((p, uv)) = closed.point(runs[j].branch, at) else {
+            let side = (0.5 * (s0 + s1) - at).signum();
+            let Some((p, uv)) = closed.crossing(runs[j].branch, at, side) else {
                 continue;
             };
-            if !(runs[i].s.0 < uv.y && uv.y < runs[i].s.1) {
+            let (v0, v1) = runs[i].s;
+            let reach = 1e-6 * (v1 - v0);
+            if uv.y < v0 - reach || uv.y > v1 + reach {
                 continue;
             }
-            let v = places.inside(p);
-            stops[i].push((uv.y, Some(v)));
-            stops[j].push((at, Some(v)));
+            let v = match crossings.iter().find(|c| c.0.dist(p) <= 1e-6 * size) {
+                Some(c) => c.1,
+                None => {
+                    let v = places.inside(p);
+                    crossings.push((p, v));
+                    v
+                }
+            };
+            for (k, s) in [(i, uv.y.clamp(v0, v1)), (j, at.clamp(s0, s1))] {
+                match stops[k].iter_mut().find(|x| (x.0 - s).abs() <= near) {
+                    Some(stop) => *stop = (stop.0, Some(v)),
+                    None => stops[k].push((s, Some(v))),
+                }
+            }
         }
     }
     let surface = closed.rate.surface;
@@ -547,7 +587,9 @@ fn closed_cuts(
             let mut span = [w[0].0, w[1].0];
             let reach = 0.05 * (w[1].0 - w[0].0);
             for (k, &(s, known)) in w.iter().enumerate() {
-                let Some((p, uv)) = closed.point(run.branch, s) else {
+                // Read a hair inside the run: at a crossing the closed form may have no value.
+                let inner = s.clamp(w[0].0 + 1e-3 * near, w[1].0 - 1e-3 * near);
+                let Some((p, uv)) = closed.point(run.branch, inner) else {
                     return Err(Error::Numerical(
                         "a characteristic curve ends where its closed form has no point".into(),
                     ));

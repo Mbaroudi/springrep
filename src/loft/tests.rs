@@ -295,3 +295,30 @@ fn projection_finds_the_nearest_point_on_a_side_wound_past_a_turn() {
     // millimetres apart along it miss its basin.
     assert_projects_nearest(&tooth_space(0.6, 11.0), 1e-3, 4, 24);
 }
+
+// The quarter circle of radius 1 as a rational quadratic: a rail cut from it runs on the circle.
+#[test]
+fn a_rail_cut_from_a_rational_spline_stays_on_it() {
+    let w = std::f64::consts::FRAC_1_SQRT_2;
+    let quarter = NurbsCurve::new(
+        2,
+        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+        vec![Vec3::X, Vec3::new(1.0, 1.0, 0.0), Vec3::Y],
+        Some(vec![1.0, w, 1.0]),
+    )
+    .unwrap();
+    let curve = Curve::Nurbs(Box::new(quarter));
+    let r = Rail::of_curve(&curve, 0.75, 0.25).unwrap();
+    assert!(r.start().dist(curve.eval(0.75)) < 1e-12);
+    assert!(r.end().dist(curve.eval(0.25)) < 1e-12);
+    for k in 0..=10 {
+        let s = f64::from(k) / 10.0;
+        let mut h = [0.0; 4];
+        for (b, p) in rail::basis(r.degree, &r.knots, s).iter().zip(&r.pw) {
+            for i in 0..4 {
+                h[i] += b * p[i];
+            }
+        }
+        assert!((point(h).norm() - 1.0).abs() < 1e-12, "{s}");
+    }
+}

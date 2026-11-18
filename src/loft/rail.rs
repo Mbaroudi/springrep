@@ -40,7 +40,7 @@ pub(crate) struct Rail {
 }
 
 impl Rail {
-    /// The curve from `t0` to `t1` (either order) of a line, conic or polynomial spline.
+    /// The curve from `t0` to `t1` (either order) of a line, conic, spline or fitted intersection.
     pub(crate) fn of_curve(curve: &Curve, t0: f64, t1: f64) -> Result<Rail> {
         let r = match curve {
             Curve::Line(_) => Rail {
@@ -59,11 +59,24 @@ impl Rail {
                 let sub = whole.sub(t0.min(t1), t0.max(t1))?;
                 if t0 > t1 { sub.reversed() } else { sub }
             }
-            other => {
-                return Err(Error::Unsupported(format!(
-                    "a loft section made of a {} curve",
-                    other.kind()
-                )));
+            // A fitted intersection curve is its spline.
+            Curve::Intersection(c) => {
+                return Rail::of_curve(&Curve::BSpline(c.approx.clone()), t0, t1);
+            }
+            Curve::Nurbs(n) => {
+                let w = n.weights().map(|w| w.to_vec());
+                let whole = Rail {
+                    degree: n.degree(),
+                    knots: n.knots().to_vec(),
+                    pw: n
+                        .control_points()
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &p)| hom(p, w.as_ref().map_or(1.0, |w| w[i])))
+                        .collect(),
+                };
+                let sub = whole.sub(t0.min(t1), t0.max(t1))?;
+                if t0 > t1 { sub.reversed() } else { sub }
             }
         };
         Ok(r.normalized())

@@ -39,9 +39,9 @@ pub(super) enum Steady {
 
 /// The face a curve sweeps: its surface, and where on it the curve lies at each step of the
 /// motion. The point the motion carries the curve's point at `t` to after `s`, `s` from 0 to
-/// `span`, is at `origin + s·along + t·across` in the surface's parameters: exactly where `affine`,
-/// and at the curve's ends otherwise. A plane a turn sweeps has cartesian parameters instead, and
-/// `turned` places its points.
+/// `span`, is at `origin + s·along + t·across` in the surface's parameters, or where `exact` puts
+/// it. `affine` says the curve's copies are parameter lines on which `t` runs affinely, and
+/// `along_affine` the same of the paths and `s`.
 pub(super) struct Sheet {
     pub surface: Surface,
     pub span: f64,
@@ -49,12 +49,13 @@ pub(super) struct Sheet {
     pub along: Vec2,
     pub across: Vec2,
     pub affine: bool,
-    pub turned: Option<Box<dyn Fn(f64, f64) -> Vec2>>,
+    pub along_affine: bool,
+    pub exact: Option<Box<dyn Fn(f64, f64) -> Vec2>>,
 }
 
 impl Sheet {
     pub(super) fn uv(&self, s: f64, t: f64) -> Vec2 {
-        match &self.turned {
+        match &self.exact {
             Some(f) => f(s, t),
             None => self.origin + self.along * s + self.across * t,
         }
@@ -68,7 +69,8 @@ impl Sheet {
             along,
             across,
             affine: true,
-            turned: None,
+            along_affine: true,
+            exact: None,
         }
     }
 }
@@ -120,11 +122,23 @@ fn turned(curve: &Curve, range: (f64, f64), o: Point3, axis: Vec3, span: f64) ->
             along: Vec2::ZERO,
             across: Vec2::ZERO,
             affine: false,
-            turned: Some(Box::new(move |s, t| {
+            along_affine: false,
+            exact: Some(Box::new(move |s, t| {
                 let q = plane.to_local(Transform::rotation(o, axis, s).point(c.eval(t)));
                 Vec2::new(q.x, q.y)
             })),
         });
+    }
+    let still = Helix {
+        origin: o,
+        axis,
+        rise: 0.0,
+        sign: 1.0,
+    };
+    if !matches!(curve, Curve::Line(_))
+        && let Some(sheet) = coaxial(curve, range, &still, span)?
+    {
+        return Ok(sheet);
     }
     match curve {
         Curve::Line(l) => {
@@ -318,6 +332,22 @@ impl Steady {
         }
     }
 
+    /// Where the paths are cut, in the motion's own parameter: their ends, and each whole turn of
+    /// a screw between them.
+    pub(super) fn stops(&self) -> Vec<f64> {
+        let span = self.span();
+        let mut out = vec![0.0];
+        if let Steady::Screw { .. } = self {
+            let mut s = TAU;
+            while s < span - tol::ANGULAR {
+                out.push(s);
+                s += TAU;
+            }
+        }
+        out.push(span);
+        out
+    }
+
     /// The line the motion holds still: a turn's axis.
     pub(super) fn held(&self) -> Option<(Point3, Vec3)> {
         match self {
@@ -395,7 +425,8 @@ impl Steady {
                             along: Vec2::new(dir.dot(frame.x), dir.dot(frame.y)),
                             across: Vec2::new(1.0, 0.0),
                             affine: true,
-                            turned: None,
+                            along_affine: true,
+                            exact: None,
                         });
                     }
                     Curve::Circle(c) if c.frame.z.cross(dir).norm() <= tol::ANGULAR => {
@@ -411,7 +442,8 @@ impl Steady {
                             along: Vec2::new(0.0, 1.0),
                             across: Vec2::new(turn, 0.0),
                             affine: true,
-                            turned: None,
+                            along_affine: true,
+                            exact: None,
                         });
                     }
                     _ => {}
@@ -426,7 +458,8 @@ impl Steady {
                     along: Vec2::new(0.0, 1.0),
                     across: Vec2::new(1.0, 0.0),
                     affine: true,
-                    turned: None,
+                    along_affine: true,
+                    exact: None,
                 })
             }
             Steady::Turn { origin, axis, .. } => turned(curve, range, *origin, *axis, span),
@@ -435,10 +468,70 @@ impl Steady {
     }
 }
 
+/// What `curve` sweeps under `screw` through `angle` where it lies at one distance from the
+/// screw's axis, as an edge cut by a cylinder about it does: a strip of that cylinder, its angle the
+/// curve's own plus the turn and its height the curve's own plus the rise.
+fn coaxial(curve: &Curve, range: (f64, f64), screw: &Helix, angle: f64) -> Result<Option<Sheet>> {
+    let (o, axis) = (screw.origin, screw.axis);
+    let radial = |p: Point3| {
+        let q = p - o;
+        q - axis * q.dot(axis)
+    };
+    let at = |k: usize| curve.eval(range.0 + (range.1 - range.0) * k as f64 / 32.0);
+    let radius = radial(at(0)).norm();
+    let level = |p: Point3| (radial(p).norm() - radius).abs() <= tol::LINEAR;
+    if radius <= tol::LINEAR || !(0..=32).all(|k| level(at(k))) {
+        return Ok(None);
+    }
+    // Angles from the curve's middle, which no curve within a half turn either side of it
+    // carries across the reading's jump.
+    let frame = Frame::new(o, axis, radial(at(16)))?;
+    let c = curve.clone();
+    let (sign, rise) = (screw.sign, screw.rise);
+    Ok(Some(Sheet {
+        surface: Surface::Cylinder(Cylinder { frame, radius }),
+        span: angle,
+        origin: Vec2::ZERO,
+        along: Vec2::new(sign, rise),
+        across: Vec2::ZERO,
+        affine: false,
+        along_affine: true,
+        exact: Some(Box::new(move |s, t| {
+            let q = frame.to_local(c.eval(t));
+            Vec2::new(q.y.atan2(q.x) + sign * s, q.z + rise * s)
+        })),
+    }))
+}
+
 /// What `curve` sweeps over its `range` carried through `angle` of `screw` from where it is: the
 /// rational B-spline whose columns follow the helices of its control points, within `SCREW_FIT`
 /// of them, `u` the turn and `v` the curve's rational parameter on `[0, 1]`.
 fn screwed(curve: &Curve, range: (f64, f64), screw: &Helix, angle: f64) -> Result<Sheet> {
+    // A line along the axis, a thread's crest, sweeps the exact cylinder, so faces two such lines
+    // sweep at one radius are on one surface.
+    if let Curve::Line(l) = curve
+        && l.dir.cross(screw.axis).norm() <= tol::ANGULAR
+    {
+        let q = l.origin - screw.origin;
+        let height = q.dot(screw.axis);
+        let out = q - screw.axis * height;
+        if out.norm() > tol::LINEAR {
+            let frame = Frame::new(screw.origin, screw.axis, out)?;
+            return Ok(Sheet::affine(
+                Surface::Cylinder(Cylinder {
+                    frame,
+                    radius: out.norm(),
+                }),
+                angle,
+                Vec2::new(screw.sign, screw.rise),
+                Vec2::new(0.0, l.dir.dot(screw.axis)),
+                Vec2::new(0.0, height),
+            ));
+        }
+    }
+    if let Some(sheet) = coaxial(curve, range, screw, angle)? {
+        return Ok(sheet);
+    }
     let rail = Rail::of_curve(curve, range.0, range.1)?;
     let radius = rail
         .pw
@@ -471,13 +564,42 @@ fn screwed(curve: &Curve, range: (f64, f64), screw: &Helix, angle: f64) -> Resul
         weights,
     )?));
     let width = range.1 - range.0;
+    // A spline's rail runs with its own parameter; a conic's rational parameter does not run with
+    // its angle, so a point's is found on the rail.
+    let conic = matches!(curve, Curve::Circle(_) | Curve::Ellipse(_));
+    let exact: Option<Box<dyn Fn(f64, f64) -> Vec2>> = if conic {
+        let (ctrl, w) = (rail.pw.iter().map(|&h| point(h)).collect(), Some(w));
+        let on = Curve::Nurbs(Box::new(NurbsCurve::new(
+            rail.degree,
+            rail.knots.clone(),
+            ctrl,
+            w,
+        )?));
+        let c = curve.clone();
+        let closed = rail.start().dist(rail.end()) <= tol::LINEAR;
+        // Round a whole conic its two ends are one point: the reading nearer the angle's share of
+        // the range is the one along the rail.
+        Some(Box::new(move |s, t| {
+            let v = on.project(c.eval(t), 0.0, 1.0);
+            let share = (t - range.0) / width;
+            let v = if closed && (v - share).abs() > 0.5 {
+                v + (share - v).signum()
+            } else {
+                v
+            };
+            Vec2::new(s, v)
+        }))
+    } else {
+        None
+    };
     Ok(Sheet {
         surface,
         span: angle,
         origin: Vec2::new(0.0, -range.0 / width),
         along: Vec2::new(1.0, 0.0),
         across: Vec2::new(0.0, 1.0 / width),
-        affine: matches!(curve, Curve::Line(_)),
-        turned: None,
+        affine: !conic,
+        along_affine: true,
+        exact,
     })
 }
