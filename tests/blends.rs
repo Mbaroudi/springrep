@@ -688,6 +688,24 @@ fn a_chamfer_of_one_rim_of_a_bore_leaves_the_other_sharp() {
 }
 
 #[test]
+fn a_blend_that_takes_a_whole_end_closes_it_to_a_point_on_the_axis() {
+    use springrep::primitive;
+    // A cylinder of radius 5 and height 10. A chamfer of 5 takes the whole top: a cone of height 5
+    // stands on the cylinder's lower half, its apex the top's centre. A fillet of 5 rolls a ball
+    // centred on the axis: a hemisphere stands there instead.
+    let c = primitive::cylinder(&Frame::WORLD, 5.0, 10.0, "cyl").unwrap();
+    let base = (125.0 * PI, 25.0 * PI + 50.0 * PI);
+    let b = chamfer(&c, &[("cyl.end", "cyl.side")], 5.0, "c").unwrap();
+    let cone = (125.0 * PI / 3.0, 25.0 * 2f64.sqrt() * PI);
+    assert_solid(&b, base.0 + cone.0, base.1 + cone.1);
+    assert_eq!((b.face_count(), kinds(&b, "cone")), (3, 1));
+    let b = fillet(&c, &[("cyl.end", "cyl.side")], 5.0, "f").unwrap();
+    let dome = (2.0 * PI * 125.0 / 3.0, 50.0 * PI);
+    assert_solid(&b, base.0 + dome.0, base.1 + dome.1);
+    assert_eq!((b.face_count(), kinds(&b, "sphere")), (3, 1));
+}
+
+#[test]
 fn a_straight_edge_between_a_plane_and_a_bore_takes_a_chamfer_by_the_chord() {
     // The key standing in a bore, as above, the root of each side chamfered 1 on both faces: 1
     // along the side, and a chord 1 long on the bore's wall, which turns 2·asin(1/40) about its

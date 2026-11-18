@@ -889,6 +889,12 @@ so a round where either meets a plane, cylinder, cone, sphere or torus about tha
 hemisphere's equator, a dome fused on a block, a torus section's rim) is the torus tangent to both,
 and its side on the sphere or torus sweeps into a zone of that surface itself.
 
+A convex blend about a whole circle whose contact on one face reaches the axis (a chamfer as wide as
+a cylinder's radius on its end, a round of the cylinder's own radius) takes that face whole, and the
+blend closes to a point on the axis: a cone's apex or a sphere's pole. The section would pinch to a
+point there, so it runs out over the face instead, along the face's normal and across to the axis,
+where only air lies past a convex edge, and the tool is cut from the body with a boolean.
+
 A fillet along a tangent chain with an edge no constant section sweeps (an ellipse where a bore
 meets a sloping face, a circle whose faces do not share its axis) is the surface a ball of the
 fillet's radius sweeps rolling along the chain against the faces on both sides

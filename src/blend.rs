@@ -384,7 +384,12 @@ struct Outline {
     profile: Profile,
     reach: [(Vec2, f64); 2],
     radius: f64,
+    /// The section runs out over a face it closes to a point on the axis ([`closing_face`]).
+    pole: bool,
 }
+
+/// The sides of a section that runs out over a face into air.
+const OVER: &str = "over";
 
 /// What one end of a piece does at its edge's vertex.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -738,6 +743,8 @@ fn blend_picked(
     let sewing = std::time::Instant::now();
     let sew_tools = if spills.iter().any(|s| !s.is_empty()) {
         Err("a concave blend that runs over the edge of its face".to_string())
+    } else if outlines.iter().any(|o| o.pole) {
+        Err("a blend that closes a face to a point on its axis".to_string())
     } else {
         sewing_tools(
             body,
@@ -1725,6 +1732,27 @@ fn outline(s: &Section, kind: Kind) -> Result<Outline> {
             ));
         }
     }
+    let pole = closing_face(s, t);
+    if let Some(k) = pole {
+        // The face closes to a point on the axis, where the swept section would pinch. Past a
+        // convex edge only air lies over the face, so the section runs out over it to the axis.
+        let h = t[0].dist(p).max(t[1].dist(p));
+        let up = match s.trace[k] {
+            Trace::Line => s.n[k],
+            Trace::Circle { centre, .. } => {
+                let away = (s.n[k].dot(p - centre)).signum();
+                unit2(t[k] - centre).unwrap_or(s.n[k]) * away
+            }
+        };
+        let (q1, q2) = (p + s.n[k] * h, Vec2::new(0.0, t[k].y) + up * h);
+        if k == 0 {
+            let over = [line(p, q1, OVER), line(q1, q2, OVER), line(q2, t[k], OVER)];
+            segments.splice(0..1, over);
+        } else {
+            let over = [line(t[k], q2, OVER), line(q2, q1, OVER), line(q1, p, OVER)];
+            segments.splice(2..3, over);
+        }
+    }
     let mut reach = [(Vec2::ZERO, 0.0); 2];
     for k in 0..2 {
         let w = t[k].dist(p);
@@ -1746,7 +1774,17 @@ fn outline(s: &Section, kind: Kind) -> Result<Outline> {
         },
         reach,
         radius,
+        pole: pole.is_some(),
     })
+}
+
+/// The face, if any, that a convex blend about a whole circle takes all of: its contact reaches the
+/// axis, so the face closes to the point there.
+fn closing_face(s: &Section, t: [Vec2; 2]) -> Option<usize> {
+    let Path::Ring { full: true, .. } = s.path else {
+        return None;
+    };
+    (0..2).find(|&k| s.convex && t[k].x.abs() <= tol::LINEAR)
 }
 
 /// Where the point `q` lies in the section's plane, and whether it lies strictly between the
