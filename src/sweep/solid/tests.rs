@@ -380,6 +380,31 @@ fn a_cube_carried_round_a_circle_is_a_cube_turned() {
     assert!(rel(got, 1.0 + 2.5 * angle) < 1e-7, "{got}");
 }
 
+// An upright drum of radius 1 whose axis is 3 from the z axis, carried round a circle about it:
+// the drum turned, its disc's shadow on a half-plane through the axis spanning radii 2 to 4, a
+// moment of 6. It grazes the turn along whole rulings, found at each height by its rate's closed
+// form round the drum.
+#[test]
+fn a_drum_carried_round_a_circle_is_a_drum_turned() {
+    let angle = 0.8;
+    // Its seam away from the rulings it grazes along, which face the axis and face away.
+    let frame = Frame::new(Vec3::new(3.0, 0.0, 0.0), Vec3::Z, Vec3::Y).unwrap();
+    let drum = cylinder(&frame, 1.0, 1.0, "drum").unwrap();
+    let circle = crate::geom::Curve::Circle(crate::geom::Circle {
+        frame: Frame::WORLD,
+        radius: 3.0,
+    });
+    let motion = Motion::Along {
+        path: circle,
+        range: (0.0, angle),
+        up: Vec3::Z,
+    };
+    let b = solid(&drum, &motion, "sw").unwrap();
+    assert!(check::check(&b).is_empty());
+    let got = measure::volume(&b);
+    assert!(rel(got, PI + 6.0 * angle) < 1e-7, "{got}");
+}
+
 // Slid along x in its own plane, a torus about z grazes along its whole meridians at u = ±90°,
 // where the rate `cos u cos v` vanishes for every v. Under a motion whose velocity may change that
 // is refused, not built wrong.

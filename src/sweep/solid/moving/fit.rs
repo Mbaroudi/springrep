@@ -92,7 +92,7 @@ pub(super) fn surface(
         if !ruled && (ey > SHEET_FIT || (exy > SHEET_FIT && ey > ex)) {
             ny *= 2;
         }
-        if nx > 2048 || ny > 256 {
+        if nx > 2048 || ny > 256 || nx * ny > 1 << 15 {
             break;
         }
     }

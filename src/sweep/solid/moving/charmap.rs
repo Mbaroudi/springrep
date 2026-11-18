@@ -22,6 +22,41 @@ enum Kind {
     Harmonic {
         half: bool,
     },
+    /// On a cylinder or cone whose curves run nearly along its rulings, the curve by its `v`: at
+    /// each `v` the rate is `a cos u + b sin u + c`, zero at `u = atan2(b, a) ± acos(−c / √(a² +
+    /// b²))`, one branch each sign.
+    Across {
+        minus: bool,
+    },
+}
+
+/// Whether the grazing curves of face `f`, a cylinder or cone, run nearly along its rulings: over
+/// the span its curve's `v` lies on the face over less than a tenth of the face's `u`.
+fn steep(ctx: &Ctx, f: usize) -> bool {
+    let face = &ctx.faces[f];
+    let (lo, hi) = (face.dom.lo, face.dom.hi);
+    let (n, m) = (16, 64);
+    let mut on = 0usize;
+    let (mut change, mut size) = (0.0, 0.0);
+    for i in 0..=n {
+        let tau = ctx.span.0 + (ctx.span.1 - ctx.span.0) * i as f64 / n as f64;
+        let tw = ctx.twist(tau);
+        let rate = |u: f64, v: f64| {
+            let p = face.surface.eval(u, v);
+            face.surface.normal(u, v).dot(tw.at(p))
+        };
+        for j in 0..m {
+            let u = lo.x + (hi.x - lo.x) * (j as f64 + 0.5) / m as f64;
+            let (g0, g1) = (rate(u, lo.y), rate(u, hi.y));
+            if g0 * g1 <= 0.0 {
+                on += 1;
+            }
+            change += (g1 - g0).abs();
+            size += g0.abs() + g1.abs();
+        }
+    }
+    // A rate the same all along each ruling grazes along whole rulings.
+    change <= 1e-9 * size || (on > 0 && (on as f64) < 0.1 * ((n + 1) * m) as f64)
 }
 
 /// The grazing curve of face `face` over the span.
@@ -40,6 +75,9 @@ impl<'c, 'a> CharMap<'c, 'a> {
         let face = &ctx.faces[f];
         let kinds = match face.surface {
             Surface::Plane(_) => vec![Kind::Line],
+            Surface::Cylinder(_) | Surface::Cone(_) if steep(ctx, f) => {
+                vec![Kind::Across { minus: false }, Kind::Across { minus: true }]
+            }
             Surface::Cylinder(_) | Surface::Cone(_) | Surface::Extrusion(_) => vec![Kind::Linear],
             Surface::Torus(_) => vec![
                 Kind::Harmonic { half: false },
@@ -163,15 +201,41 @@ impl<'c, 'a> CharMap<'c, 'a> {
                     (-c.x).atan2(c.y) + if half { PI } else { 0.0 },
                 ))
             }
+            Kind::Across { minus } => {
+                let u = self.across(tau, x)?;
+                Some(Vec2::new(if minus { u.1 } else { u.0 }, x))
+            }
         }
+    }
+
+    /// At `v`, the two `u` the rate `a cos u + b sin u + c` of a cylinder or cone vanishes at.
+    fn across(&self, tau: f64, v: f64) -> Option<(f64, f64)> {
+        let g0 = self.rate(tau, Vec2::new(0.0, v));
+        let g1 = self.rate(tau, Vec2::new(FRAC_PI_2, v));
+        let g2 = self.rate(tau, Vec2::new(PI, v));
+        let c = 0.5 * (g0 + g2);
+        let (a, b) = (0.5 * (g0 - g2), g1 - c);
+        let r = a.hypot(b);
+        if r <= 1e-300 || c.abs() > r {
+            return None;
+        }
+        let (mid, off) = (b.atan2(a), (-c / r).acos());
+        Some((mid + off, mid - off))
     }
 
     /// Whether the face's point `uv` lies on this curve rather than the face's other one.
     pub(super) fn holds(&self, tau: f64, uv: Vec2) -> bool {
+        let gap = |a: f64, b: f64| {
+            let d = (a - b).rem_euclid(TAU);
+            d.min(TAU - d)
+        };
         match self.kind {
-            Kind::Harmonic { .. } => self.uv(tau, uv.x).is_some_and(|on| {
-                let d = (uv.y - on.y).rem_euclid(TAU);
-                d.min(TAU - d) <= FRAC_PI_2
+            Kind::Harmonic { .. } => self
+                .uv(tau, uv.x)
+                .is_some_and(|on| gap(uv.y, on.y) <= FRAC_PI_2),
+            Kind::Across { minus } => self.across(tau, uv.y).is_some_and(|(p, m)| {
+                let (mine, other) = if minus { (m, p) } else { (p, m) };
+                gap(uv.x, mine) <= gap(uv.x, other)
             }),
             _ => true,
         }
@@ -191,6 +255,7 @@ impl<'c, 'a> CharMap<'c, 'a> {
                 Some((uv - foot).dot(dir))
             }
             Kind::Linear | Kind::Harmonic { .. } => Some(uv.x),
+            Kind::Across { .. } => Some(uv.y),
         }
     }
 
@@ -204,6 +269,10 @@ impl<'c, 'a> CharMap<'c, 'a> {
             Kind::Linear | Kind::Harmonic { .. } => {
                 let dom = &self.ctx.faces[self.face].dom;
                 (dom.lo.x, dom.hi.x)
+            }
+            Kind::Across { .. } => {
+                let dom = &self.ctx.faces[self.face].dom;
+                (dom.lo.y, dom.hi.y)
             }
         }
     }

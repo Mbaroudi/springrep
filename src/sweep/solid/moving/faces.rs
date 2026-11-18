@@ -140,12 +140,18 @@ fn branch(ctx: &Ctx, map: &CharMap, f: usize, feature: &str) -> Result<Vec<Side>
     // it the point may run off far, as where a cylinder's curve leaves past its end.
     let (dlo, dhi) = (ctx.faces[f].dom.lo, ctx.faces[f].dom.hi);
     let margin = (dhi - dlo) * 0.1;
+    let periods = (
+        ctx.faces[f].surface.u_period(),
+        ctx.faces[f].surface.v_period(),
+    );
+    let within = |x: f64, lo: f64, hi: f64, m: f64, period: Option<f64>| match period {
+        Some(p) => lo - m + (x - (lo - m)).rem_euclid(p) <= hi + m,
+        None => x >= lo - m && x <= hi + m,
+    };
     let care = |q: Vec2| {
         map.uv(q.x, q.y).is_some_and(|uv| {
-            uv.x >= dlo.x - margin.x
-                && uv.x <= dhi.x + margin.x
-                && uv.y >= dlo.y - margin.y
-                && uv.y <= dhi.y + margin.y
+            within(uv.x, dlo.x, dhi.x, margin.x, periods.0)
+                && within(uv.y, dlo.y, dhi.y, margin.y, periods.1)
         })
     };
     // One surface for the whole plane where the curve's map holds over all of it; else one for
