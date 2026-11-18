@@ -187,7 +187,7 @@ fn analytic(s: &Surface) -> bool {
 /// Whether two faces' surfaces are the same point set where the faces are. Analytic pairs are
 /// decided in closed form by [`same_domain`]; any other pair (swept, ruled or spline surfaces in
 /// different frames or parameterisations, or one of them against an analytic surface) by checking
-/// that each face's parameter window lies on the other surface, with the same normal line, within
+/// that one face's parameter window lies on the other's surface, with the same normal line, within
 /// the tolerance.
 pub(crate) fn same_domain_faces(a: &Domain, b: &Domain) -> bool {
     if same_domain(&a.surface, &b.surface) {
@@ -203,8 +203,10 @@ pub(crate) fn same_domain_faces(a: &Domain, b: &Domain) -> bool {
     if analytic(&a.surface) && analytic(&b.surface) && !planes {
         return false;
     }
+    // One face lying on the other's surface is enough: they can overlap only where it is. A
+    // spline surface ends where its face does, so the other face, larger, does not lie on it.
     let n = 6;
-    [(a, b), (b, a)].iter().all(|(from, to)| {
+    [(a, b), (b, a)].iter().any(|(from, to)| {
         (0..=n).all(|i| {
             (0..=n).all(|j| {
                 let u = from.lo.x + (from.hi.x - from.lo.x) * i as f64 / n as f64;

@@ -420,6 +420,61 @@ fn stacked_spline_extrusions_share_their_side() {
     assert!((measure::volume(&u) - v).abs() < 1e-9 * v);
 }
 
+/// A drum of radius 5, 0 ≤ z ≤ 10, and a sleeve 5 ≤ ρ ≤ 7, 2 ≤ z ≤ 8, whose bore is the drum's
+/// cylinder written as a rational B-spline surface (the nine-point circle swept along z): the bore
+/// and the drum's side are one surface where they overlap, and the union keeps neither there.
+#[test]
+fn a_sleeve_with_a_spline_bore_on_a_drum_unites_without_the_bore() {
+    use springrep::{
+        edit::move_faces,
+        geom::{NurbsSurface, Surface},
+    };
+    let w = std::f64::consts::FRAC_1_SQRT_2;
+    let ring = [
+        (0.0, 5.0, 1.0),
+        (-5.0, 5.0, w),
+        (-5.0, 0.0, 1.0),
+        (-5.0, -5.0, w),
+        (0.0, -5.0, 1.0),
+        (5.0, -5.0, w),
+        (5.0, 0.0, 1.0),
+        (5.0, 5.0, w),
+        (0.0, 5.0, 1.0),
+    ];
+    let (mut ctrl, mut weights) = (Vec::new(), Vec::new());
+    for (x, y, wt) in ring {
+        ctrl.extend([Vec3::new(x, y, 2.0), Vec3::new(x, y, 8.0)]);
+        weights.extend([wt, wt]);
+    }
+    let around = vec![
+        0.0, 0.0, 0.0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1.0, 1.0, 1.0,
+    ];
+    let bore = NurbsSurface::new(
+        (2, 1),
+        (around, vec![0.0, 0.0, 1.0, 1.0]),
+        (9, 2),
+        ctrl,
+        Some(weights),
+    )
+    .unwrap();
+    let hole = Profile::named_circle(Vec2::ZERO, 10.0, "bore").loops;
+    let section = Profile::named_circle(Vec2::ZERO, 14.0, "outer").with_holes(hole);
+    let base = Frame::new(Vec3::new(0.0, 0.0, 2.0), Vec3::Z, Vec3::X).unwrap();
+    let plain = extrude(&section, &base, 6.0, "sleeve").unwrap();
+    let f = plain
+        .face_ids()
+        .find(|&f| plain.face(f).names.iter().any(|n| n.face == "bore"))
+        .unwrap();
+    let moved = std::collections::HashMap::from([(f, Surface::Nurbs(Box::new(bore)))]);
+    let sleeve = move_faces(&plain, &moved).unwrap();
+    let drum = rod("drum", [0.0; 3], [0.0, 0.0, 1.0], 5.0, 10.0);
+    let joined = union(&drum, &sleeve).unwrap();
+    // π·5²·10 + π(7² − 5²)·6. Faces: the drum's ends, its side less the bore's 2π·5·6, the
+    // sleeve's annular ends and its outer side.
+    let area = 50.0 * PI + (100.0 * PI - 60.0 * PI) + 48.0 * PI + 84.0 * PI;
+    assert_solid(&joined, 394.0 * PI, area);
+}
+
 #[test]
 fn a_rod_touching_a_box_face_along_a_line_takes_nothing_from_it() {
     // The rod's side touches the face x = 10 along its middle, where both faces' interior points
