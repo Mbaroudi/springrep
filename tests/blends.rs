@@ -853,6 +853,58 @@ fn fillets_at_a_corner_of_more_planes_or_concave_close_with_their_ball() {
 }
 
 #[test]
+fn fillets_at_an_apex_no_ball_fits_split_it_along_a_ridge() {
+    use springrep::{blend::fillet_edges, boolean::unify, topo::EdgeId};
+    // The pyramid on the rectangle (±10, ±6, 0) with its apex at (0, 0, 12), every edge rounded
+    // 3/2. No ball touches all four planes at the apex: the long sides' planes 3/2 in meet lower
+    // than the short ends'. The result is the pyramid shrunk by 3/2, a hip roof on the rectangle
+    // 2a × 2b at z = 3/2 with its ridge along x from −x' to x' at H above that, grown by 3/2
+    // (Steiner): V' + S'r + M'r² + 4πr³/3, M' each edge's length times half the angle between its
+    // faces' normals.
+    let p = [
+        Vec3::new(-10.0, -6.0, 0.0),
+        Vec3::new(10.0, -6.0, 0.0),
+        Vec3::new(10.0, 6.0, 0.0),
+        Vec3::new(-10.0, 6.0, 0.0),
+        Vec3::new(0.0, 0.0, 12.0),
+    ];
+    let tris = [
+        [0, 2, 1],
+        [0, 3, 2],
+        [0, 1, 4],
+        [1, 2, 4],
+        [2, 3, 4],
+        [3, 0, 4],
+    ];
+    let pyramid = unify(&mesh::solid(&p, &tris).unwrap()).unwrap();
+    assert_eq!(pyramid.face_count(), 5);
+    let edges: Vec<EdgeId> = pyramid.edge_ids().collect();
+    let r = 1.5;
+    let b = fillet_edges(&pyramid, &edges, r, "f").unwrap();
+    let (s5, s61) = (5f64.sqrt(), 61f64.sqrt());
+    let (a, bb, x) = (
+        (35.0 - s61) / 4.0,
+        (21.0 - 3.0 * s5) / 4.0,
+        (5.0 * s5 - s61) / 4.0,
+    );
+    let h = (21.0 - 3.0 * s5) / 2.0;
+    let v_in = 2.0 / 3.0 * h * bb * (2.0 * a + x);
+    let s_in = 4.0 * a * bb
+        + 2.0 * bb * ((a - x).powi(2) + h * h).sqrt()
+        + 2.0 * (a + x) * (bb * bb + h * h).sqrt();
+    let hip = ((a - x).powi(2) + bb * bb + h * h).sqrt();
+    let m_in = 0.5
+        * (2.0 * 2.0 * a * (-1.0 / s5).acos()
+            + 2.0 * 2.0 * bb * (-5.0 / s61).acos()
+            + 4.0 * hip * (5.0 / 305f64.sqrt()).acos()
+            + 2.0 * x * (-0.6f64).acos());
+    let volume = v_in + s_in * r + m_in * r * r + 4.0 * PI * r.powi(3) / 3.0;
+    let area = s_in + 2.0 * m_in * r + 4.0 * PI * r * r;
+    assert_solid(&b, volume, area);
+    assert_eq!(kinds(&b, "sphere"), 6);
+}
+
+#[test]
 fn a_straight_edge_between_a_plane_and_a_bore_takes_a_chamfer_by_the_chord() {
     // The key standing in a bore, as above, the root of each side chamfered 1 on both faces: 1
     // along the side, and a chord 1 long on the bore's wall, which turns 2·asin(1/40) about its

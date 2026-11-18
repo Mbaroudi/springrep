@@ -19,8 +19,9 @@
 //! face met at a glancing angle it runs on only until that surface takes in its whole section. A
 //! concave piece whose strip is wider than its face runs over the face's convex edge and is
 //! trimmed by the face past it. Three or more fillets meeting at a corner of planes close with the
-//! sphere touching them all, the rolling ball's corner (Rossignac and Requicha 1984); three or more
-//! chamfers close with the plane through the points where their contact lines cross.
+//! sphere touching them all, the rolling ball's corner (Rossignac and Requicha 1984), or where no
+//! one ball touches four planes, with two such corners and a round between them ([`ridge`]); three
+//! or more chamfers close with the plane through the points where their contact lines cross.
 
 pub(crate) mod shaped;
 
@@ -34,6 +35,7 @@ use std::f64::consts::{PI, TAU};
 
 mod corner;
 mod flat_corner;
+mod ridge;
 mod saddle;
 mod saddle_patch;
 #[cfg(test)]
@@ -599,7 +601,8 @@ fn blend_picked(
     check_apart(body, &picked, &sections, &outlines)?;
 
     let mut ends = vec![[End::Exact; 2]; picked.len()];
-    let mut corners: Vec<(VertexId, Ball)> = Vec::new();
+    let mut corners: Vec<(Vec<usize>, Ball)> = Vec::new();
+    let mut ridges: Vec<Brep> = Vec::new();
     let mut saddles: Vec<saddle::Saddle> = Vec::new();
     let mut joints: Vec<(usize, usize)> = Vec::new();
     let mut creases: Vec<[(usize, usize); 2]> = Vec::new();
@@ -738,7 +741,22 @@ fn blend_picked(
                     cornered = true;
                     continue;
                 };
-                let ball = corner_ball(body, &picked, &sections, at, v, radius)?;
+                let ball = match corner_ball(body, &picked, &sections, at, v, radius) {
+                    Ok(ball) => ball,
+                    Err(why) => {
+                        let Some(split) =
+                            ridge::find(body, &picked, &sections, at, v, radius, feature)?
+                        else {
+                            return Err(why);
+                        };
+                        for (i, end, e) in ridge::ends(body, &picked, &split, v)? {
+                            ends[i][end] = e;
+                        }
+                        corners.extend(split.balls);
+                        ridges.push(split.ridge);
+                        continue;
+                    }
+                };
                 for &i in at {
                     let end = end_index(body, picked[i].edge, v);
                     let along = leaving(body, picked[i].edge, v)
@@ -753,7 +771,7 @@ fn blend_picked(
                     }
                     ends[i][end] = End::Short(short);
                 }
-                corners.push((v, ball));
+                corners.push((at.clone(), ball));
             }
         }
     }
@@ -803,10 +821,7 @@ fn blend_picked(
         })
         .collect();
     let convex: Vec<bool> = sections.iter().map(|s| s.convex).collect();
-    let balls: Vec<(Vec<usize>, Ball)> = corners
-        .into_iter()
-        .map(|(v, ball)| (by_vertex[&v].clone(), ball))
-        .collect();
+    let balls: Vec<(Vec<usize>, Ball)> = corners;
 
     // Each corner tool, the pieces it lies between, and whether it joins the first of them.
     let mut corner_tools: Vec<(usize, usize, Brep, bool)> = Vec::new();
@@ -849,6 +864,8 @@ fn blend_picked(
     // The corner tools only join the straight pieces as tools: sewing has no corner patch.
     let sewn = if balls.iter().any(|(_, b)| !b.convex) {
         Err("a fillet with a concave corner ball".to_string())
+    } else if !ridges.is_empty() {
+        Err("a fillet whose corner splits along a ridge".to_string())
     } else if corner_tools.is_empty() && saddles.is_empty() {
         sew_tools.and_then(|(tools, beyond)| {
             sew::sewn(
@@ -878,6 +895,7 @@ fn blend_picked(
                 &names,
                 &joints,
                 &balls,
+                &ridges,
                 &corner_tools,
                 feature,
             ));
@@ -894,6 +912,7 @@ fn blend_picked(
             &names,
             &joints,
             &balls,
+            &ridges,
             &corner_tools,
             feature,
         ))
@@ -1007,6 +1026,7 @@ fn by_tools(
     names: &[BTreeSet<FaceName>],
     joints: &[(usize, usize)],
     balls: &[(Vec<usize>, Ball)],
+    ridges: &[Brep],
     corners: &[(usize, usize, Brep, bool)],
     feature: &str,
 ) -> Result<Brep> {
@@ -1055,6 +1075,7 @@ fn by_tools(
             adds.insert(0, corner);
         }
     }
+    cuts.extend(ridges.iter().cloned());
     for (_, ball) in balls {
         let tool = corner_tool(ball, feature)?;
         if ball.convex {
@@ -3130,7 +3151,7 @@ fn renamed(mut tool: Brep, blend: &str, names: &BTreeSet<FaceName>) -> Brep {
 /// circle arc from the ball's foot on one plane to its foot on the other. The patch is the
 /// spherical polygon of the feet, whatever the angles between the planes. More than three planes
 /// have such a ball only where the planes `radius` in from them meet in one point (an octahedron's
-/// corner, not a pyramid's apex on a rectangle).
+/// corner); a pyramid's apex on a rectangle splits along a ridge ([`ridge`]).
 pub(super) struct Ball {
     centre: Point3,
     radius: f64,

@@ -825,7 +825,7 @@ was run over, every sewn blend agrees to 3e-16, except the two whose ends are tr
 edge, where both ways intersect a cone or cylinder with a traced curve: 1.8e-12 in area and 5.3e-12
 in volume (a notch's chamfer) and 4.9e-11 and 1.4e-10 (the notch's round).
 
-Each piece ends where its edge does, in one of eight ways:
+Each piece ends where its edge does, in one of nine ways:
 
 - **On a neighbour's section.** Pieces whose edges continue each other tangentially share their end
   section exactly. They are glued into one tool along it without a boolean: the two blend surfaces
@@ -852,8 +852,7 @@ Each piece ends where its edge does, in one of eight ways:
   spine, since each spine runs `r` from both its planes; so each fillet stops on the section through
   the centre, and its end is a great circle arc from the ball's foot on one plane to its foot on the
   other. With three planes the centre is where the planes `r` in meet; with more it is their least
-  squares point, which must lie `r` from every one (an octahedron's corner; a pyramid's apex on a
-  rectangle has no such ball and is refused). The patch is the spherical polygon of the feet, and
+  squares point, which must lie `r` from every one (an octahedron's corner). The patch is the spherical polygon of the feet, and
   the material the corner loses (or, concave, gains) is the cell between the end sections, the
   centre and the corner, less the ball: for three planes of solid angle Ω, the cell less Ωr³/3. The
   sphere's poles lie on the great circle square to the direction from the centre to the corner, and
@@ -861,6 +860,15 @@ Each piece ends where its edge does, in one of eight ways:
   foot lies within a quarter turn of that direction; only a corner so sharp a foot lies on that
   great circle is refused. On a prism whose normals are 68.2° apart the result holds the hand
   volume to 1.5e-16 and the hand area exactly. A concave corner is added with the tools.
+- **Along a ridge** ([`blend/ridge.rs`](../src/blend/ridge.rs)). Four convex fillets at a corner
+  of four planes that no one ball touches (a pyramid's apex on a rectangle) split it, as the union
+  of the balls inside does: the lines `r` in from two opposite planes meet the other two planes `r`
+  in at two points, each `r` from three of the planes and clear of the fourth, and a ball rolls
+  between them along the line where the two opposite planes `r` in meet. Each fillet stops at the
+  section through its own ball's centre, each ball closes its three fillets and the ridge's end as
+  a sphere corner, and the ridge is a round between the two opposite planes along the line where
+  they meet through the corner, an edge the body does not have, swept from one ball's section to
+  the other's. The tools cut it.
 
 - **At a flat corner** ([`blend/flat_corner.rs`](../src/blend/flat_corner.rs)). Three or more
   chamfers on every edge of a convex corner of planes mitre there, each trimmed by the corner's
@@ -958,9 +966,9 @@ What the region form cannot reach comes back as `Error::Unsupported`, never as a
   than a run of its end face's edges; and a fillet larger than a convex corner round in its chain
   (the exact path reaches past the corner's axis);
 - blends meeting at a vertex other than as a tangent chain, a mirrored mitre, a convex corner they
-  run through, a sphere corner or a flat corner (the error names the vertex and the faces), and an
-  edge ending where several other faces meet it other than at a convex corner of planes, or where a
-  face other than a plane, cylinder or cone meets it;
+  run through, a sphere corner, a ridge or a flat corner (the error names the vertex and the
+  faces), and an edge ending where several other faces meet it other than at a convex corner of
+  planes, or where a face other than a plane, cylinder or cone meets it;
 - a blend wider than a face it sits on, including one whose strip would cross onto the next face
   along its edge, such as where its edge runs on, tangent, as a curve other than a line or circle.
 
