@@ -729,7 +729,8 @@ fn circle_through(a: Point3, b: Point3, c: Point3) -> Option<crate::geom::Circle
     let (ab, ac) = (b - a, c - a);
     let n = ab.cross(ac);
     let n2 = n.norm2();
-    if n2 <= 1e-24 {
+    // Relative to the chords, so a circle closing to nothing (a tube's) is still found while small.
+    if n2 <= 1e-24 * ab.norm2() * ac.norm2() {
         return None;
     }
     let centre = a + (n.cross(ab) * ac.norm2() + ac.cross(n) * ab.norm2()) * (0.5 / n2);

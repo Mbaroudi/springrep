@@ -268,6 +268,45 @@ fn rounds_offset_past_their_radius_close_to_sharp_corners() {
     assert_eq!(out.face_count(), 6);
 }
 
+fn up(z: f64) -> Frame {
+    Frame::WORLD.translated(Vec3::Z * z)
+}
+
+// A cylinder of radius 6 from z 0 to 10, both rims rounded 2 (tori of tube 2), every face moved in
+// by 2 and by 3: the rounds close to nothing, leaving the sharp cylinders of radius 4 from z 2 to 8
+// and of radius 3 from z 3 to 7.
+#[test]
+fn a_puck_s_rounds_moved_in_by_their_radius_or_more_close() {
+    let c = crate::primitive::cylinder(&up(0.0), 6.0, 10.0, "puck").unwrap();
+    let pairs = [("puck.start", "puck.side"), ("puck.end", "puck.side")];
+    let b = crate::blend::fillet(&c, &pairs, 2.0, "round").unwrap();
+    for (d, r, h) in [(2.0, 4.0, 6.0), (3.0, 3.0, 4.0)] {
+        let by: HashMap<FaceId, f64> = b.face_ids().map(|f| (f, -d)).collect();
+        let out = offset_faces(&b, &by).unwrap();
+        assert!(check::check(&out).is_empty(), "{:?}", check::check(&out));
+        let want = std::f64::consts::PI * r * r * h;
+        assert!((measure::volume(&out) - want).abs() < 1e-7 * want);
+        assert_eq!(out.face_count(), 3);
+    }
+}
+
+// A plate of radius 8 from z −4 to 0 under a post of radius 3 up to z 8, the concave edge between
+// them filleted 2, every face moved out by 3: the fillet's tube closes and the plate's top meets
+// the post square. A plate of radius 11 from z −7 to 3 and a post of radius 6 from 3 to 11.
+#[test]
+fn a_concave_fillet_grown_past_its_radius_closes_to_a_square_corner() {
+    use crate::primitive::cylinder;
+    let plate = cylinder(&up(-4.0), 8.0, 4.0, "plate").unwrap();
+    let post = cylinder(&up(0.0), 3.0, 8.0, "post").unwrap();
+    let body = crate::boolean::union(&plate, &post).unwrap();
+    let b = crate::blend::fillet(&body, &[("plate.end", "post.side")], 2.0, "f").unwrap();
+    let by: HashMap<FaceId, f64> = b.face_ids().map(|f| (f, 3.0)).collect();
+    let out = offset_faces(&b, &by).unwrap();
+    assert!(check::check(&out).is_empty(), "{:?}", check::check(&out));
+    let want = std::f64::consts::PI * (121.0 * 10.0 + 36.0 * 8.0);
+    assert!((measure::volume(&out) - want).abs() < 1e-7 * want);
+}
+
 // A 10 × 6 block 3 deep with a slot from x 3 to 7 down to 2: its left wall moved 4 across the slot
 // lands on the right one, and the slot closes over its floor: a 10 × 6 × 3 block.
 #[test]
