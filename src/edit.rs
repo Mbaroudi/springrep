@@ -831,4 +831,36 @@ mod tests {
         );
         close(measure::area(&out), s + 2.0 * m * d + 4.0 * PI * d * d);
     }
+
+    #[test]
+    fn an_elliptic_cylinder_of_two_halves_grown_rounds_both_rims_whole() {
+        // The ellipse of semi-axes 5 and 3 drawn as two half ellipses, extruded 10 and made one
+        // face round, grown by 1: each rim's chain is the two halves, its contact on the side
+        // starting where the side's loop meets it. By Steiner's formula, with p the ellipse's
+        // perimeter: V + S·d + M·d² + 4πd³/3, V = πabh, S = 2πab + ph, M = πh + πp/2.
+        let half = |start: f64| {
+            let arc = Segment::Ellipse {
+                center: Vec2::ZERO,
+                rotation: 0.0,
+                major: 5.0,
+                minor: 3.0,
+                start,
+                sweep: PI,
+            };
+            NamedSegment::new(arc, "side")
+        };
+        let base = Profile::outline(vec![half(0.0), half(PI)]);
+        let halves = extrude(&base, &Frame::WORLD, 10.0, "p").unwrap();
+        let body = boolean::unify(&halves).unwrap();
+        let out = offset(&body, 1.0, "o").unwrap();
+        let (a, b, h, d) = (5.0f64, 3.0f64, 10.0, 1.0);
+        let mut speed = |t: f64| (a * a * t.sin().powi(2) + b * b * t.cos().powi(2)).sqrt();
+        let p = crate::numeric::integrate(&mut speed, 0.0, TAU, 1e-13);
+        let (s, m) = (2.0 * PI * a * b + p * h, PI * h + PI * p / 2.0);
+        close(
+            measure::volume(&out),
+            PI * a * b * h + s * d + m * d * d + 4.0 / 3.0 * PI * d.powi(3),
+        );
+        close(measure::area(&out), s + 2.0 * m * d + 4.0 * PI * d * d);
+    }
 }

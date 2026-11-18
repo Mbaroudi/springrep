@@ -953,7 +953,9 @@ contact curves lie within a tenth of the linear tolerance of the true ones. The 
 the surface's own edge rows, exact lines in its parameters. Neighbouring segments share their
 section arc. A closed chain that crosses a face's seam (a tee's junction over the bar's seam) meets
 that face's loop in more than one run of its edges, and each run takes the contact pieces between
-the crossings at its two ends.
+the crossings at its two ends. A closed chain of several edges that a face's loop meets in one run
+(an elliptic cylinder's rim drawn as two halves) takes them all, starting where the run does, which
+need not be the chain's own start.
 
 An open chain ends where one other face meets each end, a plane or any curved face. Past the end the
 chain runs on straight along its tangent, so the ball keeps rolling between the same two surfaces (a

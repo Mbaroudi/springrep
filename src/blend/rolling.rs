@@ -1424,6 +1424,19 @@ fn rolled(
                 if mine.windows(2).any(|w| (w[0] + 1) % m != w[1]) {
                     return unsupported("whose contact leaves a face and comes back to it");
                 }
+                // A closed chain's contact all round the face starts where the loop's run does:
+                // the chain's own start may lie on a later edge of the run.
+                if closed && runs == 1 && mine.len() == m {
+                    let l = &roll.links[li];
+                    let start = roll.wrap(if along { l.s0 } else { l.s0 + l.len });
+                    let close = |a: f64| {
+                        let d = roll.wrap(a - start);
+                        d.min(roll.total - d) <= 1e-9 * (1.0 + roll.total)
+                    };
+                    if let Some(p) = mine.iter().position(|&j| close(segments[j].a)) {
+                        mine.rotate_left(p);
+                    }
+                }
                 if !along {
                     mine.reverse();
                 }
