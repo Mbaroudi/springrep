@@ -576,6 +576,38 @@ fn a_plane_a_millionth_off_a_cube_top_cuts_a_wedge() {
     assert!((measure::volume(&cut) - (1000.0 - wedge)).abs() <= 1e-9);
 }
 
+#[test]
+fn a_plane_a_ten_thousandth_over_a_paraboloids_vertex_cuts_its_tip() {
+    // The paraboloid x² + y² ≤ 8z, z ≤ 8, turned from its parabola (a quadratic Bézier) about the
+    // z axis, against a block whose top is z = h = 1e-4: the two meet in a circle of radius √(8h)
+    // about the vertex, where the turned curve meets the axis.
+    let (k, top, h) = (8.0f64, 8.0f64, 1e-4f64);
+    let r = (k * top).sqrt();
+    let meridian = Profile::outline(vec![
+        NamedSegment::new(
+            Segment::Bezier {
+                ctrl: vec![Vec2::ZERO, Vec2::new(r / 2.0, 0.0), Vec2::new(r, top)],
+                weights: vec![1.0; 3],
+            },
+            "side",
+        ),
+        NamedSegment::line(Vec2::new(r, top), Vec2::new(0.0, top), "top"),
+        NamedSegment::line(Vec2::new(0.0, top), Vec2::ZERO, "axis"),
+    ]);
+    let plane = Frame::new(Vec3::ZERO, Vec3::new(0.0, -1.0, 0.0), Vec3::X).unwrap();
+    let body = revolve(&meridian, &plane, Vec3::ZERO, Vec3::Z, TAU, "p").unwrap();
+    let below = block("below", [-10.0, -10.0, -1.0], [10.0, 10.0, h]);
+    let tip = intersection(&body, &below).unwrap();
+    // ∫ π·k·z dz from 0 to h; the disk π·k·h and the side 2π∫ρ√(1 + (2ρ/k)²) dρ to √(k·h).
+    let volume = PI * k * h * h / 2.0;
+    let side = PI * k * k / 6.0 * ((1.0 + 4.0 * h / k).powf(1.5) - 1.0);
+    assert_solid(&tip, volume, PI * k * h + side);
+    let rest = difference(&body, &below).unwrap();
+    assert!(check::check(&rest).is_empty());
+    let whole = PI * k * top * top / 2.0;
+    assert!((measure::volume(&rest) - (whole - volume)).abs() <= 1e-9 * whole);
+}
+
 /// Two cylinders micrometres across crossing at an odd angle: a loop's parameter images meet to a
 /// gap far below the tolerance in space, however large it is in radians on so small a radius.
 /// Valid every way round, the four results agreeing: |a ∪ b| = |a| + |b| − |a ∩ b| and so on.

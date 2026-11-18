@@ -387,8 +387,17 @@ impl Surface {
                 let frame = Frame::from_axis(s.origin, s.axis).unwrap_or(Frame::WORLD);
                 let ang = angle_of(frame.to_local(p));
                 let seeds = curve_seeds(&s.curve, a, b).into_iter().map(|v| {
-                    let q = frame.to_local(s.curve.eval(v));
-                    Vec2::new((ang - angle_of(q)).rem_euclid(TAU), v)
+                    let (q, dq) = s.curve.d1(v);
+                    let q = frame.to_local(q);
+                    // A point on the axis has no angle of its own: the meridian leaves it along
+                    // its tangent, which is the way the curve's points beside it lie.
+                    let at = if q.x.hypot(q.y) <= tol::LINEAR {
+                        let dq = frame.to_local(frame.origin + dq);
+                        angle_of(if v < b { dq } else { -dq })
+                    } else {
+                        angle_of(q)
+                    };
+                    Vec2::new((ang - at).rem_euclid(TAU), v)
                 });
                 self.refine_projection(p, seeds)
             }
@@ -494,6 +503,9 @@ impl Surface {
         for _ in 0..60 {
             let (q, su, sv) = self.d1(uv.x, uv.y);
             let r = q - p;
+            // At a pole one partial vanishes, and the step along the other alone leaves it: a
+            // seed on a revolution's axis would otherwise hold a point beside the pole there.
+            let along = |s: Vec3| (s.dot(s) > 0.0).then(|| -s.dot(r) / s.dot(s));
             let Some((du, dv)) = solve2(
                 su.dot(su),
                 su.dot(sv),
@@ -501,7 +513,12 @@ impl Surface {
                 sv.dot(sv),
                 -su.dot(r),
                 -sv.dot(r),
-            ) else {
+            )
+            .or_else(|| match (su.norm() <= sv.norm(), along(su), along(sv)) {
+                (true, _, Some(dv)) => Some((0.0, dv)),
+                (false, Some(du), _) => Some((du, 0.0)),
+                _ => None,
+            }) else {
                 break;
             };
             let next = Vec2::new(uv.x + du, uv.y + dv);
@@ -670,6 +687,35 @@ mod tests {
         for u in [0.0, 0.3, 0.5, 1.0] {
             let n = s.normal(u, 1.0);
             assert!(n.dist(Vec3::Z) < 1e-14, "u {u}: {n:?}");
+        }
+    }
+
+    #[test]
+    fn projection_beside_a_revolutions_pole_lands_on_the_point() {
+        // The meridian starts on the axis, so the seed nearest a point a hair round from it is
+        // the pole, where every `u` is one point and the partial along `u` vanishes.
+        let mut pts: Vec<Vec3> = (0..4)
+            .map(|i| Vec3::new(i as f64, 0.0, 0.125 * (i * i) as f64))
+            .collect();
+        for _ in 0..2 {
+            let meridian = BSpline::interpolate(&pts).unwrap();
+            pts.reverse();
+            let (a, b) = meridian.domain();
+            let s = Surface::Revolution(Box::new(Revolution {
+                curve: Curve::BSpline(meridian),
+                origin: Vec3::ZERO,
+                axis: Vec3::Z,
+            }));
+            let near_pole = if s.eval(0.0, a).norm() < 1e-12 {
+                a + 1e-3 * (b - a)
+            } else {
+                b - 1e-3 * (b - a)
+            };
+            for u in [0.0, 1.0, 2.5, 4.0, 5.9] {
+                let p = s.eval(u, near_pole);
+                let uv = s.project(p);
+                assert!(s.eval(uv.x, uv.y).dist(p) < 1e-9, "at {u}: {uv:?}");
+            }
         }
     }
 
