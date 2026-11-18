@@ -94,7 +94,14 @@ pub(crate) fn through(b: &Brep, paths: &HashMap<FaceId, Path>) -> Result<(Brep, 
         let Ok(near) = at(lo) else {
             return Err(last);
         };
-        let Some((next, kept)) = collapse(&near, CLOSED) else {
+        let shrunk = if collapse(&near, CLOSED, &HashSet::new()).is_none() {
+            at(s0)
+                .map(|start| shrinking(&start, &near))
+                .unwrap_or_default()
+        } else {
+            HashSet::new()
+        };
+        let Some((next, kept)) = collapse(&near, CLOSED, &shrunk) else {
             return Err(last);
         };
         // Every face closed: the solid has shrunk to nothing.
@@ -114,6 +121,21 @@ pub(crate) fn through(b: &Brep, paths: &HashMap<FaceId, Path>) -> Result<(Brep, 
     }
 }
 
+/// The closed edges of `near` that have shrunk to under a thousandth of their length in `start`,
+/// the same solid earlier on the move: a ball's cap shrinking through a plane reads as touching it
+/// while its rim is still far longer than [`CLOSED`], and the move cannot be followed closer.
+fn shrinking(start: &Brep, near: &Brep) -> HashSet<EdgeId> {
+    near.edge_ids()
+        .filter(|&e| {
+            let (x, y) = (near.edge(e), start.edge(e));
+            let (Some(c), Some(d)) = (&x.curve, &y.curve) else {
+                return false;
+            };
+            x.start == x.end && radial::length(c, x.range) <= 1e-3 * radial::length(d, y.range)
+        })
+        .collect()
+}
+
 fn root(p: &mut [usize], mut i: usize) -> usize {
     while p[i] != i {
         p[i] = p[p[i]];
@@ -126,9 +148,9 @@ fn root(p: &mut [usize], mut i: usize) -> usize {
 /// running together made one, and edges shorter than `eps` gone, or a pole where a closed one
 /// shrank round its face's; faces left a strip along one edge, poles alone, or lying on each other
 /// face to face, taken out; and a face left running along an edge and back that nothing else uses
-/// rid of it. With, for each face of `b`, its face in the result. `None`
-/// where nothing has closed.
-fn collapse(b: &Brep, eps: f64) -> Option<(Brep, Vec<Option<FaceId>>)> {
+/// rid of it. The edges of `shrunk` are closed whatever their length. With, for each face of `b`,
+/// its face in the result. `None` where nothing has closed.
+fn collapse(b: &Brep, eps: f64, shrunk: &HashSet<EdgeId>) -> Option<(Brep, Vec<Option<FaceId>>)> {
     let eids: Vec<EdgeId> = b.edge_ids().collect();
     let vids: Vec<VertexId> = b.vertex_ids().collect();
     let nv = vids.len();
@@ -165,7 +187,7 @@ fn collapse(b: &Brep, eps: f64) -> Option<(Brep, Vec<Option<FaceId>>)> {
                 .map(|c| c.d1(0.5 * (x.range.0 + x.range.1))),
         );
         if let Some(c) = &x.curve
-            && radial::length(c, x.range) <= eps
+            && (radial::length(c, x.range) <= eps || shrunk.contains(&e))
         {
             into[e.index()] = None;
             changed = true;
@@ -220,8 +242,12 @@ fn collapse(b: &Brep, eps: f64) -> Option<(Brep, Vec<Option<FaceId>>)> {
         let uvs = b.coedge_uvs(c, &crate::check::coedge_params(b, c, 32));
         let (a, z) = (uvs[0], uvs[uvs.len() - 1]);
         let v = pole_v(surface, a.y)?;
+        let reach = match &x.curve {
+            Some(cv) if shrunk.contains(&b.coedge(c).edge) => radial::length(cv, x.range),
+            _ => eps,
+        };
         if ((z.x - a.x).abs() - period).abs() > 1e-6 * period
-            || surface.eval(a.x, v).dist(b.vertex(x.start).point) > eps
+            || surface.eval(a.x, v).dist(b.vertex(x.start).point) > reach
         {
             return None;
         }

@@ -356,6 +356,34 @@ fn an_annulus_closed_between_two_moved_walls_is_taken_out() {
     assert_eq!(out.face_count(), 3);
 }
 
+// The ball of radius 5 below the plane z = 4.5, its sphere moved in by 1 and its flat kept: the
+// sphere shrinks through the plane, whose disk closes onto the sphere's pole at radius 4.5 and is
+// taken out. Left is the whole ball of radius 4, 256π/3.
+#[test]
+fn a_ball_s_flat_closed_by_its_sphere_shrinking_through_it_is_taken_out() {
+    use crate::profile::NamedSegment;
+    use std::f64::consts::{FRAC_PI_2, PI, TAU};
+    let (cut, r) = (4.5f64, 4.75f64.sqrt());
+    let half = Profile::outline(vec![
+        NamedSegment::arc(
+            Vec2::ZERO,
+            5.0,
+            -FRAC_PI_2,
+            FRAC_PI_2 + (cut / 5.0).asin(),
+            "skin",
+        ),
+        NamedSegment::line(Vec2::new(r, cut), Vec2::new(0.0, cut), "top"),
+        NamedSegment::line(Vec2::new(0.0, cut), Vec2::new(0.0, -5.0), "axis"),
+    ]);
+    let plane = Frame::new(Point3::ZERO, -Vec3::Y, Vec3::X).unwrap();
+    let b = sweep::revolve(&half, &plane, Point3::ZERO, Vec3::Z, TAU, "box").unwrap();
+    let out = offset_faces(&b, &HashMap::from([(face(&b, "skin"), -1.0)])).unwrap();
+    assert!(check::check(&out).is_empty(), "{:?}", check::check(&out));
+    let want = 256.0 * PI / 3.0;
+    assert!((measure::volume(&out) - want).abs() < 1e-7 * want);
+    assert_eq!(out.face_count(), 1);
+}
+
 // A plate of radius 8 from z −4 to 0 under a post of radius 3 up to z 8, the concave edge between
 // them filleted 2, every face moved out by 3: the fillet's tube closes and the plate's top meets
 // the post square. A plate of radius 11 from z −7 to 3 and a post of radius 6 from 3 to 11.
