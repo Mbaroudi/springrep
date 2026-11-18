@@ -197,6 +197,59 @@ fn all_walls_drafted_until_two_meet_make_a_hipped_roof() {
     assert_eq!(out.face_count(), 5);
 }
 
+/// The prism 8 tall on the polygon `pts`, every side drafted inward about its foot by `degrees`.
+fn drafted_prism(pts: &[(f64, f64)], degrees: f64) -> Brep {
+    let pts: Vec<Vec2> = pts.iter().map(|&(x, y)| Vec2::new(x, y)).collect();
+    let names: Vec<String> = (0..pts.len()).map(|i| format!("e{i}")).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let b = sweep::extrude(&Profile::polygon(&pts, &names), &Frame::WORLD, 8.0, "box").unwrap();
+    let sides: Vec<FaceId> = names.iter().map(|n| face(&b, n)).collect();
+    draft(&b, &sides, &Frame::WORLD, degrees.to_radians()).unwrap()
+}
+
+// An L of arms 5 wide, its sides drafted 30°: its section at height z is the L moved in by
+// d = z·tan 30°, both arms closing in ridges at d = 2.5 under the top, whose face is taken out
+// with the ridges two walls' edges. Its volume is ∫ (5 − 2d)(30 − 2d) dd / tan 30° over d from 0
+// to 2.5, 2125√3/12.
+#[test]
+fn an_l_s_sides_drafted_until_its_arms_close_meet_in_ridges() {
+    let l = [
+        (0., 0.),
+        (20., 0.),
+        (20., 5.),
+        (5., 5.),
+        (5., 15.),
+        (0., 15.),
+    ];
+    let out = drafted_prism(&l, 30.0);
+    assert!(check::check(&out).is_empty(), "{:?}", check::check(&out));
+    let want = 2125.0 * 3f64.sqrt() / 12.0;
+    assert!((measure::volume(&out) - want).abs() < 1e-9 * want);
+    assert_eq!(out.face_count(), 7);
+}
+
+// A T of bar 20 × 4 and stem 6 wide standing 12 past it, its sides drafted 45°: the bar closes in
+// a ridge at height 2, where its top edge comes down onto the stem's corners and splits there, and
+// each corner of four faces then pulls apart along the stem's wall; the stem closes at 3. Its
+// section at height d is the T moved in by d: ∫₀² (152 − 72d + 4d²) dd + ∫₂³ (6 − 2d)(16 − 2d) dd.
+#[test]
+fn a_t_s_sides_drafted_until_its_bar_and_stem_close_pull_its_corners_apart() {
+    let t = [
+        (0., 0.),
+        (20., 0.),
+        (20., 4.),
+        (13., 4.),
+        (13., 16.),
+        (7., 16.),
+        (7., 4.),
+        (0., 4.),
+    ];
+    let out = drafted_prism(&t, 45.0);
+    assert!(check::check(&out).is_empty(), "{:?}", check::check(&out));
+    let want = 512.0 / 3.0 + 34.0 / 3.0;
+    assert!((measure::volume(&out) - want).abs() < 1e-9 * want);
+}
+
 // An L 10 wide and 6 tall with a step at 2 from x 4 to 10, 3 deep. Raising the step 4 brings it
 // level with the top: the riser between them closes, and the L is a 10 × 6 × 3 block.
 #[test]

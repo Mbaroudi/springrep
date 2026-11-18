@@ -1062,16 +1062,24 @@ into a cone by its half angle. The furthest the solid gets with its topology kep
 bisection. There vertices closer than ten times the tolerance are made one, edges that then run
 together one, and edges shorter than that dropped; a face left a strip along a single edge (or an
 annulus whose two rims have run together), or lying on another face to face, is taken out, and a
-face left running along an edge and back that nothing else uses loses it. A closed edge shrunk round
+face left running along an edge and back loses it: the edge goes where nothing else uses it, and is
+a ridge where two other faces do (an L's top closed between the walls of both its arms, drafted
+until they meet). A vertex carried within that distance of an edge it did not touch splits the edge
+there first (a T's bar closing, its top edge coming down onto the stem's corners). A closed edge shrunk round
 a cone's apex or a sphere's pole becomes that pole on the face whose surface closes there, and a
 face left only poles (a ball's cap shrunk onto its pole) is taken out. A sphere shrinking through a
 plane reads as touching it while the circle they meet in is still about √(2rε) across, ε the
 tolerance, so where nothing is shorter than ten times the tolerance, a closed edge that has shrunk
 to under a thousandth of its length since the last event counts as closed. Where every face closes,
-the solid is empty. The move goes on from there with every
-vertex settled again where its faces meet, a pole put on its moved surface's pole, and faces left on
-one surface are merged at the end. An event that needs more, as an edge that
-would turn through a vertex of four faces, ends it with the error the move gave.
+the solid is empty. The move goes on from there with every vertex settled again where its faces
+meet, a pole put on its moved surface's pole, and faces left on one surface are merged at the end.
+Where nothing closes but the move cannot go on, a corner of four faces is being pulled apart (the
+T's corners where the bar's ridge meets the stem's walls): it becomes two corners of three faces,
+joined by a new edge on the two faces they share, as a straight skeleton's vertex splits
+(Aichholzer et al. 1995). Each such corner is tried kept or split each of its four ways (either
+pair of opposite faces, the edge laid either way), up to four corners at once, fewest splits first,
+and the first that moves on from a little past the event is kept. An event that needs more ends
+the move with the error it gave.
 
 ### Growing a solid
 
@@ -1629,6 +1637,9 @@ The papers this document and the source cite by author and year.
 - **Abdel-Malek and Yeh 1997.** K. Abdel-Malek and H.-J. Yeh, "Geometric representation of the
   swept volume using Jacobian rank-deficiency conditions", _Computer-Aided Design_ 29(6), 1997,
   pp. 457–468.
+- **Aichholzer et al. 1995.** O. Aichholzer, F. Aurenhammer, D. Alberts and B. Gärtner, "A novel
+  type of skeleton for polygons", _Journal of Universal Computer Science_ 1(12), 1995,
+  pp. 752–761.
 - **Blackmore, Leu and Wang 1997.** D. Blackmore, M. C. Leu and L. P. Wang, "The sweep-envelope
   differential equation algorithm and its application to NC machining verification",
   _Computer-Aided Design_ 29(9), 1997, pp. 629–637.
