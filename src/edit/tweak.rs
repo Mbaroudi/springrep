@@ -157,7 +157,11 @@ pub fn draft(b: &Brep, faces: &[FaceId], neutral: &Frame, angle: f64) -> Result<
         }
         move_faces(b, &surfaces)
     };
-    direct.or_else(|e| through::through(b, &paths).map_err(|_| e))
+    direct.or_else(|e| {
+        through::through(b, &paths)
+            .map(|(out, _)| out)
+            .map_err(|_| e)
+    })
 }
 
 /// [`move_planes`], or [`move_faces`] where a curved face meets the moved planes.
@@ -176,24 +180,34 @@ pub(crate) fn planes_or_faces(b: &Brep, moved: &HashMap<FaceId, Frame>) -> Resul
 
 /// `b` with each face of `by` moved that far along its outward normal, onto its offset surface.
 pub fn offset_faces(b: &Brep, by: &HashMap<FaceId, f64>) -> Result<Brep> {
+    offset_faces_closing(b, by).map(|(out, _)| out)
+}
+
+/// [`offset_faces`], and the faces of `b` that closed on the way.
+pub(crate) fn offset_faces_closing(
+    b: &Brep,
+    by: &HashMap<FaceId, f64>,
+) -> Result<(Brep, Vec<FaceId>)> {
     // Where a face closes on the way, a round offset past its radius or a riser between two faces
     // brought level, the offset is followed there.
-    offset_kept(b, by).or_else(|e| {
-        let mut paths: HashMap<FaceId, through::Path> = HashMap::new();
-        for (&f, &d) in by {
-            let face = b.face(f);
-            let natural = if face.reversed { -d } else { d };
-            let (surface, bounds) = (face.surface.clone(), face_box(b, f));
-            paths.insert(
-                f,
-                Box::new(move |s| match offset_surface(&surface, s * natural) {
-                    Err(Error::Unsupported(_)) => offset_fitted(&surface, s * natural, bounds),
-                    r => r,
-                }),
-            );
-        }
-        through::through(b, &paths).map_err(|_| e)
-    })
+    offset_kept(b, by)
+        .map(|out| (out, Vec::new()))
+        .or_else(|e| {
+            let mut paths: HashMap<FaceId, through::Path> = HashMap::new();
+            for (&f, &d) in by {
+                let face = b.face(f);
+                let natural = if face.reversed { -d } else { d };
+                let (surface, bounds) = (face.surface.clone(), face_box(b, f));
+                paths.insert(
+                    f,
+                    Box::new(move |s| match offset_surface(&surface, s * natural) {
+                        Err(Error::Unsupported(_)) => offset_fitted(&surface, s * natural, bounds),
+                        r => r,
+                    }),
+                );
+            }
+            through::through(b, &paths).map_err(|_| e)
+        })
 }
 
 /// [`offset_faces`] with the solid's topology kept.

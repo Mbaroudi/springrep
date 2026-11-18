@@ -12,11 +12,11 @@ use crate::{
     error::{Error, Result},
     geom::{Curve, Surface},
     math::{Frame, Point3, Vec2, Vec3},
-    pick::convex_edges,
+    pick::{concave_edges, convex_edges},
     profile::{NamedSegment, Profile, ProfileLoop, Segment},
     sweep::revolve,
     tol,
-    topo::{Brep, FaceId, FaceName},
+    topo::{Brep, EdgeId, FaceId, FaceName},
 };
 
 mod affine;
@@ -52,26 +52,35 @@ pub fn shell(s: &Brep, open: &[FaceId], thickness: f64, wall: Wall, feature: &st
     }
     let inner = FaceName::new(feature, FaceName::INNER);
     // Every face moved `by` along its outward normal, the open ones `open_by`.
-    let moved = |by: f64, open_by: f64| {
+    // A wall that closes beside an edge turned the other way leaves no corner to meet sharp: the
+    // points within `thickness` of that edge would round it, which the moved faces cannot.
+    let moved = |by: f64, open_by: f64, turned: Vec<EdgeId>| {
         let by: HashMap<FaceId, f64> = s
             .face_ids()
             .map(|f| (f, if open.contains(&f) { open_by } else { by }))
             .filter(|&(_, d)| d != 0.0)
             .collect();
-        tweak::offset_faces(s, &by)
+        let (out, closed) = tweak::offset_faces_closing(s, &by)?;
+        closed_beside(
+            s,
+            &turned,
+            &closed,
+            "a shell whose walls close past an edge",
+        )?;
+        Ok::<_, Error>(out)
     };
     // The open faces stay where they are: moved out, they would carry the cut past their plane
     // into a wall that stands beside the opening. The cut lies on them there and leaves no skin.
     match wall {
         Wall::Inward => {
-            let mut cavity = moved(-thickness, 0.0)?;
+            let mut cavity = moved(-thickness, 0.0, concave_edges(s)?)?;
             for f in cavity.face_ids().collect::<Vec<_>>() {
                 cavity.set_face_names(f, std::iter::once(inner.clone()).collect());
             }
             boolean::difference(s, &cavity)
         }
         Wall::Outward => {
-            let mut outer = moved(thickness, 0.0)?;
+            let mut outer = moved(thickness, 0.0, convex_edges(s)?)?;
             for f in outer.face_ids().collect::<Vec<_>>() {
                 if !open.contains(&f) {
                     outer.set_face_names(f, Default::default());
@@ -90,7 +99,8 @@ pub fn shell(s: &Brep, open: &[FaceId], thickness: f64, wall: Wall, feature: &st
 
 /// The points within `distance` of `s`: every face moved out that far, a hole that closes on the
 /// way followed there, each convex edge rounded at `distance` (which leaves a ball's patch at each
-/// convex corner), and over each end of a hole that closed, the dimple its rim leaves.
+/// convex corner), and over each end of a hole that closed, the dimple its rim leaves. An error
+/// where any other face beside a convex edge closes on the way, as the walls of a narrow slot.
 pub fn offset(s: &Brep, distance: f64, feature: &str) -> Result<Brep> {
     if distance == 0.0 {
         return Ok(s.clone());
@@ -99,7 +109,20 @@ pub fn offset(s: &Brep, distance: f64, feature: &str) -> Result<Brep> {
         return Err(Error::Unsupported("an inward offset".into()));
     }
     let by: HashMap<FaceId, f64> = s.face_ids().map(|f| (f, distance)).collect();
-    let moved = tweak::offset_faces(s, &by)?;
+    let (moved, closed) = tweak::offset_faces_closing(s, &by)?;
+    // A hole's rim is rounded by the dimple below; any other convex edge beside a face that
+    // closed would leave its round missing.
+    let dimpled = |f: FaceId| {
+        let face = s.face(f);
+        matches!(&face.surface, Surface::Cylinder(c) if face.reversed && c.radius < distance)
+    };
+    let closed: Vec<FaceId> = closed.into_iter().filter(|&f| !dimpled(f)).collect();
+    closed_beside(
+        s,
+        &convex_edges(s)?,
+        &closed,
+        "an offset whose faces close past a convex edge",
+    )?;
     let edges = convex_edges(&moved)?;
     let mut out = if edges.is_empty() {
         moved
@@ -137,6 +160,24 @@ pub fn offset(s: &Brep, distance: f64, feature: &str) -> Result<Brep> {
         }
     }
     Ok(out)
+}
+
+/// An error naming `what` when a face of `closed` lies beside one of `edges`: the move followed
+/// past it took the edge away, with the round about it the distance from the edge would leave.
+fn closed_beside(s: &Brep, edges: &[EdgeId], closed: &[FaceId], what: &str) -> Result<()> {
+    if closed.is_empty() {
+        return Ok(());
+    }
+    let beside = s
+        .coedge_ids()
+        .filter(|&co| edges.contains(&s.coedge(co).edge))
+        .any(|co| closed.contains(&s.coedge_face(co)));
+    if beside {
+        return Err(Error::Unsupported(format!(
+            "{what}: a face beside it closes, and the round about the edge is not built"
+        )));
+    }
+    Ok(())
 }
 
 /// What the offset by `d` leaves open over a hole's rim of radius `r` about `o`, opening along
@@ -349,6 +390,60 @@ mod tests {
             t: Vec3::new(-45.51695804202156, 41.045298753592036, -21.51869167292315),
         });
         close(measure::volume(&offset(&moved, d, "o").unwrap()), here);
+    }
+
+    #[test]
+    fn a_slot_closed_by_an_offset_or_a_shell_wall_is_refused_not_filled_flat() {
+        // A slot 2 wide grown shut by 1.5 from each wall: the points within 1.5 of its rim's
+        // edges leave a dimple over it, which offsetting the faces alone fills flat.
+        let u = prism(
+            &[
+                [0.0, 0.0],
+                [10.0, 0.0],
+                [10.0, 10.0],
+                [6.0, 10.0],
+                [6.0, 4.0],
+                [4.0, 4.0],
+                [4.0, 10.0],
+                [0.0, 10.0],
+            ],
+            3.0,
+        );
+        let refused = |r: Result<Brep>| matches!(r, Err(Error::Unsupported(why)) if why.contains("round about the edge"));
+        assert!(refused(offset(&u, 1.5, "o")));
+        // A neck 2 wide between two squares, walled 1.5 thick from inside: the walls cross in the
+        // neck, and the cavity's mouth to it is bounded by arcs about the neck's corners.
+        let dumbbell = prism(
+            &[
+                [0.0, 0.0],
+                [10.0, 0.0],
+                [10.0, 4.0],
+                [14.0, 4.0],
+                [14.0, 0.0],
+                [24.0, 0.0],
+                [24.0, 10.0],
+                [14.0, 10.0],
+                [14.0, 6.0],
+                [10.0, 6.0],
+                [10.0, 10.0],
+                [0.0, 10.0],
+            ],
+            6.0,
+        );
+        let top = FaceName::new("p", "end");
+        let top: Vec<FaceId> = dumbbell
+            .face_ids()
+            .filter(|&f| dumbbell.face(f).names.contains(&top))
+            .collect();
+        assert_eq!(top.len(), 1);
+        assert!(refused(shell(&dumbbell, &top, 1.5, Wall::Inward, "w")));
+        // A wall 0.5 thick leaves the neck open: the cavity is two squares 9 on a side and a
+        // channel 5 × 1 between them, 5.5 deep, in the plate of 208 × 6.
+        let shelled = shell(&dumbbell, &top, 0.5, Wall::Inward, "w").unwrap();
+        close(
+            measure::volume(&shelled),
+            208.0 * 6.0 - 5.5 * (2.0 * 81.0 + 5.0),
+        );
     }
 
     #[test]

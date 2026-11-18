@@ -9,7 +9,7 @@
 //! taken out, the two edges one. The move then goes on from there. An event that needs more, as an
 //! edge that would turn through a vertex of four faces, ends it with the error the move gave.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::{move_faces_pinned, near_uv};
 use crate::{
@@ -49,8 +49,8 @@ pub(crate) fn opening(to: &Cone, s: f64) -> Surface {
 const CLOSED: f64 = 10.0 * tol::LINEAR;
 
 /// `b` with the faces of `paths` moved to the ends of their paths, its topology changed where a
-/// face closes on the way.
-pub(crate) fn through(b: &Brep, paths: &HashMap<FaceId, Path>) -> Result<Brep> {
+/// face closes on the way, and the faces of `b` that closed.
+pub(crate) fn through(b: &Brep, paths: &HashMap<FaceId, Path>) -> Result<(Brep, Vec<FaceId>)> {
     let mut cur = b.clone();
     // The face of `b` each face of `cur` comes from.
     let mut from: HashMap<FaceId, FaceId> = b.face_ids().map(|f| (f, f)).collect();
@@ -71,8 +71,12 @@ pub(crate) fn through(b: &Brep, paths: &HashMap<FaceId, Path>) -> Result<Brep> {
             move_faces_pinned(&cur, &moved, &HashMap::new())
         };
         let last = match at(1.0) {
-            Ok(out) if changed => return unify(&out),
-            Ok(out) => return Ok(out),
+            Ok(out) if changed => {
+                let kept: HashSet<FaceId> = from.values().copied().collect();
+                let closed = b.face_ids().filter(|f| !kept.contains(f)).collect();
+                return Ok((unify(&out)?, closed));
+            }
+            Ok(out) => return Ok((out, Vec::new())),
             Err(e) => e,
         };
         let (mut lo, mut hi) = (s0, 1.0);
