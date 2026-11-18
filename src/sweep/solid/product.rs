@@ -70,8 +70,16 @@ fn folds(motion: &Steady, curve: &Curve, range: (f64, f64)) -> bool {
     false
 }
 
-/// The solid `cut` sweeps under `motion`, its swept faces named after `feature`.
-pub(super) fn product(cut: &Cut, motion: &Steady, feature: &str) -> Result<Brep> {
+/// The solid `cut` sweeps under `motion`, its swept faces named after `feature`: the pieces of face
+/// the motion carries outward at the end, the rest at the start, and what the curves between them
+/// sweep. With `only`, the solid just those pieces of face sweep instead, each at both ends, which
+/// the body at the start is united with.
+pub(super) fn product(
+    cut: &Cut,
+    motion: &Steady,
+    feature: &str,
+    only: Option<&[usize]>,
+) -> Result<Brep> {
     let (pose0, pose1) = (motion.pose0(), motion.pose1());
     let n = cut.pool.len();
     let np = cut.pieces.len();
@@ -80,6 +88,21 @@ pub(super) fn product(cut: &Cut, motion: &Steady, feature: &str) -> Result<Brep>
     let mut pool: Vec<Point3> = cut.pool.iter().map(|&p| pose0.point(p)).collect();
     pool.extend(cut.pool.iter().map(|&p| pose1.point(p)));
     let at1 = |v: usize| if still[v] { v } else { v + n };
+    // A piece of edge the motion holds still, on a turn's axis, is one edge at both ends and
+    // sweeps nothing.
+    let held: Vec<bool> = cut
+        .pieces
+        .iter()
+        .map(|pg| {
+            still[pg.v0]
+                && still[pg.v1]
+                && pg
+                    .curve
+                    .as_ref()
+                    .is_none_or(|c| motion.holds(c.eval(0.5 * (pg.range.0 + pg.range.1))))
+        })
+        .collect();
+    let piece1 = |p: usize| if p < np && held[p] { p } else { p + np };
     let mut pieces: Vec<PieceGeom> = Vec::with_capacity(2 * np);
     for (t, end) in [(&pose0, false), (&pose1, true)] {
         for pg in &cut.pieces {
@@ -95,21 +118,36 @@ pub(super) fn product(cut: &Cut, motion: &Steady, feature: &str) -> Result<Brep>
     }
     let curves: Vec<Option<Rc<Curve>>> = pieces.iter().map(|p| p.curve.clone()).collect();
     let mut faces: Vec<OutFace> = Vec::new();
-    for part in &cut.parts {
-        let (t, side) = if part.front { (&pose1, 1) } else { (&pose0, 0) };
-        let loops = if part.front {
-            moved_loops(&part.loops, t, &|p| p + np, &at1, &curves)
-        } else {
-            moved_loops(&part.loops, t, &|p| p, &|v| v, &curves)
-        };
-        faces.push(OutFace {
-            surface: part.surface.transformed(t),
-            reversed: part.reversed,
-            names: part.names.clone(),
-            loops,
-            memo: None,
-            side: Some(side),
-        });
+    // The parts whose sweep is built: those carried outward, or the ones `only` names.
+    let swept = |pi: usize| match only {
+        None => cut.parts[pi].front,
+        Some(set) => set.contains(&pi),
+    };
+    for (pi, part) in cut.parts.iter().enumerate() {
+        if swept(pi) {
+            faces.push(OutFace {
+                surface: part.surface.transformed(&pose1),
+                reversed: part.reversed,
+                names: part.names.clone(),
+                loops: moved_loops(&part.loops, &pose1, &piece1, &at1, &curves),
+                memo: None,
+                side: Some(1),
+            });
+        }
+        if swept(pi) == only.is_some() {
+            let mut face = OutFace {
+                surface: part.surface.transformed(&pose0),
+                reversed: part.reversed,
+                names: part.names.clone(),
+                loops: moved_loops(&part.loops, &pose0, &|p| p, &|v| v, &curves),
+                memo: None,
+                side: Some(0),
+            };
+            if only.is_some() {
+                face.flip();
+            }
+            faces.push(face);
+        }
     }
     // Each piece's uses by the parts: which part, and whether its trim runs along the piece.
     let mut uses: HashMap<usize, Vec<(usize, bool)>> = HashMap::new();
@@ -126,11 +164,11 @@ pub(super) fn product(cut: &Cut, motion: &Steady, feature: &str) -> Result<Brep>
     let names: BTreeSet<FaceName> = [FaceName::new(feature, FaceName::SIDE)].into();
     for k in keys {
         let us = &uses[&k];
-        let fronts: Vec<&(usize, bool)> = us.iter().filter(|u| cut.parts[u.0].front).collect();
-        if us.len() != 2 || fronts.len() != 1 {
+        let inside: Vec<&(usize, bool)> = us.iter().filter(|u| swept(u.0)).collect();
+        if us.len() != 2 || inside.len() != 1 || held[k] {
             continue;
         }
-        let forward = fronts[0].1;
+        let forward = inside[0].1;
         let pg = &cut.pieces[k];
         let Some(curve) = pg.curve.as_ref() else {
             continue;
@@ -154,7 +192,7 @@ pub(super) fn product(cut: &Cut, motion: &Steady, feature: &str) -> Result<Brep>
                     .into(),
             ));
         }
-        let sheet = motion.sheet(&placed, pg.range)?;
+        let sheet = motion.sheet(&placed, cut.whole[k])?;
         let span = sheet.span;
         let mut path = |v: usize, pieces: &mut Vec<PieceGeom>| -> Result<usize> {
             if let Some(&id) = paths.get(&v) {
@@ -214,9 +252,13 @@ pub(super) fn product(cut: &Cut, motion: &Steady, feature: &str) -> Result<Brep>
                 pole: pool[pg.v0],
                 t0: s0,
                 t1: s1,
-                map: UvMap::Affine {
-                    origin: sheet.uv(0.0, t),
-                    dir: sheet.along,
+                map: if sheet.turned.is_some() {
+                    UvMap::Projected
+                } else {
+                    UvMap::Affine {
+                        origin: sheet.uv(0.0, t),
+                        dir: sheet.along,
+                    }
                 },
                 uv0: sheet.uv(s0, t),
                 uv1: sheet.uv(s1, t),
@@ -249,4 +291,34 @@ pub(super) fn product(cut: &Cut, motion: &Steady, feature: &str) -> Result<Brep>
     }
     let vtol = vec![tol::LINEAR; pool.len()];
     sew::assemble(faces, &pool, &vtol, &pieces)
+}
+
+/// The body where the motion starts, its faces cut along their characteristic curves, so each
+/// piece of face a part's sweep starts from is a face of it.
+pub(super) fn start(cut: &Cut, motion: &Steady) -> Result<Brep> {
+    let pose0 = motion.pose0();
+    let pool: Vec<Point3> = cut.pool.iter().map(|&p| pose0.point(p)).collect();
+    let pieces: Vec<PieceGeom> = cut
+        .pieces
+        .iter()
+        .map(|pg| PieceGeom {
+            curve: pg.curve.as_ref().map(|c| Rc::new(c.transformed(&pose0))),
+            ..pg.clone()
+        })
+        .collect();
+    let curves: Vec<Option<Rc<Curve>>> = pieces.iter().map(|p| p.curve.clone()).collect();
+    let faces = cut
+        .parts
+        .iter()
+        .map(|part| OutFace {
+            surface: part.surface.transformed(&pose0),
+            reversed: part.reversed,
+            names: part.names.clone(),
+            loops: moved_loops(&part.loops, &pose0, &|p| p, &|v| v, &curves),
+            memo: None,
+            side: Some(0),
+        })
+        .collect();
+    let vtol = vec![tol::LINEAR; pool.len()];
+    sew::assemble_as_cut(faces, &pool, &vtol, &pieces)
 }

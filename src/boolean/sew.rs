@@ -46,7 +46,7 @@ pub(crate) struct OutFace {
 
 impl OutFace {
     /// Turns the face inside out: the material moves to the other side.
-    pub(super) fn flip(&mut self) {
+    pub(crate) fn flip(&mut self) {
         self.memo = None;
         self.reversed = !self.reversed;
         for l in &mut self.loops {
@@ -566,6 +566,26 @@ fn check_uses(faces: &[OutFace], pieces: &[PieceGeom], partners: &HashMap<Use, U
 /// A solid to build: its sheets, each a list of faces, the outer ones first, and how many are
 /// outer.
 type SolidPlan = (Vec<Vec<usize>>, usize);
+
+/// The solid one closed sheet of `faces` bounds, each face kept as it is: neighbours on one
+/// surface stay apart, as a face cut along a curve another operation needs as an edge.
+pub(crate) fn assemble_as_cut(
+    faces: Vec<OutFace>,
+    pool: &[Point3],
+    vtol: &[f64],
+    pieces: &[PieceGeom],
+) -> Result<Brep> {
+    let plan: Vec<SolidPlan> = vec![(vec![(0..faces.len()).collect()], 1)];
+    let (b, _, _) = build(&faces, &plan, pool, vtol, pieces, true);
+    let issues = check::check(&b);
+    if issues.is_empty() {
+        Ok(b)
+    } else {
+        Err(Error::InvalidResult(
+            issues.into_iter().map(|i| i.to_string()).collect(),
+        ))
+    }
+}
 
 /// An arena holding `faces`, grouped into solids of sheets, with each face use's coedge. With
 /// `share`, a solid's sheets share the vertices and edges where they touch; without, each sheet

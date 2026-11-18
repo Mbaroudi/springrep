@@ -2788,7 +2788,11 @@ impl<'a> Work<'a> {
 
 /// Splits each pole of a face's boundary where a cut arrives at it, so the cut meets the pole's
 /// parameter-plane image at a node. The new pieces are numbered from `next_id`.
-fn split_poles(boundary: &mut [Vec<Trim>], cuts: &[Trim], next_id: usize) -> Vec<PieceGeom> {
+pub(crate) fn split_poles(
+    boundary: &mut [Vec<Trim>],
+    cuts: &[Trim],
+    next_id: usize,
+) -> Vec<PieceGeom> {
     let mut made = Vec::new();
     for lp in boundary.iter_mut() {
         let mut k = 0;

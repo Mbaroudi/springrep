@@ -4,6 +4,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
 
+use super::contour::{self, Branch, Closed, Run};
 use super::grazing::{self, Arrival, Rate};
 use crate::{
     Error, Result,
@@ -12,6 +13,7 @@ use crate::{
         domain::{Domain, Trim},
         face_domain,
         sew::PieceGeom,
+        split_poles,
     },
     check::coedge_params,
     geom::{Curve, Surface},
@@ -35,6 +37,9 @@ pub(super) struct Part {
 pub(super) struct Cut {
     pub pool: Vec<Point3>,
     pub pieces: Vec<PieceGeom>,
+    /// The range of the whole curve each piece was cut from: its edge's, or its own. The faces
+    /// that pieces of one curve sweep lie on the one surface that curve sweeps.
+    pub whole: Vec<(f64, f64)>,
     pub parts: Vec<Part>,
 }
 
@@ -165,8 +170,52 @@ fn bisect_on(b: &Brep, c: CoedgeId, rate: &Rate, a: (f64, Vec2, f64), z: (f64, V
     0.5 * (lo + hi)
 }
 
-/// Cuts `b` along the curves where `field`, the velocity of its points, lies in its faces.
-pub(super) fn cut(b: &Brep, field: &dyn Fn(Point3) -> Vec3) -> Result<Cut> {
+/// The parameters where `edge` touches the line through `o` along the unit `axis`: the least
+/// distances to it, bracketed by samples and pinned by golden-section search, that are within the
+/// tolerance, its ends left out.
+fn on_line(b: &Brep, edge: EdgeId, o: Point3, axis: Vec3) -> Vec<f64> {
+    let e = b.edge(edge);
+    let Some(c) = &e.curve else {
+        return Vec::new();
+    };
+    let off = |t: f64| {
+        let q = c.eval(t) - o;
+        (q - axis * q.dot(axis)).norm()
+    };
+    let n = 256;
+    let (t0, t1) = e.range;
+    let at = |k: usize| t0 + (t1 - t0) * k as f64 / n as f64;
+    let mut out = Vec::new();
+    for k in 1..n {
+        let (a, m, z) = (off(at(k - 1)), off(at(k)), off(at(k + 1)));
+        if !(m <= a && m <= z) {
+            continue;
+        }
+        let (mut lo, mut hi) = (at(k - 1), at(k + 1));
+        for _ in 0..100 {
+            let (x, y) = (lo + 0.382 * (hi - lo), lo + 0.618 * (hi - lo));
+            if off(x) < off(y) {
+                hi = y;
+            } else {
+                lo = x;
+            }
+        }
+        let t = 0.5 * (lo + hi);
+        if off(t) <= tol::LINEAR && out.last().is_none_or(|&s: &f64| (t - s).abs() > 1e-9) {
+            out.push(t);
+        }
+    }
+    out
+}
+
+/// Cuts `b` along the curves where `field`, the velocity of its points, lies in its faces. Where
+/// the motion holds the line `held` still, the edges are cut where they touch it, so each point
+/// the motion holds still on an edge is a vertex.
+pub(super) fn cut(
+    b: &Brep,
+    field: &dyn Fn(Point3) -> Vec3,
+    held: Option<(Point3, Vec3)>,
+) -> Result<Cut> {
     let size = measure::bbox(b).diagonal();
     let speed = b
         .vertex_ids()
@@ -203,116 +252,51 @@ pub(super) fn cut(b: &Brep, field: &dyn Fn(Point3) -> Vec3) -> Result<Cut> {
             boundary_roots(b, f, &rates[i], eps)
         });
     }
-    let mut pool: Vec<Point3> = b.vertex_ids().map(|v| b.vertex(v).point).collect();
-    let mut splits: HashMap<EdgeId, Vec<(f64, usize)>> = HashMap::new();
-    // A place on an edge as a vertex: an end of the edge where it lies on one, an earlier split
-    // where it lies on one, else a new vertex.
-    let mut place = |edge: EdgeId, t: f64, pool: &mut Vec<Point3>| -> (usize, Point3) {
-        let e = b.edge(edge);
-        let curve = e.curve.as_ref().expect("roots lie on edges with curves");
-        let p = curve.eval(t);
-        for v in [e.start, e.end] {
-            let q = b.vertex(v).point;
-            if q.dist(p) <= 10.0 * tol::LINEAR {
-                return (v.index(), q);
-            }
-        }
-        let list = splits.entry(edge).or_default();
-        for &(_, vi) in list.iter() {
-            if pool[vi].dist(p) <= 10.0 * tol::LINEAR {
-                return (vi, pool[vi]);
-            }
-        }
-        pool.push(p);
-        list.push((t, pool.len() - 1));
-        (pool.len() - 1, p)
+    let mut places = Places {
+        pool: b.vertex_ids().map(|v| b.vertex(v).point).collect(),
+        splits: HashMap::new(),
     };
-    // Each face's roots as vertices, with their parameters on the face, and the curves traced
-    // between them.
-    struct Traced {
-        curve: Curve,
-        range: (f64, f64),
-        ends: (usize, usize),
-        uvs: (Vec2, Vec2),
+    if let Some((o, axis)) = held {
+        for e in b.edge_ids() {
+            for t in on_line(b, e, o, axis) {
+                places.on_edge(b, e, t);
+            }
+        }
     }
-    let mut traced: Vec<Vec<Traced>> = Vec::with_capacity(faces.len());
+    let mut traced: Vec<Vec<CutCurve>> = Vec::with_capacity(faces.len());
     for (i, &f) in faces.iter().enumerate() {
         // Each place a curve meets the boundary: a vertex where the boundary passes it, so one
         // on a seam is two, a period apart.
-        let mut roots: Vec<(Point3, Vec2)> = Vec::new();
-        let mut ids: Vec<usize> = Vec::new();
+        let mut roots: Vec<Root> = Vec::new();
         for m in &meets[i] {
-            let (vi, p) = place(b.coedge(m.coedge).edge, m.t, &mut pool);
+            let (vertex, point) = places.on_edge(b, b.coedge(m.coedge).edge, m.t);
             let uv = b.coedge_uvs(m.coedge, &[start_param(b, m.coedge), m.t])[1];
-            let seen = ids
+            let seen = roots
                 .iter()
-                .zip(&roots)
-                .any(|(&v, r)| v == vi && (r.1 - uv).norm() <= 1e-9 * (1.0 + uv.norm()));
+                .any(|r| r.vertex == vertex && (r.uv - uv).norm() <= 1e-9 * (1.0 + uv.norm()));
             if !seen {
-                roots.push((p, uv));
-                ids.push(vi);
+                roots.push(Root { vertex, point, uv });
             }
         }
-        let mut used = vec![false; roots.len()];
-        let mut curves = Vec::new();
-        for s in 0..roots.len() {
-            if used[s] {
-                continue;
-            }
-            used[s] = true;
-            let (path, arrival) = grazing::trace(&rates[i], &doms[i], &roots, s)?;
-            let end = match arrival {
-                Arrival::Root(k) => {
-                    if used[k] && k != s {
-                        return Err(Error::Numerical(
-                            "two characteristic curves end at one point".into(),
-                        ));
-                    }
-                    used[k] = true;
-                    ids[k]
-                }
-                Arrival::Boundary(p) => {
-                    let (edge, t) = nearest_edge(b, f, p)?;
-                    place(edge, t, &mut pool).0
-                }
+        let curves = if still[i] {
+            Vec::new()
+        } else if let Some(form) = contour::form(&b.face(f).surface) {
+            let closed = Closed {
+                rate: &rates[i],
+                form,
+                lo: doms[i].lo,
+                hi: doms[i].hi,
             };
-            let (curve, range) = grazing::fit(&rates[i], &path)?;
-            let uvs = (path.uvs[0], *path.uvs.last().expect("a trace has points"));
-            if ids[s] == end && curve.period().is_none() {
-                // A curve that closes through a seam is two edges, so no edge both starts and ends
-                // at one vertex on a curve that does not close by its own period.
-                let mid = 0.5 * (range.0 + range.1);
-                let p = curve.eval(mid);
-                pool.push(p);
-                let m = pool.len() - 1;
-                let half = rates[i]
-                    .surface
-                    .project_near(p, path.uvs[path.uvs.len() / 2]);
-                curves.push(Traced {
-                    curve: curve.clone(),
-                    range: (range.0, mid),
-                    ends: (ids[s], m),
-                    uvs: (uvs.0, half),
-                });
-                curves.push(Traced {
-                    curve,
-                    range: (mid, range.1),
-                    ends: (m, end),
-                    uvs: (half, uvs.1),
-                });
-                continue;
-            }
-            curves.push(Traced {
-                curve,
-                range,
-                ends: (ids[s], end),
-                uvs,
-            });
-        }
+            closed_cuts(b, f, &closed, &doms[i], &roots, &mut places, eps)?
+        } else {
+            traced_cuts(b, f, &rates[i], &doms[i], &roots, &mut places)?
+        };
         traced.push(curves);
     }
+    let Places { pool, mut splits } = places;
     // The edge pieces between splits, each edge's in order along it.
     let mut pieces: Vec<PieceGeom> = Vec::new();
+    let mut whole: Vec<(f64, f64)> = Vec::new();
     let mut of_edge: HashMap<EdgeId, Vec<(usize, f64, f64)>> = HashMap::new();
     for e in b.edge_ids() {
         let edge = b.edge(e);
@@ -325,6 +309,7 @@ pub(super) fn cut(b: &Brep, field: &dyn Fn(Point3) -> Vec3) -> Result<Cut> {
         let list = of_edge.entry(e).or_default();
         for w in stops.windows(2) {
             list.push((pieces.len(), w[0].0, w[1].0));
+            whole.push(edge.range);
             pieces.push(PieceGeom {
                 curve: curve.clone(),
                 range: (w[0].0, w[1].0),
@@ -337,7 +322,7 @@ pub(super) fn cut(b: &Brep, field: &dyn Fn(Point3) -> Vec3) -> Result<Cut> {
     let mut parts = Vec::new();
     for (i, &f) in faces.iter().enumerate() {
         let face = b.face(f);
-        let boundary: Vec<Vec<Trim>> = face
+        let mut boundary: Vec<Vec<Trim>> = face
             .loops
             .iter()
             .map(|&lp| {
@@ -379,6 +364,7 @@ pub(super) fn cut(b: &Brep, field: &dyn Fn(Point3) -> Vec3) -> Result<Cut> {
         let mut cuts = Vec::new();
         for tc in &traced[i] {
             let curve = Rc::new(tc.curve.clone());
+            whole.push(tc.range);
             pieces.push(PieceGeom {
                 curve: Some(curve.clone()),
                 range: tc.range,
@@ -400,6 +386,10 @@ pub(super) fn cut(b: &Brep, field: &dyn Fn(Point3) -> Vec3) -> Result<Cut> {
                 v1: tc.ends.1,
             });
         }
+        // A curve that ends at a pole meets the pole's row of parameters at its own `u`.
+        let made = split_poles(&mut boundary, &cuts, pieces.len());
+        whole.extend(made.iter().map(|pg| pg.range));
+        pieces.extend(made);
         let regions = arrange::split(
             &face.surface,
             face.reversed,
@@ -432,8 +422,214 @@ pub(super) fn cut(b: &Brep, field: &dyn Fn(Point3) -> Vec3) -> Result<Cut> {
     Ok(Cut {
         pool,
         pieces,
+        whole,
         parts,
     })
+}
+
+/// The cut's vertices so far, the body's own first, and where they split the body's edges.
+struct Places {
+    pool: Vec<Point3>,
+    splits: HashMap<EdgeId, Vec<(f64, usize)>>,
+}
+
+impl Places {
+    /// The point at `t` on `edge` as a vertex: an end of the edge where it lies on one, an
+    /// earlier split where it lies on one, else a new vertex splitting the edge there.
+    fn on_edge(&mut self, b: &Brep, edge: EdgeId, t: f64) -> (usize, Point3) {
+        let e = b.edge(edge);
+        let curve = e.curve.as_ref().expect("roots lie on edges with curves");
+        let p = curve.eval(t);
+        for v in [e.start, e.end] {
+            let q = b.vertex(v).point;
+            if q.dist(p) <= 10.0 * tol::LINEAR {
+                return (v.index(), q);
+            }
+        }
+        let list = self.splits.entry(edge).or_default();
+        for &(_, vi) in list.iter() {
+            if self.pool[vi].dist(p) <= 10.0 * tol::LINEAR {
+                return (vi, self.pool[vi]);
+            }
+        }
+        self.pool.push(p);
+        list.push((t, self.pool.len() - 1));
+        (self.pool.len() - 1, p)
+    }
+
+    /// The vertex where a characteristic curve leaves face `f` at `p` with no root found there:
+    /// a pole, or the point of the nearest edge, which the rate vanishes all along.
+    fn on_boundary(&mut self, b: &Brep, f: FaceId, p: Point3) -> Result<(usize, Point3)> {
+        let reach = 1e-6 * (1.0 + p.norm());
+        for &lp in &b.face(f).loops {
+            for &c in &b.lp(lp).coedges {
+                let e = b.edge(b.coedge(c).edge);
+                if e.curve.is_none() && b.vertex(e.start).point.dist(p) <= reach {
+                    return Ok((e.start.index(), b.vertex(e.start).point));
+                }
+            }
+        }
+        let (edge, t) = nearest_edge(b, f, p)?;
+        Ok(self.on_edge(b, edge, t))
+    }
+
+    /// A new vertex inside a face.
+    fn inside(&mut self, p: Point3) -> usize {
+        self.pool.push(p);
+        self.pool.len() - 1
+    }
+}
+
+/// A place a characteristic curve meets a face's boundary: its vertex, and its parameters on the
+/// face there, of which a vertex on a seam has two.
+struct Root {
+    vertex: usize,
+    point: Point3,
+    uv: Vec2,
+}
+
+/// A characteristic curve across a face, between two of the cut's vertices.
+struct CutCurve {
+    curve: Curve,
+    range: (f64, f64),
+    ends: (usize, usize),
+    uvs: (Vec2, Vec2),
+}
+
+/// A face's characteristic curves where they have a closed form: each run of a branch inside the
+/// face, cut where a line of the form crosses another branch, fitted through its exact points.
+fn closed_cuts(
+    b: &Brep,
+    f: FaceId,
+    closed: &Closed,
+    dom: &Domain,
+    roots: &[Root],
+    places: &mut Places,
+    eps: f64,
+) -> Result<Vec<CutCurve>> {
+    let size = closed.rate.size;
+    let mut runs: Vec<Run> = Vec::new();
+    for (branch, range) in closed.branches(eps) {
+        runs.extend(closed.runs(dom, branch, range));
+    }
+    // Each run's stops: its ends, and any crossing inside it, with the vertex there where known.
+    let mut stops: Vec<Vec<(f64, Option<usize>)>> = runs
+        .iter()
+        .map(|r| vec![(r.s.0, None), (r.s.1, None)])
+        .collect();
+    for i in 0..runs.len() {
+        let Branch::AtU { at } = runs[i].branch else {
+            continue;
+        };
+        for j in 0..runs.len() {
+            if matches!(runs[j].branch, Branch::AtU { .. } | Branch::Line { .. })
+                || !(runs[j].s.0 < at && at < runs[j].s.1)
+            {
+                continue;
+            }
+            let Some((p, uv)) = closed.point(runs[j].branch, at) else {
+                continue;
+            };
+            if !(runs[i].s.0 < uv.y && uv.y < runs[i].s.1) {
+                continue;
+            }
+            let v = places.inside(p);
+            stops[i].push((uv.y, Some(v)));
+            stops[j].push((at, Some(v)));
+        }
+    }
+    let surface = closed.rate.surface;
+    let mut out = Vec::new();
+    for (run, mut stop) in runs.into_iter().zip(stops) {
+        stop.sort_by(|a, b| a.0.total_cmp(&b.0));
+        for w in stop.windows(2) {
+            let mut ends = [(0usize, Point3::ZERO, Vec2::ZERO); 2];
+            let mut span = [w[0].0, w[1].0];
+            let reach = 0.05 * (w[1].0 - w[0].0);
+            for (k, &(s, known)) in w.iter().enumerate() {
+                let Some((p, uv)) = closed.point(run.branch, s) else {
+                    return Err(Error::Numerical(
+                        "a characteristic curve ends where its closed form has no point".into(),
+                    ));
+                };
+                // A root this branch passes through near the end, which the face's winding
+                // number places only to within the tolerance, is the end exactly.
+                let snapped = roots
+                    .iter()
+                    .filter(|r| grazing::near_image(surface, r.uv, uv))
+                    .filter_map(|r| {
+                        let at = closed.param_of(run.branch, r.uv);
+                        let on = closed.point(run.branch, at)?.0;
+                        (on.dist(r.point) <= 1e-7 * size && (at - s).abs() <= reach)
+                            .then_some((r, at))
+                    })
+                    .min_by(|a, b| (a.1 - s).abs().total_cmp(&(b.1 - s).abs()));
+                ends[k] = match (known, snapped) {
+                    (Some(v), _) => (v, places.pool[v], uv),
+                    (None, Some((r, at))) => {
+                        span[k] = at;
+                        (r.vertex, r.point, r.uv)
+                    }
+                    (None, None) => {
+                        let (v, q) = places.on_boundary(b, f, p)?;
+                        (v, q, uv)
+                    }
+                };
+            }
+            let at = |s: f64| closed.point(run.branch, s).map_or(Point3::ZERO, |x| x.0);
+            let (curve, range) =
+                grazing::fit_exact(&at, (span[0], span[1]), (ends[0].1, ends[1].1), size)?;
+            out.push(CutCurve {
+                curve,
+                range,
+                ends: (ends[0].0, ends[1].0),
+                uvs: (ends[0].2, ends[1].2),
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// A face's characteristic curves traced from root to root.
+fn traced_cuts(
+    b: &Brep,
+    f: FaceId,
+    rate: &Rate,
+    dom: &Domain,
+    roots: &[Root],
+    places: &mut Places,
+) -> Result<Vec<CutCurve>> {
+    let ends: Vec<(Point3, Vec2)> = roots.iter().map(|r| (r.point, r.uv)).collect();
+    let mut used = vec![false; roots.len()];
+    let mut out = Vec::new();
+    for s in 0..roots.len() {
+        if used[s] {
+            continue;
+        }
+        used[s] = true;
+        let (path, arrival) = grazing::trace(rate, dom, &ends, s)?;
+        let end = match arrival {
+            Arrival::Root(k) => {
+                if used[k] && k != s {
+                    return Err(Error::Numerical(
+                        "two characteristic curves end at one point".into(),
+                    ));
+                }
+                used[k] = true;
+                roots[k].vertex
+            }
+            Arrival::Boundary(p) => places.on_boundary(b, f, p)?.0,
+        };
+        let (curve, range) = grazing::fit(rate, &path)?;
+        let uvs = (path.uvs[0], *path.uvs.last().expect("a trace has points"));
+        out.push(CutCurve {
+            curve,
+            range,
+            ends: (roots[s].vertex, end),
+            uvs,
+        });
+    }
+    Ok(out)
 }
 
 /// The edge of face `f` nearest `p`, and the parameter on it of the point nearest `p`.

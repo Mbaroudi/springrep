@@ -112,7 +112,7 @@ pub(super) enum Arrival {
 
 /// Whether two parameter points of `s` are within a quarter period of each other in each periodic
 /// parameter: one image of a point, and not another a period away.
-fn near_image(s: &Surface, a: Vec2, b: Vec2) -> bool {
+pub(super) fn near_image(s: &Surface, a: Vec2, b: Vec2) -> bool {
     let d = a - b;
     s.u_period().is_none_or(|p| d.x.abs() < 0.25 * p)
         && s.v_period().is_none_or(|p| d.y.abs() < 0.25 * p)
@@ -337,6 +337,94 @@ pub(super) fn fit(rate: &Rate, traced: &Traced) -> Result<(Curve, (f64, f64))> {
     Err(Error::Numerical(
         "a characteristic curve's fit did not reach its tolerance".into(),
     ))
+}
+
+/// The curve through the exact points `at(s)` for `s` over `range`, which starts and ends at
+/// `ends`: the line or circle they lie on, or a cubic B-spline through them at chord-length
+/// parameters, a point added in each span whose middle strays from the spline by more than [`FIT`].
+pub(super) fn fit_exact(
+    at: &dyn Fn(f64) -> Point3,
+    range: (f64, f64),
+    ends: (Point3, Point3),
+    size: f64,
+) -> Result<(Curve, (f64, f64))> {
+    let n0 = 32;
+    let mut ss: Vec<f64> = (0..=n0)
+        .map(|k| range.0 + (range.1 - range.0) * k as f64 / n0 as f64)
+        .collect();
+    let exact = 1e-12 * size;
+    let closed = ends.0.dist(ends.1) <= exact;
+    for round in 0..20 {
+        let last = ss.len() - 1;
+        let pts: Vec<Point3> = ss
+            .iter()
+            .enumerate()
+            .map(|(i, &s)| match i {
+                0 => ends.0,
+                i if i == last => ends.1,
+                _ => at(s),
+            })
+            .collect();
+        if round == 0 {
+            if let Some((line, len)) = Line::through(ends.0, ends.1)
+                && pts
+                    .iter()
+                    .all(|&p| (p - ends.0).cross(line.dir).norm() <= exact)
+            {
+                return Ok((Curve::Line(line), (0.0, len)));
+            }
+            if let Some(arc) = on_circle(&pts, exact) {
+                return Ok(arc);
+            }
+        }
+        let params = chords(&pts);
+        let spline = if closed {
+            BSpline::interpolate_periodic_at(&pts[..last], &params)?
+        } else {
+            BSpline::interpolate_at(&pts, &params)?
+        };
+        // Each new point moves the whole interpolant a little, so spans near the limit are split
+        // too, or the refinement creeps on one span a round.
+        let errs: Vec<(f64, f64)> = (0..last)
+            .map(|i| {
+                let mid = 0.5 * (ss[i] + ss[i + 1]);
+                (
+                    mid,
+                    span_distance(&spline, at(mid), (params[i], params[i + 1])),
+                )
+            })
+            .collect();
+        let added = errs.iter().any(|e| e.1 > FIT);
+        let mut next = vec![ss[0]];
+        for i in 0..last {
+            if added && errs[i].1 > 0.25 * FIT {
+                next.push(errs[i].0);
+            }
+            next.push(ss[i + 1]);
+        }
+        if !added {
+            return Ok((Curve::BSpline(spline), (params[0], params[last])));
+        }
+        ss = next;
+    }
+    Err(Error::Numerical(
+        "a characteristic curve's fit did not reach its tolerance".into(),
+    ))
+}
+
+/// The distance from `p` to the span `[lo, hi]` of `c`, by Newton steps from its middle.
+fn span_distance(c: &BSpline, p: Point3, (lo, hi): (f64, f64)) -> f64 {
+    let mut t = 0.5 * (lo + hi);
+    for _ in 0..12 {
+        let [q, d1, d2] = c.eval_ders(t, 2);
+        let r = q - p;
+        let df = d1.norm2() + r.dot(d2);
+        if df <= 0.0 {
+            break;
+        }
+        t = (t - r.dot(d1) / df).clamp(lo, hi);
+    }
+    c.eval(t).dist(p)
 }
 
 /// Chord-length parameters.

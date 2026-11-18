@@ -5,6 +5,7 @@
 //! body, and the solid's boundary is that boundary swept, capped by the rest of the body at the
 //! start and the region at the end.
 
+mod contour;
 mod cut;
 mod grazing;
 mod motion;
@@ -15,7 +16,7 @@ mod tests;
 
 pub use motion::Motion;
 
-use crate::{Error, Result, error::invalid, topo::Brep};
+use crate::{Error, Result, boolean, error::invalid, topo::Brep};
 
 /// The solid `body` passes through as `motion` carries it, `τ` from 0 to 1: the union of
 /// `M(τ)·body`. The faces the body's faces are cut from keep their names; each face a curve sweeps
@@ -35,6 +36,27 @@ pub fn solid(body: &Brep, motion: &Motion, feature: &str) -> Result<Brep> {
         ));
     };
     let field = move |p| twist.at(p);
-    let cut = cut::cut(body, &field)?;
-    product::product(&cut, &steady, feature)
+    let cut = cut::cut(body, &field, steady.held())?;
+    match product::product(&cut, &steady, feature, None) {
+        Err(Error::InvalidResult(_)) => in_parts(&cut, &steady, feature),
+        other => other,
+    }
+}
+
+/// The sweep as the union of the body at the start and what each piece of face the motion carries
+/// outward sweeps on its own, for where the body's other faces at the start and the pieces at the
+/// end cross each other: a plane turned past the line it grazes along crosses where it started
+/// beyond that line, and a sheet swept from a concave edge runs into the body.
+fn in_parts(cut: &cut::Cut, steady: &sheet::Steady, feature: &str) -> Result<Brep> {
+    let mut out = product::start(cut, steady)?;
+    for (i, part) in cut.parts.iter().enumerate() {
+        if part.front {
+            let piece = product::product(cut, steady, feature, Some(&[i]))?;
+            // The piece's sweep starts on the body's face, and grazes it along the curves that
+            // bound the piece there.
+            let facts = crate::blend::shared_edges(&out, &piece);
+            out = boolean::boolean_with(&out, &piece, boolean::Op::Union, &facts)?;
+        }
+    }
+    Ok(out)
 }

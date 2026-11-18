@@ -112,3 +112,111 @@ fn a_cylinder_slid_aslant_adds_the_prism_of_its_shadow() {
         measure::volume(&b)
     );
 }
+
+/// The turn about the z axis through `angle`, from where the body is drawn.
+fn about_z(angle: f64) -> Motion {
+    Motion::Turn {
+        origin: Vec3::ZERO,
+        axis: Vec3::Z,
+        from: 0.0,
+        to: angle,
+    }
+}
+
+// Where each circle about the axis meets the body in one arc, a turn through θ adds to the body θ
+// times the moment about the axis of its shadow on a half-plane through the axis, ∫ρ dA (Pappus).
+// A ball of radius r whose centre is R from the axis casts a disc: πr²R.
+#[test]
+fn a_ball_turned_about_a_line_adds_a_piece_of_torus() {
+    let (r, big, angle) = (1.0, 4.0, 1.2);
+    let ball = sphere(
+        &Frame::WORLD.translated(Vec3::new(big, 0.0, 0.5)),
+        r,
+        "ball",
+    )
+    .unwrap();
+    let b = solid(&ball, &about_z(angle), "sw").unwrap();
+    assert!(check::check(&b).is_empty());
+    let want = 4.0 / 3.0 * PI * r.powi(3) + angle * PI * r * r * big;
+    assert!(
+        rel(measure::volume(&b), want) < 1e-9,
+        "{} {want}",
+        measure::volume(&b)
+    );
+}
+
+// The unit cube from (1, 0, 0) turned about the z axis: its shadow spans radii 1 to √5 at every
+// height, a moment of (5 − 1)/2.
+#[test]
+fn a_cube_turned_about_a_line_beside_it() {
+    let angle = 0.9;
+    let cube = block(
+        &Frame::WORLD.translated(Vec3::X),
+        Vec3::new(1.0, 1.0, 1.0),
+        "cube",
+    )
+    .unwrap();
+    let b = solid(&cube, &about_z(angle), "sw").unwrap();
+    assert!(check::check(&b).is_empty());
+    assert!(
+        rel(measure::volume(&b), 1.0 + 2.0 * angle) < 1e-9,
+        "{}",
+        measure::volume(&b)
+    );
+}
+
+// A drum of radius 1 and length ½ along y, its axis 5 from the z axis, turned about it: at height z
+// its shadow runs from 5 − s to √((5 + s)² + ¼), s = √(1 − z²), a moment of ∫(20s + ¼)/2 dz =
+// 5π + ¼. Its side grazes the turn along curves that are neither lines nor circles.
+#[test]
+fn a_drum_turned_about_a_line_square_to_its_axis() {
+    let angle = 0.7;
+    let frame = Frame::new(Vec3::new(5.0, 0.0, 0.0), Vec3::Y, Vec3::X).unwrap();
+    let drum = cylinder(&frame, 1.0, 0.5, "drum").unwrap();
+    let b = solid(&drum, &about_z(angle), "sw").unwrap();
+    assert!(check::check(&b).is_empty());
+    let want = PI * 0.5 + angle * (5.0 * PI + 0.25);
+    assert!(
+        rel(measure::volume(&b), want) < 1e-9,
+        "{} {want}",
+        measure::volume(&b)
+    );
+}
+
+// A disc of radius 2 and thickness ½ along y, whose rim passes through the z axis, turned a
+// quarter turn about it: the turn holds that point of the rim still. At height z its shadow runs
+// from 2 − s to √((2 + s)² + ¼), s = √(4 − z²), a moment of ∫(8s + ¼)/2 dz = 8π + ½.
+#[test]
+fn a_disc_turned_about_a_line_through_its_rim() {
+    let angle = PI / 2.0;
+    let frame = Frame::new(Vec3::new(2.0, 0.0, 0.0), Vec3::Y, Vec3::X).unwrap();
+    let disc = cylinder(&frame, 2.0, 0.5, "disc").unwrap();
+    let b = solid(&disc, &about_z(angle), "sw").unwrap();
+    assert!(check::check(&b).is_empty());
+    let want = 2.0 * PI + angle * (8.0 * PI + 0.5);
+    assert!(
+        rel(measure::volume(&b), want) < 1e-9,
+        "{} {want}",
+        measure::volume(&b)
+    );
+}
+
+// The box a ≤ x ≤ b, |y| ≤ c, 0 ≤ z ≤ h turned through θ about the z axis. Its faces square to x
+// each graze the turn along y = 0 and cross themselves turned, so it is built in parts. At radius ρ
+// it spans one arc out to √(b² + c²), which the turn widens by θ, except past b, where it spans two
+// arcs ±(acos(b/ρ), asin(c/ρ)) that the turn joins into one, widening it by θ + 2 acos(b/ρ). With
+// ∫ρ acos(b/ρ) dρ from b to √(b² + c²) = (φ(b² + c²) − bc)/2, φ = atan(c/b), the area swept is
+// 2c(b − a) + θ(b² + c² − a²)/2 + φ(b² + c²) − bc.
+#[test]
+fn a_box_turned_about_a_line_beside_it_is_built_in_parts() {
+    let (a, b, c, h, angle) = (10.0, 13.0, 2.0, 3.0, PI / 3.0);
+    let corner = Frame::WORLD.translated(Vec3::new(a, -c, 0.0));
+    let cube = block(&corner, Vec3::new(b - a, 2.0 * c, h), "box").unwrap();
+    let swept = solid(&cube, &about_z(angle), "sw").unwrap();
+    assert!(check::check(&swept).is_empty());
+    let phi = (c / b).atan();
+    let r2 = b * b + c * c;
+    let want = h * (2.0 * c * (b - a) + angle * (r2 - a * a) / 2.0 + phi * r2 - b * c);
+    let got = measure::volume(&swept);
+    assert!(rel(got, want) < 1e-9, "{got} {want}");
+}

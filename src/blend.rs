@@ -993,7 +993,7 @@ fn by_tools(
 /// corner patch is tangent to the pieces it joins along the curves they share, where a boolean left
 /// to find the meeting finds it only to within the band the two stay within the tolerance over.
 /// Each edge is checked along its length before it is given.
-fn shared_edges(a: &Brep, b: &Brep) -> Facts {
+pub(crate) fn shared_edges(a: &Brep, b: &Brep) -> Facts {
     let mut facts = Facts::default();
     for (side, own, other) in [(0, a, b), (1, b, a)] {
         for f in other.face_ids() {

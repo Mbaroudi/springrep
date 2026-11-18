@@ -1080,19 +1080,30 @@ over the body as `τ` runs.
 
 On each face `g(u, v) = n(u, v)·V(S(u, v))`, the normal taken outward. A face on which `g`
 vanishes at every sample (a plane along a slide, a cylinder turned about its own axis) is still:
-it moves within its own surface and sweeps nothing new; it is not in `W`. Otherwise:
+it moves within its own surface and sweeps nothing new; it is not in `W`. Otherwise the roots of
+`g` along each edge of the face, bracketed by samples and pinned by bisection, are where its curves
+meet the face's boundary; a root on a seam is two places on the boundary, a period apart.
 
-1. The roots of `g` along each edge of the face, bracketed by samples and pinned by bisection, are
-   where its curves meet the face's boundary. Where the edge is smooth (both faces' normals agree
-   on it), the two faces' roots are one point, one vertex.
-2. From each root the curve is traced across the face, a predictor step along the curve and
-   Newton steps on `g` back onto it, until it reaches another root. A curve that never meets the
-   boundary is found from sign changes of `g` on a grid of the face's parameter box and traced
-   until it closes.
-3. The traced points are fitted with a cubic B-spline through them at chord-length parameters, and
-   points are added where the spline strays from the curve by more than a tenth of `LINEAR`.
-   Points that lie on one line or one circle within rounding are that line or circle exactly, as
-   a ball's great circle under a slide, or a cylinder's generator.
+A rigid velocity is `ω × p + v`, so on most surfaces `g` is simple in one parameter
+([`contour.rs`](../src/sweep/solid/contour.rs)): affine in both on a plane; affine in `v` on a
+cylinder, cone or extrusion, whose normal is the same all along `v`, so the curve is
+`v = −n(u)/d(u)`; and `a(u) cos v + b(u) sin v` on a sphere or torus, so it is the two angles
+`atan2(b, a) ± π/2` (on a sphere one of them, a great circle). Where both coefficients vanish at
+one `u`, the whole line `u = const` is a curve (a ball's meridian under a turn about its polar
+axis, a generator of a cylinder under a slide). Each solution's points are exact. A branch is
+clipped to the face by the face's winding number along it, each run inside the face ends at the
+root the branch passes through there, and runs that cross inside the face (a whole line across
+another branch) end at a vertex there. The run's points are fitted with a cubic B-spline at
+chord-length parameters, points added in each span that strays from them by more than a tenth of
+`LINEAR`; points on one line or one circle within rounding are that line or circle exactly.
+
+On other surfaces (revolutions of other curves, B-splines, ruled surfaces) each curve is traced
+across the face from a root, a predictor step along the curve and Newton steps on `g` back onto it,
+until it reaches another root, and the traced points are fitted the same way. A curve that comes
+round to its start through a seam is a periodic spline.
+
+Under a turn, a point of an edge on the axis is held still. Each edge is cut where it touches the
+axis, so each such point is a vertex.
 
 The faces are split along the curves by the booleans' arrangement
 ([`arrange.rs`](../src/boolean/arrange.rs)), each piece is in `W` or not by the sign of `g` at a
@@ -1106,11 +1117,19 @@ at the end, and the paths of its two ends. It is exact where the motion has a cl
 
 - a slide sweeps an extrusion of the curve: a plane where the curve is a line, a cylinder where it
   is a circle square to the slide;
-- a turn sweeps a revolution of the curve: a plane, cylinder, cone, sphere or torus where the
-  curve is a line or a circle that the revolve of a profile would make one of;
+- a turn sweeps a plane where the curve lies square to the axis; a cylinder, cone, sphere or torus
+  where the curve is a line or a circle in a plane through the axis; the rational B-spline whose
+  columns follow its control points' circles, within `SCREW_FIT`, where it is a line askew to the
+  axis; else the revolution of the curve;
 - a screw sweeps the rational B-spline whose columns follow the helices of the curve's control
   points, as [`helix`](../src/sweep/helix.rs) builds a screwed face, within its `SCREW_FIT`; a
   line along the screw's axis sweeps the exact cylinder.
+
+Every piece of one curve (an edge cut at several roots) sweeps a face on the one surface the whole
+curve sweeps, so faces that two parts of the sweep share are one surface to the booleans that unite
+the parts. A swept face folds where the motion runs along its curve, the velocity crossed with
+the curve's direction turning over; past the fold the envelope lies inside the solid, and such a
+sweep is refused.
 
 For the motions with no such form, the face is a tensor-product B-spline fitted to the true points
 `M(τ)·c(τ, σ)`, `σ` running across the curve from end to end at each `τ`, on a grid refined until
@@ -1127,20 +1146,17 @@ path: it is a pole of the swept faces beside it.
 
 ### Overlaps
 
-The product is a solid only where the sweep does not run into itself. It does where a long turn or
-screw brings the body back over where it was, where a concave edge of `W` sweeps a sheet inside the
-solid, or where the characteristic curve turns tighter than the motion and the envelope folds (a
-ball's sweep along a helix tighter than the ball). The checker finds each of these as faces that
-meet without sharing an edge. Then the sweep is built in parts whose products are solids, and the
-parts are united by the booleans:
-
-- **In time.** `[0, 1]` is cut in halves until each part's product is a solid. The parts share the
-  body's pose at each cut, where the cap of one is tangent to the swept faces of the next along the
-  curve they share; the boolean is told so (each such edge lies on the other part's face), as a
-  blend tells it of a round's tangent edges.
-- **In the body.** The sweep of a union is the union of the sweeps, so a body whose `W` has a
-  concave edge is swept face piece by face piece of `W`, each piece's product a solid, and the
-  pieces united with the body at the start.
+The product is a solid only where the sweep does not run into itself. It does where a turn carries
+a plane past the line it grazes along: the plane where it starts and where it ends cross beyond
+that line, and the envelope between them lies inside the solid. It does where a concave edge of `W`
+sweeps a sheet into the body, and where a long turn or screw brings the body back over where it
+was. The checker finds each of these as faces that meet without sharing an edge. Then the sweep is
+built in parts: the body at the start, its faces cut along their curves, united one by one with
+the solid each piece of face in `W` sweeps on its own (its two ends and the faces its boundary
+sweeps). Each part starts on a face of the body and grazes it along its curves there; the boolean
+is told so (each such edge lies on the other's face), as a blend tells it of a round's tangent
+edges. A body that is itself a union, as a ball on a stem, may instead be swept a piece at a time,
+since the sweep of a union is the union of the sweeps.
 
 ### Motions whose `W` moves
 
