@@ -825,7 +825,7 @@ was run over, every sewn blend agrees to 3e-16, except the two whose ends are tr
 edge, where both ways intersect a cone or cylinder with a traced curve: 1.8e-12 in area and 5.3e-12
 in volume (a notch's chamfer) and 4.9e-11 and 1.4e-10 (the notch's round).
 
-Each piece ends where its edge does, in one of seven ways:
+Each piece ends where its edge does, in one of eight ways:
 
 - **On a neighbour's section.** Pieces whose edges continue each other tangentially share their end
   section exactly. They are glued into one tool along it without a boolean: the two blend surfaces
@@ -855,6 +855,12 @@ Each piece ends where its edge does, in one of seven ways:
   to the patch's middle and its seam opposite the middle, both off the patch; a corner whose normals
   do not all lie within a quarter turn of their middle is refused. On a prism whose normals are
   68.2° apart the result holds the hand volume to 1.5e-16 and the hand area exactly.
+- **At a flat corner** ([`blend/flat_corner.rs`](../src/blend/flat_corner.rs)). Three or more
+  chamfers on every edge of a convex corner of planes mitre there, each trimmed by the corner's
+  other planes as above, and the corner is then cut by the plane through the points where the two
+  contact lines on each face cross: the plane a chamfer's own construction gives a vertex, its
+  bevel lines' ends. Three points always span it; four or more must lie in it (an octahedron's
+  apex), and a corner whose crossings do not (a pyramid's apex on a rectangle) is refused.
 
 - **Over a smaller round** ([`blend/corner.rs`](../src/blend/corner.rs)). A fillet larger than a
   round it runs over, bent the same way (a plate's rim over its rounded corner, a pocket's floor
@@ -941,7 +947,7 @@ What the region form cannot reach comes back as `Error::Unsupported`, never as a
   than a run of its end face's edges; and a fillet larger than a convex corner round in its chain
   (the exact path reaches past the corner's axis);
 - blends meeting at a vertex other than as a tangent chain, a mirrored mitre, a convex corner they
-  run through or a three-plane corner (the error names the vertex and the faces), and an edge ending
+  run through, a three-plane corner or a flat corner (the error names the vertex and the faces), and an edge ending
   where several other faces meet it other than at a convex corner of planes, or where a face other
   than a plane, cylinder or cone meets it;
 - a blend wider than a face it sits on, including one whose strip would cross onto the next face

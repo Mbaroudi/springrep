@@ -32,6 +32,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::f64::consts::{PI, TAU};
 
 mod corner;
+mod flat_corner;
 mod saddle;
 mod saddle_patch;
 #[cfg(test)]
@@ -604,6 +605,7 @@ fn blend_picked(
     let mut beyonds: Vec<[std::result::Result<run::Beyond, String>; 2]> =
         vec![[Ok(run::Beyond::default()), Ok(run::Beyond::default())]; picked.len()];
     let mut cornered = false;
+    let mut flats: Vec<flat_corner::Flat> = Vec::new();
     let mut vertices: Vec<&VertexId> = by_vertex.keys().collect();
     vertices.sort();
     for &v in vertices {
@@ -714,10 +716,26 @@ fn blend_picked(
                     saddles.push(s);
                     continue;
                 }
+                // Chamfers mitre at the corner, and the plane of their contact points cuts it.
                 let Kind::Fillet { radius } = kind else {
-                    return Err(Error::Unsupported(
-                        "three or more chamfers that meet at a vertex".into(),
-                    ));
+                    let flat = flat_corner::find(body, &picked, &sections, &outlines, at, v)?;
+                    for &i in at {
+                        let end = end_index(body, picked[i].edge, v);
+                        ends[i][end] =
+                            match corner_trims(body, &picked[i], &sections[i], &outlines[i], v)? {
+                                Some((first, extra)) => {
+                                    beyonds[i][end] = Ok(run::Beyond {
+                                        extra,
+                                        ..Default::default()
+                                    });
+                                    End::Trim(first)
+                                }
+                                None => free_end(body, &picked[i], &outlines[i], v)?,
+                            };
+                    }
+                    flats.push(flat);
+                    cornered = true;
+                    continue;
                 };
                 let ball = corner_ball(body, &picked, &sections, at, v, radius)?;
                 for &i in at {
@@ -842,7 +860,7 @@ fn blend_picked(
         for s in &saddles {
             out = saddle::close(&out, s, s.edges.map(|i| &names[i]))?;
         }
-        Ok(out)
+        flat_corner::cut(out, &flats, feature)
     };
     let sewing = sewing.elapsed();
     #[cfg(test)]

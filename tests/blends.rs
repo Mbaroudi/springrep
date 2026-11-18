@@ -779,6 +779,36 @@ fn edges_chamfered_one_after_another_meet_at_each_corner_in_a_point() {
 }
 
 #[test]
+fn chamfers_meeting_at_a_corner_close_it_with_the_plane_of_their_contacts() {
+    use springrep::{blend::chamfer_edges, primitive, topo::EdgeId};
+    // A cube of side 10, all edges chamfered 2 at once. The contact lines on each face cross 2 in
+    // from the corner, and the plane through the three crossings cuts it: in each corner's cube of
+    // side 2 the tetrahedron (2, 2, 2), (2, 2, 0), (2, 0, 2), (0, 2, 2) stays, 1/6 of it. Each
+    // corner face is the equilateral triangle of side 2√2.
+    let cube = primitive::block(&Frame::WORLD, Vec3::new(10.0, 10.0, 10.0), "cube").unwrap();
+    let edges: Vec<EdgeId> = cube.edge_ids().collect();
+    let b = chamfer_edges(&cube, &edges, 2.0, "c").unwrap();
+    let (sqrt2, sqrt3) = (2f64.sqrt(), 3f64.sqrt());
+    assert_solid(
+        &b,
+        1000.0 - 144.0 - 8.0 * (8.0 - 8.0 / 6.0),
+        216.0 + 144.0 * sqrt2 + 8.0 * sqrt3 / 4.0 * 8.0,
+    );
+    assert_eq!((b.face_count(), names(&b, "c.corner")), (26, 8));
+    // The octahedron |x| + |y| + |z| ≤ 10, all edges chamfered √6 at once: four chamfers at each
+    // corner, whose contact crossings lie on the plane 4 in from it, |x| = 6. Past the mitred
+    // corners (as chamfered one at a time) each corner loses the square pyramid of height 2 on
+    // the square of side 4.
+    let o = octahedron(10.0);
+    let edges: Vec<EdgeId> = o.edge_ids().collect();
+    let b = chamfer_edges(&o, &edges, 6f64.sqrt(), "c").unwrap();
+    let mitred = 4000.0 / 3.0 - 8.0 * (3.0 * 52.0 / 3.0 - 8.0);
+    let area = 8.0 * sqrt3 / 4.0 * 32.0 + 12.0 * 4.0 * sqrt2 * 4.0 + 6.0 * 16.0;
+    assert_solid(&b, mitred - 6.0 * 16.0 * 2.0 / 3.0, area);
+    assert_eq!((b.face_count(), names(&b, "c.corner")), (26, 6));
+}
+
+#[test]
 fn a_straight_edge_between_a_plane_and_a_bore_takes_a_chamfer_by_the_chord() {
     // The key standing in a bore, as above, the root of each side chamfered 1 on both faces: 1
     // along the side, and a chord 1 long on the bore's wall, which turns 2·asin(1/40) about its
