@@ -1063,6 +1063,31 @@ vertex settled again where its faces meet, a pole put on its moved surface's pol
 one surface are merged at the end. An event that needs more, as an edge that
 would turn through a vertex of four faces, ends it with the error the move gave.
 
+### Growing a solid
+
+`edit::offset` grows a solid by a distance `d`: every point within `d` of it. It first moves every
+face out and rounds the convex edges at `d`. Where that cannot keep the topology (a face beside a
+convex edge closes on the way, as a groove's walls cross; a cone's apex is a convex point; a torus's
+tube grows past its axis), it builds the set itself ([`near.rs`](../src/edit/near.rs)). A point
+outside the solid within `d` of it has its foot, its nearest point, inside a face, on an edge or at
+a vertex; so the grown solid is the union of the solid, each face's slab (the points the face sweeps
+moving out along its normal), a tube about each convex edge and a ball about each corner (Rossignac
+and Requicha 1986). A concave edge's foot never lies off its faces, so it needs no tube; a vertex
+where the convex edges only run on into each other tangentially needs no ball. Each piece is exact:
+
+- a plane face's slab is the face extruded along its normal;
+- a cylinder's, cone's, sphere's or torus's face, bounded by parallels about its axis, sweeps a
+  strip or an annular sector in the meridian half plane, cut into pieces of at most a half turn and
+  clipped at the axis, and turned a whole turn. A point the sweep carries past the axis lies nearer
+  the same face on the other side of it, so the clip loses nothing;
+- a line edge's tube is a cylinder, and a circle's the disk of radius `d` turned along it, clipped
+  at its axis where `d` passes the circle's radius;
+- a corner's ball is a sphere.
+
+The booleans resolve where the pieces meet, tangent along the slabs' sides and the tubes' contact
+lines. A face of another kind, or an edge other than a line or a circle, is refused with the error
+the move gave.
+
 ## Moving whole solids
 
 `Brep::transform` moves a solid rigidly and leaves every parameter alone. `transform_similar`
@@ -1604,6 +1629,8 @@ The papers this document and the source cite by author and year.
   objects", _Computer-Aided Design_ 22(4), 1990, pp. 223–234.
 - **Rossignac and Requicha 1984.** J. R. Rossignac and A. A. G. Requicha, "Constant-radius blending
   in solid modelling", _Computers in Mechanical Engineering_ 3(1), 1984, pp. 65–73.
+- **Rossignac and Requicha 1986.** J. R. Rossignac and A. A. G. Requicha, "Offsetting operations
+  in solid modelling", _Computer Aided Geometric Design_ 3(2), 1986, pp. 129–148.
 - **Shewchuk 1997.** J. R. Shewchuk, "Adaptive precision floating-point arithmetic and fast robust
   geometric predicates", _Discrete & Computational Geometry_ 18, 1997, pp. 305–363.
 - **Sugihara and Iri 1989.** K. Sugihara and M. Iri, "A solid modelling system free from topological

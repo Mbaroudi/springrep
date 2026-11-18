@@ -21,6 +21,7 @@ use crate::{
 
 mod affine;
 mod delete;
+mod near;
 pub(crate) mod tweak;
 
 pub use affine::{Affine, affine};
@@ -99,9 +100,10 @@ pub fn shell(s: &Brep, open: &[FaceId], thickness: f64, wall: Wall, feature: &st
 
 /// The points within `distance` of `s`: every face moved out that far, a hole that closes on the
 /// way followed there, each convex edge rounded at `distance` (which leaves a ball's patch at each
-/// convex corner), and over each end of a hole that closed, the dimple its rim leaves. An error
-/// where any other face beside a convex edge closes on the way, as the walls of a narrow slot, and
-/// at a convex cone apex, whose ball is not built.
+/// convex corner), and over each end of a hole that closed, the dimple its rim leaves. Where that
+/// cannot be built (a face beside a convex edge closes on the way, as the walls of a narrow slot,
+/// or a cone's apex is convex), the union of `s` with a slab for each face, a tube about each
+/// convex edge and a ball about each corner; an error where a piece of that is not built.
 pub fn offset(s: &Brep, distance: f64, feature: &str) -> Result<Brep> {
     if distance == 0.0 {
         return Ok(s.clone());
@@ -109,26 +111,49 @@ pub fn offset(s: &Brep, distance: f64, feature: &str) -> Result<Brep> {
     if distance < 0.0 {
         return Err(Error::Unsupported("an inward offset".into()));
     }
-    // A cone's apex where its outward normal leans away from the axis is a convex point: the ball
-    // of `distance` about it would cap the moved cone.
-    let apex = s.coedge_ids().any(|c| {
-        let f = s.coedge_face(c);
-        let face = s.face(f);
-        let Surface::Cone(cone) = &face.surface else {
-            return false;
-        };
-        if s.edge(s.coedge(c).edge).curve.is_some() {
-            return false;
-        }
-        let dom = boolean::face_domain(s, f);
-        dom.interior_point().is_some_and(|uv| {
-            let p = face.surface.eval(uv.x, uv.y);
-            let n = face.surface.normal(uv.x, uv.y);
-            let off = p - cone.frame.origin;
-            let out = off - cone.frame.z * off.dot(cone.frame.z);
-            (n.dot(out) > 0.0) != face.reversed
-        })
-    });
+    moved_and_rounded(s, distance, feature).or_else(|e| grown(s, distance, feature).map_err(|_| e))
+}
+
+/// Whether face `f` is a cone whose apex is a convex point: its outward normal leans away from
+/// the axis, so the ball of a distance about the apex would cap the moved cone.
+fn convex_apex(s: &Brep, f: FaceId) -> bool {
+    let face = s.face(f);
+    let Surface::Cone(cone) = &face.surface else {
+        return false;
+    };
+    let dom = boolean::face_domain(s, f);
+    dom.interior_point().is_some_and(|uv| {
+        let p = face.surface.eval(uv.x, uv.y);
+        let n = face.surface.normal(uv.x, uv.y);
+        let off = p - cone.frame.origin;
+        let out = off - cone.frame.z * off.dot(cone.frame.z);
+        (n.dot(out) > 0.0) != face.reversed
+    })
+}
+
+/// `s` grown by `distance` as the union of `s` with the points near each face, each convex edge
+/// and each corner (Rossignac and Requicha 1986).
+fn grown(s: &Brep, distance: f64, feature: &str) -> Result<Brep> {
+    let edges = convex_edges(s)?;
+    let mut parts = vec![s.clone()];
+    for f in s.face_ids() {
+        parts.push(near::slab(s, f, distance, feature)?);
+    }
+    for &e in &edges {
+        parts.push(near::tube(s, e, distance, feature)?);
+    }
+    for v in near::corners(s, &edges, |f| convex_apex(s, f)) {
+        parts.push(near::ball(s.vertex(v).point, distance, feature)?);
+    }
+    let refs: Vec<&Brep> = parts.iter().collect();
+    boolean::union_all(&refs)
+}
+
+/// [`offset`] by moving the faces and rounding the convex edges.
+fn moved_and_rounded(s: &Brep, distance: f64, feature: &str) -> Result<Brep> {
+    let apex = s
+        .coedge_ids()
+        .any(|c| s.edge(s.coedge(c).edge).curve.is_none() && convex_apex(s, s.coedge_face(c)));
     if apex {
         return Err(Error::Unsupported(
             "an offset of a cone's apex: the ball about it is not built".into(),
@@ -419,24 +444,8 @@ mod tests {
     }
 
     #[test]
-    fn a_slot_closed_by_an_offset_or_a_shell_wall_is_refused_not_filled_flat() {
-        // A slot 2 wide grown shut by 1.5 from each wall: the points within 1.5 of its rim's
-        // edges leave a dimple over it, which offsetting the faces alone fills flat.
-        let u = prism(
-            &[
-                [0.0, 0.0],
-                [10.0, 0.0],
-                [10.0, 10.0],
-                [6.0, 10.0],
-                [6.0, 4.0],
-                [4.0, 4.0],
-                [4.0, 10.0],
-                [0.0, 10.0],
-            ],
-            3.0,
-        );
+    fn a_shell_wall_closing_a_neck_is_refused_not_filled_flat() {
         let refused = |r: Result<Brep>| matches!(r, Err(Error::Unsupported(why)) if why.contains("round about the edge"));
-        assert!(refused(offset(&u, 1.5, "o")));
         // A neck 2 wide between two squares, walled 1.5 thick from inside: the walls cross in the
         // neck, and the cavity's mouth to it is bounded by arcs about the neck's corners.
         let dumbbell = prism(
@@ -605,10 +614,81 @@ mod tests {
     }
 
     #[test]
-    fn a_cone_s_apex_is_refused_by_an_offset() {
+    fn a_cone_grown_caps_its_apex_with_a_ball() {
+        // The cone of base radius R = 3 and height H = 4 grown by d = 1, by Steiner's formula:
+        // its integrated mean curvature is the side's πH and the base rim's torus turning through
+        // π − β, β = atan(H/R) the angle inside the cone at the rim; the apex is a ball's cap.
         let c = crate::primitive::cone(&Frame::WORLD, 3.0, 0.0, 4.0, "c").unwrap();
-        assert!(
-            matches!(offset(&c, 1.0, "o"), Err(Error::Unsupported(why)) if why.contains("apex"))
+        let out = offset(&c, 1.0, "o").unwrap();
+        let (r, h, l, d) = (3.0f64, 4.0f64, 5.0, 1.0f64);
+        let m = PI * (h + r * (PI - (h / r).atan()));
+        let s = PI * (r * r + r * l);
+        let v = PI * r * r * h / 3.0;
+        close(
+            measure::volume(&out),
+            v + s * d + m * d * d + 4.0 / 3.0 * PI * d.powi(3),
+        );
+        close(measure::area(&out), s + 2.0 * m * d + 4.0 * PI * d * d);
+    }
+
+    /// The solid turned a whole turn about z from the polygon `pts` in (ρ, z).
+    fn turned_polygon(pts: &[[f64; 2]]) -> Brep {
+        let pts: Vec<Vec2> = pts.iter().map(|p| Vec2::new(p[0], p[1])).collect();
+        let names: Vec<String> = (0..pts.len()).map(|i| format!("m{i}")).collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let plane = Frame::new(Point3::ZERO, -Vec3::Y, Vec3::X).unwrap();
+        let profile = Profile::polygon(&pts, &names);
+        revolve(&profile, &plane, Point3::ZERO, Vec3::Z, TAU, "p").unwrap()
+    }
+
+    #[test]
+    fn a_groove_grown_shut_leaves_the_notch_its_rims_round() {
+        // A drum of radius 10 and height 10 with a groove 1.6 wide and 3 deep about z = 5, grown
+        // by 1: the groove's walls cross, and its rims' tori meet in a crease at ρ = 10.6. By
+        // Pappus, 2π times the section's moment about the axis: the drum with no groove grown
+        // (the rectangle 10 × 12, the strip 1 × 10 beside it and the rims' quarter disks), less the notch
+        // between the rims' disks over z = 5 ± a, a = 0.8, of moment 20a − 10(a√(1 − a²) +
+        // asin a) + a³/3 a side; and 2π times the moment of the outline for the area.
+        let drum = turned_polygon(&[
+            [0.0, 0.0],
+            [10.0, 0.0],
+            [10.0, 4.2],
+            [7.0, 4.2],
+            [7.0, 5.8],
+            [10.0, 5.8],
+            [10.0, 10.0],
+            [0.0, 10.0],
+        ]);
+        let out = offset(&drum, 1.0, "o").unwrap();
+        let a: f64 = 0.8;
+        let whole = 705.0 + 5.0 * PI + 2.0 / 3.0;
+        let notch = 20.0 * a - 10.0 * (a * (1.0 - a * a).sqrt() + a.asin()) + a.powi(3) / 3.0;
+        close(measure::volume(&out), TAU * (whole - notch));
+        let outline = 100.0 + 2.0 * (5.0 * PI + 1.0) + 11.0 * (10.0 - 2.0 * a);
+        close(
+            measure::area(&out),
+            TAU * (outline + 2.0 * (10.0 * a.asin() + a)),
+        );
+    }
+
+    #[test]
+    fn a_torus_grown_past_its_hole_is_an_apple() {
+        // The tube of radius 2 about the circle of radius R = 4 grown by 3: every point within
+        // s = 5 of the circle. Its section is the disk of radius s about (R, 0) less the part past
+        // the axis, which it crosses at heights ±c, c = √(s² − R²), at the half angle
+        // φ = acos(R/s) from the disk's centre.
+        let t = crate::primitive::torus(&Frame::WORLD, 4.0, 2.0, "t").unwrap();
+        let out = offset(&t, 3.0, "o").unwrap();
+        let (r, s) = (4.0f64, 5.0f64);
+        let c = (s * s - r * r).sqrt();
+        let phi = (r / s).acos();
+        close(
+            measure::volume(&out),
+            TAU * (PI * r * s * s + 2.0 * c.powi(3) / 3.0 - r * (s * s * phi - r * c)),
+        );
+        close(
+            measure::area(&out),
+            TAU * (2.0 * r * s * (PI - phi) + 2.0 * s * c),
         );
     }
 }
