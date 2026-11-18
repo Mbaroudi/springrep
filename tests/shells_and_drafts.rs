@@ -101,6 +101,41 @@ fn a_shell_grown_outward_keeps_the_inside() {
 }
 
 #[test]
+fn a_shell_open_at_a_step_keeps_the_wall_beside_the_opening() {
+    // An L, (0, 0) to (20, 20) less x < 15, y > 5, 20 tall: 3500. Open at its step y = 5, the
+    // face x = 15 stands beside the opening, and its wall runs down to the opening's plane.
+    let pts = [
+        [0.0, 0.0],
+        [20.0, 0.0],
+        [20.0, 20.0],
+        [15.0, 20.0],
+        [15.0, 5.0],
+        [0.0, 5.0],
+    ];
+    let pts: Vec<Vec2> = pts.iter().map(|p| Vec2::new(p[0], p[1])).collect();
+    let names = ["s0", "s1", "s2", "s3", "step", "s5"];
+    let l = extrude(&Profile::polygon(&pts, &names), &up(0.0), 20.0, "l").unwrap();
+    // Inward 1: the cavity is (1, 1) to (19, 5) and (16, 5) to (19, 19), 18 tall.
+    let b = shell(&l, &["l.step"], 1.0, "in");
+    assert!(check::check(&b).is_empty());
+    let want = 3500.0 - 18.0 * (18.0 * 4.0 + 3.0 * 14.0);
+    assert!(
+        (measure::volume(&b) - want).abs() < 1e-9 * want,
+        "{}",
+        measure::volume(&b)
+    );
+    // Outward 1: (−1, −1) to (21, 5) and (14, 5) to (21, 21), 22 tall, less the L.
+    let b = shell_outward(&l, &["l.step"], 1.0, "out");
+    assert!(check::check(&b).is_empty());
+    let want = 22.0 * (22.0 * 6.0 + 7.0 * 16.0) - 3500.0;
+    assert!(
+        (measure::volume(&b) - want).abs() < 1e-9 * want,
+        "{}",
+        measure::volume(&b)
+    );
+}
+
+#[test]
 fn a_draft_tapers_the_walls_from_the_neutral_plane() {
     // Two opposite walls of the 20 × 20 × 10 mm block tilted so they come 2 mm in at the top: a
     // trapezoid 20 at the foot and 16 at the top, 10 high, 20 deep.

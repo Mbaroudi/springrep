@@ -60,10 +60,11 @@ pub fn shell(s: &Brep, open: &[FaceId], thickness: f64, wall: Wall, feature: &st
             .collect();
         tweak::offset_faces(s, &by)
     };
+    // The open faces stay where they are: moved out, they would carry the cut past their plane
+    // into a wall that stands beside the opening. The cut lies on them there and leaves no skin.
     match wall {
         Wall::Inward => {
-            // The cavity runs out through the open faces, so the cut leaves no skin there.
-            let mut cavity = moved(-thickness, thickness)?;
+            let mut cavity = moved(-thickness, 0.0)?;
             for f in cavity.face_ids().collect::<Vec<_>>() {
                 cavity.set_face_names(f, std::iter::once(inner.clone()).collect());
             }
@@ -76,7 +77,7 @@ pub fn shell(s: &Brep, open: &[FaceId], thickness: f64, wall: Wall, feature: &st
                     outer.set_face_names(f, Default::default());
                 }
             }
-            let mut cavity = moved(0.0, 2.0 * thickness)?;
+            let mut cavity = s.clone();
             for f in cavity.face_ids().collect::<Vec<_>>() {
                 let mut names = cavity.face(f).names.clone();
                 names.insert(inner.clone());
