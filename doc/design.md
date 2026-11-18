@@ -1054,9 +1054,9 @@ from its old surface to its new one: a plane through the pencil of planes the tw
 keeps its hinge and an offset stays parallel), an offset surface by its distance, a cylinder drafted
 into a cone by its half angle. The furthest the solid gets with its topology kept is found by
 bisection. There vertices closer than ten times the tolerance are made one, edges that then run
-together one, and edges shorter than that dropped; a face left a strip along a single edge, or lying
-on another face to face, is taken out, and a face left running along an edge and back that nothing
-else uses loses it. A closed edge shrunk round a cone's apex or a sphere's pole becomes that pole on
+together one, and edges shorter than that dropped; a face left a strip along a single edge (or an
+annulus whose two rims have run together), or lying on another face to face, is taken out, and a
+face left running along an edge and back that nothing else uses loses it. A closed edge shrunk round a cone's apex or a sphere's pole becomes that pole on
 the face whose surface closes there, and a face left only poles (a ball's cap shrunk onto its pole)
 is taken out; where every face closes, the solid is empty. The move goes on from there with every
 vertex settled again where its faces meet, a pole put on its moved surface's pole, and faces left on

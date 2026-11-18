@@ -274,10 +274,10 @@ fn collapse(b: &Brep, eps: f64) -> Option<(Brep, Vec<Option<FaceId>>)> {
     let curved = |e: usize| e < ne && b.edge(eids[e]).curve.is_some();
     for f in 0..nf {
         let es = edge_set(&loops[f]);
-        // No boundary, or a strip along one edge, or poles alone left where an edge closed: a
-        // ball's cap shrunk onto its pole.
+        // No boundary, or a strip along one edge (in one loop, or an annulus in two), or poles
+        // alone left where an edge closed: a ball's cap shrunk onto its pole.
         if es.is_empty()
-            || (es.len() == 2 && es[0] == es[1] && loops[f].len() == 1)
+            || (es.len() == 2 && es[0] == es[1])
             || (lost[f] && !es.iter().any(|&e| curved(e)))
         {
             gone[f] = true;

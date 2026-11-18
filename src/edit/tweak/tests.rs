@@ -331,6 +331,31 @@ fn a_cone_moved_out_carries_its_apex_to_the_moved_cone_s() {
     assert!((measure::volume(&out) - want).abs() < 1e-7 * want);
 }
 
+// A frustum of radii 6 and 3, 4 tall, bored by a hole of radius 1, every face but its top moved in
+// by 1: the moved side ρ = 4.75 − 3z/4 and the moved bore ρ = 2 meet at z = 11/3 before the top,
+// whose annulus closes between them. Left is the ring of section the triangle (2, 1), (4, 1),
+// (2, 11/3): area 8/3 about ρ̄ = 8/3, so 2π·64/9.
+#[test]
+fn an_annulus_closed_between_two_moved_walls_is_taken_out() {
+    use std::f64::consts::TAU;
+    let pts = [(1.0, 0.0), (6.0, 0.0), (3.0, 4.0), (1.0, 4.0)].map(|(x, y)| Vec2::new(x, y));
+    let names = ["base", "side", "top", "bore"];
+    let plane = Frame::new(Point3::ZERO, -Vec3::Y, Vec3::X).unwrap();
+    let section = Profile::polygon(&pts, &names);
+    let b = sweep::revolve(&section, &plane, Point3::ZERO, Vec3::Z, TAU, "box").unwrap();
+    let top = face(&b, "top");
+    let by: HashMap<FaceId, f64> = b
+        .face_ids()
+        .filter(|&f| f != top)
+        .map(|f| (f, -1.0))
+        .collect();
+    let out = offset_faces(&b, &by).unwrap();
+    assert!(check::check(&out).is_empty(), "{:?}", check::check(&out));
+    let want = TAU * 64.0 / 9.0;
+    assert!((measure::volume(&out) - want).abs() < 1e-7 * want);
+    assert_eq!(out.face_count(), 3);
+}
+
 // A plate of radius 8 from z −4 to 0 under a post of radius 3 up to z 8, the concave edge between
 // them filleted 2, every face moved out by 3: the fillet's tube closes and the plate's top meets
 // the post square. A plate of radius 11 from z −7 to 3 and a post of radius 6 from 3 to 11.
