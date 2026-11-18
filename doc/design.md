@@ -1252,6 +1252,32 @@ round about the place, which is refused, as a sphere is. Two faces meeting smoot
 graze along one curve there, which is one piece of both their planes. A region still far thinner
 in its plane than it is long is refused rather than fitted across.
 
+## Sewing
+
+[`sew`](../src/sew.rs) builds a solid from given surfaces. A `Piece` is a surface and the loops of
+curve spans that bound it, the outer loop first; `sew` joins pieces along the edges they share,
+the way a STEP file's open shells are sewn ([`step::sew`](../src/step/mod.rs)), and the result
+passes the checker or is an error.
+
+- **Pieces.** `Piece::whole` takes a B-spline surface bounded by its four boundary parameter
+  lines, each the exact rational curve of its row of the net (`NurbsSurface::iso_curve`). A line
+  whose control points are all one point is a pole and bounds nothing: the loop crosses it as a
+  gap in the parameter plane, which becomes a degenerate edge, as at a cone's apex or a sphere's
+  pole. Two boundary lines that lie on each other, on a surface closed round a parameter, become
+  one seam used twice. `Piece::planar` takes loops of spans that lie in one plane, the plane found
+  by Newell's normal of the outer loop's points; its front faces the side the outer loop runs
+  counter-clockwise about. `Piece::bounded` takes any surface and loops; which way the outer loop
+  runs in the surface's parameters sets the piece's front.
+- **Analytic edges.** A span on a whole B-spline whose control points lie in order along a line is
+  that line, and a quadratic one whose every knot span has five points on one circle is that
+  circle's arc: a conic is fixed by five points. Sweeps choose the analytic form for the same
+  reason, and a blend rolled along a circle edge needs it.
+- **Joining.** Span ends within the tolerance become one vertex. Two edges between one pair of
+  vertices become one where the points a quarter, a half and three quarters along each lie on the
+  other: two arcs between the same ends can both pass nearest their chord's middle at an end.
+  Pieces are then turned to agree across their edges, healed onto their surfaces as a read solid
+  is, and the shell is turned to face out of the volume it closes.
+
 ## Slabs
 
 [`slab`](../src/primitive/slab.rs) builds the solid between a frame's xy plane and a clamped
@@ -1532,6 +1558,7 @@ triangle of the mesh also uses is split at its middle, so no mesh edge is used m
 | `affine`      | A solid stretched, sheared or mirrored exactly                            |
 | `codec`       | The binary encoding of built geometry kept on disk                        |
 | `rays`        | Where rays cross faces, touches included                                  |
+| `sew`         | Solids sewn from bounded pieces of given surfaces                         |
 | `check`       | The validity checker                                                      |
 | `probe`       | Thin places in a valid solid: narrow faces, slivers and gaps, for hygiene |
 

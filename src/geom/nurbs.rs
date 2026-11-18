@@ -1107,6 +1107,43 @@ impl NurbsSurface {
         }
     }
 
+    /// The parameter line along `v` (or along `u`) with the other parameter held at `at`, as a
+    /// curve of its own: each control point is the held parameter's blend of a row of the net, in
+    /// homogeneous coordinates, so the curve is the surface's line exactly.
+    pub fn iso_curve(&self, along_v: bool, at: f64) -> Result<NurbsCurve> {
+        let (held, free) = if along_v {
+            (&self.bu, &self.bv)
+        } else {
+            (&self.bv, &self.bu)
+        };
+        let period = if along_v {
+            self.u_period
+        } else {
+            self.v_period
+        };
+        let at = held.wrap(at, period);
+        let (p, i) = (held.degree, held.span(at));
+        let (ctrl, weights): (Vec<Point3>, Vec<f64>) = held.ders_then(i, at, 0, |nh| {
+            (0..free.n)
+                .map(|j| {
+                    let (mut r, mut w) = (Vec3::ZERO, 0.0);
+                    for (k, &n) in nh[0].iter().enumerate().take(p + 1) {
+                        let idx = if along_v {
+                            (i - p + k) * self.bv.n + j
+                        } else {
+                            j * self.bv.n + i - p + k
+                        };
+                        let wt = self.weights.as_ref().map_or(1.0, |w| w[idx]);
+                        r += self.ctrl[idx] * (wt * n);
+                        w += wt * n;
+                    }
+                    (r / w, w)
+                })
+                .unzip()
+        });
+        NurbsCurve::new(free.degree, free.knots.clone(), ctrl, Some(weights))
+    }
+
     /// The control points that move the point at `(u, v)`, as `(index, R)`: the point moves by
     /// `R` times a control point's displacement (the rational basis function).
     pub fn basis(&self, u: f64, v: f64) -> Vec<(usize, f64)> {
