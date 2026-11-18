@@ -1036,6 +1036,120 @@ cylinder or sphere it moves is no longer one.
   scale the same way: a plane's both, a cylinder's or cone's height, an extrusion's sweep. Edge
   ranges, affine pcurves and the local tolerances scale with them.
 
+## Sweeps of solids
+
+[`sweep::solid`](../src/sweep/solid.rs) builds everything a solid passes through as it moves
+rigidly: `solid(body: &Brep, motion: &Motion, feature: &str) -> Result<Brep>`, the union over
+`τ ∈ [0, 1]` of `M(τ)·body`. The body is given where it is drawn, and the motion places it:
+
+- `Motion::Slide(d)`: carried straight, `M(τ)` the shift by `τ·d`.
+- `Motion::Turn { origin, axis, from, to }`: turned right-handed about the line, from angle `from`
+  to angle `to`.
+- `Motion::Screw { screw, from, to }`: carried along a [`Helix`](../src/sweep/helix.rs) from turn
+  `from` to turn `to`.
+- `Motion::Along { path, range, up }`: carried by a frame riding a curve, its origin on the curve,
+  its x along the tangent and its z as near `up` as square to the tangent allows; the body is drawn
+  in the frame at the range's start.
+- `Motion::Then(a, b)`: two motions over one parameter, `M(τ) = B(τ)·A(τ)`: `a` places the body,
+  and `b` carries the whole of it.
+
+### The envelope
+
+In the body's own frame each point `p` moves at `V(τ, p) = M(τ)⁻¹·M′(τ)·p`. Where `V·n > 0`,
+with `n` the outward normal, the body's surface moves out into space it did not hold (an ingress
+point in the terms of Blackmore, Leu and Wang 1997); where `V·n < 0` it moves in; where `V·n = 0`
+it grazes. A point the moving body covers at some `τ` either lies in the body at `τ = 0` or the
+body reached it through the region `W(τ)` of its surface where `V·n > 0`. So the swept solid is the
+body at the start together with what `W` sweeps, and where nothing overlaps its boundary is: the
+body's faces outside `W(0)` at the start, the faces of `W(1)` at the end, and the surface that each
+curve of the boundary of `W` sweeps between them (Wang and Wang 1986; Martin and Stephenson 1990;
+Weld and Leu 1990). The boundary of `W` has two kinds of curve:
+
+- **Characteristic curves**, where `V·n = 0` on a smooth face: what they sweep is the envelope,
+  tangent to the moving body all along them. It is the solution set the Jacobian of the map
+  `(τ, u, v) ↦ M(τ)·S(u, v)` drops rank on (Abdel-Malek and Yeh 1997).
+- **Sharp edges** between a face piece in `W` and one outside it: what they sweep is a ruled or
+  swept sheet of the edge itself.
+
+For a slide, a turn or a screw, `V` is the same field at every `τ` (each is a one-parameter group
+of motions), so `W` and its curves are fixed on the body and the solid is a product: the boundary
+of `W` times `[0, 1]`, capped by the two pieces of the body. For the other motions `W(τ)` slides
+over the body as `τ` runs.
+
+### Finding the curves
+
+On each face `g(u, v) = n(u, v)·V(S(u, v))`, the normal taken outward. A face on which `g`
+vanishes at every sample (a plane along a slide, a cylinder turned about its own axis) is still:
+it moves within its own surface and sweeps nothing new; it is not in `W`. Otherwise:
+
+1. The roots of `g` along each edge of the face, bracketed by samples and pinned by bisection, are
+   where its curves meet the face's boundary. Where the edge is smooth (both faces' normals agree
+   on it), the two faces' roots are one point, one vertex.
+2. From each root the curve is traced across the face, a predictor step along the curve and
+   Newton steps on `g` back onto it, until it reaches another root. A curve that never meets the
+   boundary is found from sign changes of `g` on a grid of the face's parameter box and traced
+   until it closes.
+3. The traced points are fitted with a cubic B-spline through them at chord-length parameters, and
+   points are added where the spline strays from the curve by more than a tenth of `LINEAR`.
+   Points that lie on one line or one circle within rounding are that line or circle exactly, as
+   a ball's great circle under a slide, or a cylinder's generator.
+
+The faces are split along the curves by the booleans' arrangement
+([`arrange.rs`](../src/boolean/arrange.rs)), each piece is in `W` or not by the sign of `g` at a
+point inside it, and the pieces are joined by [`sew`](../src/boolean/sew.rs) into the result, which
+merges neighbours on one surface and runs the checker.
+
+### The swept surfaces
+
+What a curve of the boundary of `W` sweeps is a face bounded by the curve at the start, the curve
+at the end, and the paths of its two ends. It is exact where the motion has a closed form:
+
+- a slide sweeps an extrusion of the curve: a plane where the curve is a line, a cylinder where it
+  is a circle square to the slide;
+- a turn sweeps a revolution of the curve: a plane, cylinder, cone, sphere or torus where the
+  curve is a line or a circle that the revolve of a profile would make one of;
+- a screw sweeps the rational B-spline whose columns follow the helices of the curve's control
+  points, as [`helix`](../src/sweep/helix.rs) builds a screwed face, within its `SCREW_FIT`; a
+  line along the screw's axis sweeps the exact cylinder.
+
+For the motions with no such form, the face is a tensor-product B-spline fitted to the true points
+`M(τ)·c(τ, σ)`, `σ` running across the curve from end to end at each `τ`, on a grid refined until
+the surface lies within a tenth of `LINEAR` of the points between the grid's; a fixed curve under
+such a motion takes columns fitted to its control points' paths, so its face is a rigid image of
+the curve at every `τ`. A characteristic curve is fitted only where no closed form exists, so a
+case whose curves are lines and circles under a slide, turn or screw is exact throughout.
+
+The faces are joined by construction: each curve of the boundary of `W` has its piece of the cap
+at the start on one side and its piece at the end on the other, and the paths of its ends are
+shared with the swept faces of its neighbours. The direction each face runs is fixed by those caps,
+so no face's side has to be guessed. A vertex the motion holds still, on a turn's axis, has no
+path: it is a pole of the swept faces beside it.
+
+### Overlaps
+
+The product is a solid only where the sweep does not run into itself. It does where a long turn or
+screw brings the body back over where it was, where a concave edge of `W` sweeps a sheet inside the
+solid, or where the characteristic curve turns tighter than the motion and the envelope folds (a
+ball's sweep along a helix tighter than the ball). The checker finds each of these as faces that
+meet without sharing an edge. Then the sweep is built in parts whose products are solids, and the
+parts are united by the booleans:
+
+- **In time.** `[0, 1]` is cut in halves until each part's product is a solid. The parts share the
+  body's pose at each cut, where the cap of one is tangent to the swept faces of the next along the
+  curve they share; the boolean is told so (each such edge lies on the other part's face), as a
+  blend tells it of a round's tangent edges.
+- **In the body.** The sweep of a union is the union of the sweeps, so a body whose `W` has a
+  concave edge is swept face piece by face piece of `W`, each piece's product a solid, and the
+  pieces united with the body at the start.
+
+### Motions whose `W` moves
+
+Under a frame along a curve or two motions at once, each curve of the boundary of `W` is found
+again at each `τ` by Newton steps from its place at the last `τ`, ends included (an end slides along
+the edge it lies on). The product's structure holds while no curve passes through a vertex of the
+body, appears or vanishes; a sample at which the curves change their structure is an event, and
+the motion is cut there and its parts united as above.
+
 ## Slabs
 
 [`slab`](../src/primitive/slab.rs) builds the solid between a frame's xy plane and a clamped
@@ -1301,7 +1415,7 @@ triangle of the mesh also uses is split at its middle, so no mesh edge is used m
 | `topo/`       | The arena, builders, names, pcurves, facts, tolerances, similarities      |
 | `profile`     | Planar sketch profiles, the readings of point lists, regions combined     |
 | `primitive`   | Block, cylinder, sphere, torus, cone, and a block under a height field    |
-| `sweep`       | Extrusion, revolution, and sweeps along legs, a helix or a space curve    |
+| `sweep`       | Profiles extruded, turned, along legs, a helix or a curve; moving solids  |
 | `loft`        | Solids skinned through planar sections                                    |
 | `boolean/`    | Intersection (closed form, swept, traced), contact, splitting, sewing     |
 | `blend`       | Chamfers and fillets: one size, per edge, shaped sections, corner patches |
@@ -1325,6 +1439,12 @@ Heavy tests stay out of this crate: its own tests are fast unit tests.
 
 The papers this document and the source cite by author and year.
 
+- **Abdel-Malek and Yeh 1997.** K. Abdel-Malek and H.-J. Yeh, "Geometric representation of the
+  swept volume using Jacobian rank-deficiency conditions", _Computer-Aided Design_ 29(6), 1997,
+  pp. 457–468.
+- **Blackmore, Leu and Wang 1997.** D. Blackmore, M. C. Leu and L. P. Wang, "The sweep-envelope
+  differential equation algorithm and its application to NC machining verification",
+  _Computer-Aided Design_ 29(9), 1997, pp. 629–637.
 - **Gregory 1974.** J. A. Gregory, "Smooth interpolation without twist constraints", in R. E.
   Barnhill and R. F. Riesenfeld (eds.), _Computer Aided Geometric Design_, Academic Press, 1974.
 - **Hartmann 2001.** E. Hartmann, "Parametric Gⁿ blending of curves and surfaces", _The Visual
@@ -1335,9 +1455,16 @@ The papers this document and the source cite by author and year.
   1995, pp. 247–253.
 - **Kronrod 1965.** A. S. Kronrod, _Nodes and Weights of Quadrature Formulas_, Consultants
   Bureau, 1965.
+- **Martin and Stephenson 1990.** R. R. Martin and P. C. Stephenson, "Sweeping of three-dimensional
+  objects", _Computer-Aided Design_ 22(4), 1990, pp. 223–234.
 - **Shewchuk 1997.** J. R. Shewchuk, "Adaptive precision floating-point arithmetic and fast robust
   geometric predicates", _Discrete & Computational Geometry_ 18, 1997, pp. 305–363.
 - **Sugihara and Iri 1989.** K. Sugihara and M. Iri, "A solid modelling system free from topological
   inconsistency", _Journal of Information Processing_ 12(4), 1989.
+- **Wang and Wang 1986.** W. P. Wang and K. K. Wang, "Geometric modeling for swept volume of moving
+  solids", _IEEE Computer Graphics and Applications_ 6(12), 1986, pp. 8–17.
 - **Wang et al. 2008.** W. Wang, B. Jüttler, D. Zheng and Y. Liu, "Computation of rotation
   minimizing frames", _ACM Transactions on Graphics_ 27(1), 2008.
+- **Weld and Leu 1990.** J. D. Weld and M. C. Leu, "Geometric representation of swept volumes with
+  application to polyhedral objects", _The International Journal of Robotics Research_ 9(5), 1990,
+  pp. 105–117.
