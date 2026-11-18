@@ -236,17 +236,46 @@ fn a_conic_segment_is_the_ellipse_arc_it_lies_on() {
         let e = (x / major).powi(2) + (y / minor).powi(2) - 1.0;
         assert!(e.abs() < 1e-12, "{e}");
     }
-    // A weight of 1 is a parabola and above it a hyperbola: neither is an ellipse's arc.
-    for w in [1.0, 1.5, 0.0] {
-        assert!(
-            Segment::conic(
-                Vec2::new(1.0, 0.0),
-                Vec2::new(1.0, 1.0),
-                Vec2::new(0.0, 1.0),
-                w
-            )
-            .is_err()
-        );
+    // A weight of 0 is no conic.
+    let e = Segment::conic(
+        Vec2::new(1.0, 0.0),
+        Vec2::new(1.0, 1.0),
+        Vec2::new(0.0, 1.0),
+        0.0,
+    );
+    assert!(e.is_err());
+}
+
+#[test]
+fn a_conic_segment_of_weight_one_or_more_is_the_parabola_or_hyperbola_arc() {
+    // y = x² from (−1, 1) to (1, 1): its tangents there, of slope ∓2, meet at (0, −1).
+    let s = Segment::conic(
+        Vec2::new(-1.0, 1.0),
+        Vec2::new(0.0, -1.0),
+        Vec2::new(1.0, 1.0),
+        1.0,
+    )
+    .unwrap();
+    for k in 0..=8 {
+        let p = s.at(f64::from(k) / 8.0);
+        assert!((p.y - p.x * p.x).abs() < 1e-12, "{p:?}");
+    }
+    // x² − 2y² = 2 from (r, −k) to (r, k), k = 1/√3 and r = √(8/3): its tangents there meet at
+    // (2/r, 0), and its vertex (√2, 0) lies at the weight (r − √2)/(√2 − 2/r) = 2/√3.
+    let (k, r) = (1.0 / 3f64.sqrt(), (8.0f64 / 3.0).sqrt());
+    let s = Segment::conic(
+        Vec2::new(r, -k),
+        Vec2::new(2.0 / r, 0.0),
+        Vec2::new(r, k),
+        2.0 / 3f64.sqrt(),
+    )
+    .unwrap();
+    assert!((s.start() - Vec2::new(r, -k)).norm() < 1e-12);
+    assert!((s.end() - Vec2::new(r, k)).norm() < 1e-12);
+    assert!((s.at(0.5) - Vec2::new(2f64.sqrt(), 0.0)).norm() < 1e-12);
+    for i in 0..=8 {
+        let p = s.at(f64::from(i) / 8.0);
+        assert!((p.x * p.x - 2.0 * p.y * p.y - 2.0).abs() < 1e-12, "{p:?}");
     }
 }
 
