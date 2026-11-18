@@ -14,6 +14,9 @@ use crate::{
     topo::{Brep, FaceName},
 };
 
+mod coons;
+pub use coons::coons;
+
 /// A stretch of a curve, from parameter `t0` to `t1` in either order: a loop runs along the curve
 /// where `t0 < t1` and against it otherwise.
 #[derive(Clone, Debug)]

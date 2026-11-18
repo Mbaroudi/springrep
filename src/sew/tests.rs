@@ -103,6 +103,52 @@ fn arc(a: Point3, m: Point3, b: Point3) -> Span {
 }
 
 #[test]
+fn a_coons_patch_of_four_parabolas_is_their_bilinear_blend() {
+    let p = |x, y, z| v3(x, y, z);
+    let rim = [
+        arc(p(0., 0., 10.), p(5., 0., 14.), p(10., 0., 10.)),
+        arc(p(10., 0., 10.), p(10., 5., 6.), p(10., 10., 10.)),
+        arc(p(10., 10., 10.), p(5., 10., 6.), p(0., 10., 10.)),
+        arc(p(0., 10., 10.), p(0., 5., 14.), p(0., 0., 10.)),
+    ];
+    let s = coons(&rim).unwrap();
+    // 10 + 8u(1 − u)(1 − 2v) + 8v(1 − v)(1 − 2u) over (10u, 10v)
+    for (u, v) in [(0.3, 0.7), (0.5, 0.5), (0.9, 0.2), (0.0, 0.4)] {
+        let want =
+            10.0 + 8.0 * u * (1.0 - u) * (1.0 - 2.0 * v) + 8.0 * v * (1.0 - v) * (1.0 - 2.0 * u);
+        let q = s.eval(u, v);
+        assert!(
+            q.dist(v3(10.0 * u, 10.0 * v, want)) < 1e-12,
+            "{q:?} at {u}, {v}"
+        );
+    }
+    // The block under it: its rise and fall over the square cancel, so its volume is 1000.
+    let floor = |x: f64, y: f64| v3(x, y, 0.0);
+    let corners = [(0., 0.), (10., 0.), (10., 10.), (0., 10.)];
+    let mut pieces = vec![Piece::whole(s, "patch").unwrap()];
+    for (k, top) in rim.iter().enumerate() {
+        let (a, b) = (corners[k], corners[(k + 1) % 4]);
+        let wall = vec![
+            Span::line(floor(a.0, a.1), floor(b.0, b.1)).unwrap(),
+            Span::line(floor(b.0, b.1), top.end()).unwrap(),
+            Span::new(top.curve.clone(), top.t1, top.t0),
+            Span::line(top.start(), floor(a.0, a.1)).unwrap(),
+        ];
+        pieces.push(Piece::planar(vec![wall], &format!("wall_{k}")).unwrap());
+    }
+    let bottom = (0..4)
+        .map(|k| {
+            let (a, b) = (corners[k], corners[(k + 1) % 4]);
+            Span::line(floor(a.0, a.1), floor(b.0, b.1)).unwrap()
+        })
+        .collect();
+    pieces.push(Piece::planar(vec![bottom], "floor").unwrap());
+    let block = sew(&pieces, 0.0, "block").unwrap();
+    assert_eq!(block.face_count(), 6);
+    close(measure::volume(&block), 1000.0, 1e-9);
+}
+
+#[test]
 fn two_arcs_between_one_pair_of_points_stay_two_edges() {
     // Each arc bulges 1.5 from its chord, further than the chord's half length: the point of
     // either arc nearest the chord's middle is an end, which both arcs share.

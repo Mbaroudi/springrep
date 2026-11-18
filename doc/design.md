@@ -1277,6 +1277,13 @@ passes the checker or is an error.
   other: two arcs between the same ends can both pass nearest their chord's middle at an end.
   Pieces are then turned to agree across their edges, healed onto their surfaces as a read solid
   is, and the shell is turned to face out of the volume it closes.
+- **Coons patches.** `sew::coons` fills a loop of four polynomial spans with the bilinearly
+  blended Coons patch (Coons 1967; Farin 2002):
+  `(1 − v)·c₀(u) + v·c₁(u) + (1 − u)·d₀(v) + u·d₁(v)` less the bilinear blend of the corners. Each
+  pair of opposite spans is brought to one degree and knot vector, and since a B-spline whose
+  coefficients are a linear function at the Greville abscissae is that function (de Boor 1978),
+  each linear blend is exact on the other direction's knots, so the patch is one B-spline surface
+  through all four spans. A rational span is refused: the blend of rational curves is no B-spline.
 
 ## Slabs
 
@@ -1558,7 +1565,7 @@ triangle of the mesh also uses is split at its middle, so no mesh edge is used m
 | `affine`      | A solid stretched, sheared or mirrored exactly                            |
 | `codec`       | The binary encoding of built geometry kept on disk                        |
 | `rays`        | Where rays cross faces, touches included                                  |
-| `sew`         | Solids sewn from bounded pieces of given surfaces                         |
+| `sew`         | Solids sewn from bounded pieces of given surfaces; Coons patches          |
 | `check`       | The validity checker                                                      |
 | `probe`       | Thin places in a valid solid: narrow faces, slivers and gaps, for hygiene |
 
@@ -1576,7 +1583,11 @@ The papers this document and the source cite by author and year.
   _Computer-Aided Design_ 29(9), 1997, pp. 629–637.
 - **Choi and Ju 1989.** B. K. Choi and S. Y. Ju, "Constant-radius blending in surface modelling",
   _Computer-Aided Design_ 21(4), 1989, pp. 213–220.
+- **Coons 1967.** S. A. Coons, _Surfaces for Computer-Aided Design of Space Forms_, MIT Project MAC
+  report MAC-TR-41, 1967.
 - **de Boor 1978.** C. de Boor, _A Practical Guide to Splines_, Springer, 1978.
+- **Farin 2002.** G. Farin, _Curves and Surfaces for CAGD: A Practical Guide_, 5th ed., Morgan
+  Kaufmann, 2002.
 - **Gregory 1974.** J. A. Gregory, "Smooth interpolation without twist constraints", in R. E.
   Barnhill and R. F. Riesenfeld (eds.), _Computer Aided Geometric Design_, Academic Press, 1974.
 - **Hartmann 2001.** E. Hartmann, "Parametric Gⁿ blending of curves and surfaces", _The Visual
