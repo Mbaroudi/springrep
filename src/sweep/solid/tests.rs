@@ -588,3 +588,42 @@ fn a_rod_across_the_axis_turned_partway() {
     let got = measure::volume(&b);
     assert!(rel(got, want) < 1e-9, "{got} {want}");
 }
+
+// A drum of radius 1 and height 1 about the upright line through (10, 0), screwed about the z axis
+// rising c = ½/(2π) a radian from −Θ to Θ, Θ = 140°. Along each helix of the screw at radius ρ the
+// drum spans angles within α(ρ) of its own, ∫ρα dρ = π/2 (half its area), at heights a band 1 +
+// 2cα wide; the screw widens each run by 2Θ, so it adds 2Θ(20 + cπ). Every run covers the angles
+// 0 to 60°, so the ring sector 8 ≤ ρ ≤ 12, |z| ≤ 1 over those angles, 80π/3, loses (π/3)(20 + cπ).
+// The sector's face at angle 0 cuts the face the half of the drum's rim that stands out of the
+// band sweeps along its own parameter line, ending on the row where the screw runs along the rim's
+// end.
+#[test]
+fn a_drum_screwed_across_a_ring_sector_cuts_a_groove() {
+    let drum = cylinder(
+        &Frame::WORLD.translated(Vec3::new(10.0, 0.0, -0.5)),
+        1.0,
+        1.0,
+        "drum",
+    )
+    .unwrap();
+    let theta = 140f64.to_radians();
+    let motion = Motion::Screw {
+        screw: screw_z(0.5),
+        from: -theta,
+        to: theta,
+    };
+    let b = solid(&drum, &motion, "sw").unwrap();
+    assert!(check::check(&b).is_empty());
+    let c = 0.5 / (2.0 * PI);
+    let got = measure::volume(&b);
+    let want = PI + 2.0 * theta * (20.0 + c * PI);
+    assert!(rel(got, want) < 1e-9, "{got} {want}");
+    let rect = crate::profile::Profile::rect(crate::math::Vec2::new(10.0, 0.0), 4.0, 2.0);
+    let axial = Frame::new(Vec3::ZERO, -Vec3::Y, Vec3::X).unwrap();
+    let sector =
+        crate::sweep::revolve(&rect, &axial, Vec3::ZERO, Vec3::Z, PI / 3.0, "block").unwrap();
+    let cut = crate::boolean::difference(&sector, &b).unwrap();
+    let got = measure::volume(&cut);
+    let want = PI / 3.0 * (60.0 - c * PI);
+    assert!(rel(got, want) < 1e-9, "{got} {want}");
+}

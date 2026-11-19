@@ -29,12 +29,16 @@ Solid ─ Shell ─ Face (surface, reversed, loops, names) ─ Loop ─ Coedge (
   turns a periodic parameter by over a quarter period, since beside a pole a short step can turn it
   by nearly half a period either way; at a pole, where every `u` is the same point, `u` is the angle
   the curve's tangent leaves the pole at, so every reader finds the same one however it samples the
-  curve. Booleans give every intersection edge a projected pcurve. `PCurve::Spline` reads `uv` off
-  a cubic B-spline in `t` (its control points in the plane `z = 0`): for an edge whose exact
-  parameters are known at points along it, on a surface whose map nearly drops rank there, where
-  projection lands on the wrong foot. It holds over its own edge's range alone, so two edges whose
-  coedges carry one are not merged into one edge; an affine change of the parameter plane (a
-  period's shift, a mirror, a scale) maps its control points.
+  curve. At an end of its edge a projected pcurve takes the parameters the coedge beside it in the
+  loop gives the shared vertex, where that one is affine or a spline and reaches the vertex: where
+  the map nearly drops rank, as along the row of a swept sheet where the motion runs along its
+  curve, projection lands anywhere along the direction the map barely moves in, and the loop would
+  not close in parameters. Booleans give every intersection edge a projected pcurve.
+  `PCurve::Spline` reads `uv` off a cubic B-spline in `t` (its control points in the plane `z = 0`):
+  for an edge whose exact parameters are known at points along it, on a surface whose map nearly
+  drops rank there, where projection lands on the wrong foot. It holds over its own edge's range
+  alone, so two edges whose coedges carry one are not merged into one edge; an affine change of the
+  parameter plane (a period's shift, a mirror, a scale) maps its control points.
 - **Edge.** A curve and a range `t0 < t1`, from `start` at `curve(t0)` to `end` at `curve(t1)`. A
   closed curve's edge starts and ends at the same vertex. A **degenerate edge** has no curve: it is
   a pole (a cone's apex, a sphere's pole) that its face's loop spans in the parameter plane. It is
