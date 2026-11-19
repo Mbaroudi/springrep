@@ -7,10 +7,12 @@ mod curve;
 mod helix;
 mod miter;
 mod solid;
+mod until;
 
 pub use curve::along_curve;
 pub use helix::{Helix, helix};
 pub use solid::{Motion, solid};
+pub use until::{Meet, extrude_to_next, revolve_to_next};
 
 use std::f64::consts::TAU;
 

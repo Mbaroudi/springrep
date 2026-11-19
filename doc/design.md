@@ -118,6 +118,14 @@ section meets that plane in the same outline from either leg, so the two cut fac
 the union removes them. A path whose last leg is a miter that brings it back to its start, heading
 and section axes as they started, is closed, and that miter cuts the first leg's start too.
 
+A sweep up to a solid (`sweep::extrude_to_next`, `sweep::revolve_to_next`) runs the profile on
+past the solid's box (a turn on to 359°, so its end cap never lies on its start) and cuts that long
+sweep by the solid: by difference for a sweep into the solid (`Meet::Into`, a boss joined to it),
+by intersection for one out of its material (`Meet::OutOf`, a hole cut from it). The pieces kept
+are those that carry a face of the start cap, whose names follow every piece through the boolean:
+each runs from the sketch plane to where its part of the profile first crosses the solid's
+boundary. A kept piece that also carries the end cap crossed nothing, and is an error.
+
 Lofts ([`loft/`](../src/loft/mod.rs)) match sections edge to edge when every section has as many,
 otherwise split at the polar angles of every section's vertices. Edge to edge, each section's loop
 starts where its vertices, taken about its centre, best fit the last section's, read either along
