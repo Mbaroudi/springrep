@@ -560,3 +560,31 @@ fn a_tumbling_torus_keeps_its_pcurves_on_its_sheets() {
     let issues = check::check(&b);
     assert!(issues.is_empty(), "{issues:?}");
 }
+
+// A rod of radius r along x from −m to l crosses the z axis, which pierces its side where its
+// grazing curves pass. At height z its two arms either side of the axis are rods turned about a
+// line through an end, as above, with w = √(r² − z²), each sweeping 2wL + θ(L² + w²)/2 +
+// atan(w/L)(L² + w²) − Lw for its length L. Their
+// sweeps overlap in two sectors θ wide that start square to the rod, where each arm reaches w/sin
+// of its angle from the rod: they cross halfway, at (π − θ)/2 from the rod, and the nearer one
+// bounds the overlap, w²∫csc² = w² cot((π − θ)/2) in each sector.
+#[test]
+fn a_rod_across_the_axis_turned_partway() {
+    let (r, m, l, angle) = (0.5, 3.0, 5.0, 2.0 * PI / 3.0);
+    let end = Frame::new(Vec3::new(-m, 0.0, 0.0), Vec3::X, Vec3::Y).unwrap();
+    let rod = cylinder(&end, r, m + l, "rod").unwrap();
+    let b = solid(&rod, &about_z(angle), "sw").unwrap();
+    assert!(check::check(&b).is_empty());
+    let arm = |l: f64, w: f64| {
+        let r2 = l * l + w * w;
+        2.0 * w * l + angle * r2 / 2.0 + (w / l).atan() * r2 - l * w
+    };
+    let overlap = |w: f64| 2.0 * w * w / ((PI - angle) / 2.0).tan();
+    let mut slice = |a: f64| {
+        let w = r * a.cos();
+        (arm(l, w) + arm(m, w) - overlap(w)) * w
+    };
+    let want = crate::numeric::integrate(&mut slice, -PI / 2.0, PI / 2.0, 1e-13);
+    let got = measure::volume(&b);
+    assert!(rel(got, want) < 1e-9, "{got} {want}");
+}

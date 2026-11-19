@@ -657,6 +657,14 @@ fn closed_cuts(
     let mut out = Vec::new();
     for (run, mut stop) in runs.into_iter().zip(stops) {
         stop.sort_by(|a, b| a.0.total_cmp(&b.0));
+        // A pierce at a run's end or at a crossing is one stop with the vertex known there.
+        stop.dedup_by(|later, kept| {
+            let same = later.0 - kept.0 <= near;
+            if same && kept.1.is_none() {
+                kept.1 = later.1;
+            }
+            same
+        });
         for w in stop.windows(2) {
             let mut ends = [(0usize, Point3::ZERO, Vec2::ZERO); 2];
             let mut span = [w[0].0, w[1].0];
