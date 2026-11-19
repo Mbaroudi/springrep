@@ -712,3 +712,36 @@ fn a_drum_screwed_across_a_ring_sector_cuts_a_groove() {
     let want = PI / 3.0 * (60.0 - c * PI);
     assert!(rel(got, want) < 1e-9, "{got} {want}");
 }
+
+// A line through the turn's axis sweeps a cone with its apex on the axis, a nappe each side. The
+// sheet of a piece either side of the apex holds that piece's points turned through s, R(s)·L(t),
+// at its parameters, and they lie at distance 0 from its surface by the cone's closed form.
+#[test]
+fn a_line_through_the_axis_sweeps_each_piece_on_its_own_nappe() {
+    let dir = Vec3::new(2.0, 0.0, 3.0).unit().unwrap();
+    let line = crate::geom::Curve::Line(crate::geom::Line {
+        origin: Vec3::new(-2.0, 0.0, -1.0),
+        dir,
+    });
+    // It meets the axis at t = √13, at (0, 0, 2).
+    let len = 2.0 * 13f64.sqrt();
+    let turn = sheet::Steady::of(&about_z(1.0)).unwrap();
+    for piece in [(0.1 * len, 0.4 * len), (0.6 * len, 0.9 * len)] {
+        let sh = turn.sheet(&line, (0.0, len), piece).unwrap();
+        for s in [0.0, 0.4, 1.0] {
+            for f in [0.0, 0.5, 1.0] {
+                let t = piece.0 + (piece.1 - piece.0) * f;
+                let want =
+                    crate::math::Transform::rotation(Vec3::ZERO, Vec3::Z, s).point(line.eval(t));
+                let uv = sh.uv(s, t);
+                let got = sh.surface.eval(uv.x, uv.y);
+                assert!(
+                    got.dist(want) < 1e-12,
+                    "{piece:?} {s} {t}: {got:?} {want:?}"
+                );
+                let off = crate::boolean::csi::signed_distance(&sh.surface, want);
+                assert!(off.abs() < 1e-12, "{piece:?} {s} {t}: {off}");
+            }
+        }
+    }
+}

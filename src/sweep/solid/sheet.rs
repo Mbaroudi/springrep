@@ -124,8 +124,9 @@ fn plane_along(curve: &Curve, range: (f64, f64), dir: Vec3) -> Option<Vec3> {
 /// What `curve` sweeps turning through `span` about the unit `axis` through `o`: a cylinder,
 /// cone or plane where the curve is a line in a plane through the axis, a torus or sphere where it
 /// is a circle in one, else the revolution of the curve. On each, the angle turned is `u`. The
-/// surface follows from the whole curve's `range`, so the pieces of one edge share it; `piece` is
-/// the part of it this sheet's face is swept from.
+/// surface follows from the whole curve's `range`, so the pieces of one edge share it (those on one
+/// side of the axis, for a line through it); `piece` is the part of it this sheet's face is swept
+/// from.
 fn turned(
     curve: &Curve,
     (range, piece): ((f64, f64), (f64, f64)),
@@ -211,18 +212,32 @@ fn turned(
                     Vec2::new(0.0, h),
                 ));
             }
-            // The cone through the line's point at 0, `v` the distance along the line from it.
+            // The cone through the end of the line farthest out on the piece's side of the axis,
+            // `v` the distance along the line from it. A line through the axis sweeps two nappes;
+            // the piece's lies where the cone's radius is positive, as its closed form takes it.
+            let side = radial(l.origin + l.dir * (0.5 * (piece.0 + piece.1)));
+            let at = if radial(l.origin + l.dir * range.0).dot(side)
+                >= radial(l.origin + l.dir * range.1).dot(side)
+            {
+                range.0
+            } else {
+                range.1
+            };
+            let end = l.origin + l.dir * at;
+            let Some(x) = radial(end).unit() else {
+                return Ok(revolution());
+            };
             let cone = Cone {
-                frame: Frame::new(o + axis * h, axis, x)?,
-                radius: rho,
-                half_angle: dr.atan2(dh),
+                frame: Frame::new(o + axis * height(end), axis, x)?,
+                radius: radial(end).norm(),
+                half_angle: l.dir.dot(x).atan2(dh),
             };
             Ok(Sheet::affine(
                 Surface::Cone(cone),
                 span,
                 Vec2::new(1.0, 0.0),
                 Vec2::new(0.0, 1.0),
-                Vec2::ZERO,
+                Vec2::new(0.0, -at),
             ))
         }
         Curve::Circle(c) => {
