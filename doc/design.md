@@ -1089,7 +1089,11 @@ sphere's or torus's radius grown, a cone's radius grown by `d·cos a` as its ori
 along the axis. A shell moves every face by its thickness (the open faces the other way, through the
 wall), so a cylinder, sphere or torus is hollowed with its wall offset exactly. A draft tilts a
 plane about its line on the neutral plane, and turns a cylinder along the pull into the cone through
-its circle there, narrowing a boss along the pull and widening a bore.
+its circle there, narrowing a boss along the pull and widening a bore. A draft from a parting line
+(`edit::draft_parted`) splits the solid at the parting plane, drafts each side's pieces of the
+faces away from it (pulled along the plane's normal on the side it points to, against it on the
+other), and joins the sides: both keep the parting line, so the cut faces between them coincide
+and the union removes them, and each piece keeps its face's names.
 
 A surface with no exact offset of its own kind gets a certified one: a spline within a tenth of the
 linear tolerance of the true offset `p + d·n` at the middle of every span, refined until it is or

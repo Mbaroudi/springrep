@@ -23,11 +23,13 @@ mod affine;
 mod delete;
 pub(crate) mod near;
 mod parallel;
+mod parted;
 mod rounded;
 pub(crate) mod tweak;
 
 pub use affine::{Affine, affine};
 pub use delete::delete_faces;
+pub use parted::draft_parted;
 pub use rounded::shell_rounded;
 pub use tweak::{draft, move_faces, move_faces_by, offset_faces};
 

@@ -274,6 +274,32 @@ fn a_drafted_cylinder_boss_is_a_frustum() {
 }
 
 #[test]
+fn a_cylinder_parted_at_its_middle_is_drafted_both_ways() {
+    // R10 × 20 parted at z = 10, each half drafted 3° away from the parting line: two frustums from
+    // R10 at z = 10 to R10 − 10·tan 3° at either end, with a crease between them.
+    let post = can(10.0, 20.0);
+    let side: Vec<FaceId> = faces_named(&post, "can.side").into_iter().collect();
+    let angle = 3f64.to_radians();
+    let b = edit::draft_parted(&post, &side, &up(10.0), angle).unwrap();
+    assert!(check::check(&b).is_empty());
+    let r = 10.0 - 10.0 * angle.tan();
+    let want = 2.0 * PI * 10.0 / 3.0 * (100.0 + 10.0 * r + r * r);
+    let area = 2.0 * PI * r * r + 2.0 * PI * (10.0 + r) * 10.0 / angle.cos();
+    assert!((measure::volume(&b) - want).abs() < 1e-9 * want);
+    assert!((measure::area(&b) - area).abs() < 1e-9 * area);
+    assert_eq!(faces_of(&b, "cone"), 2);
+    // both halves keep the side's name
+    assert_eq!(faces_named(&b, "can.side").len(), 2);
+    // Parted below the part, the whole side is drafted with the pull along the normal, narrowing
+    // from R10 at z = −5.
+    let b = edit::draft_parted(&post, &side, &up(-5.0), angle).unwrap();
+    let r = 10.0 - 5.0 * angle.tan();
+    let top = 10.0 - 25.0 * angle.tan();
+    let want = PI * 20.0 / 3.0 * (r * r + r * top + top * top);
+    assert!((measure::volume(&b) - want).abs() < 1e-9 * want);
+}
+
+#[test]
 fn a_drafted_bore_widens_along_the_pull() {
     // The 20 × 20 × 10 block with a Ø8 through hole, the hole's wall drafted 3° from the base: the
     // hole is a frustum from R4 at z = 0 to R4 + 10·tan 3° at the top.
