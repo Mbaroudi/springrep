@@ -99,7 +99,9 @@ half-plane the point lies in, finds the outer sheet; it is the surface of revolu
 circle instead, which projects onto the arc. The torus primitive takes any tube: one as wide as
 its circle is the horn torus, its circle turned whole and pinched at the centre; a wider one is the
 spindle torus counted once, its outer arc turned between the two points it meets the axis at. Only
-other curves give extrusion or revolution surfaces.
+other curves give extrusion or revolution surfaces. The ellipsoid primitive is the unit ball
+stretched along its frame's axes by the affine map (`edit::affine`), so its face is the exact
+rational image of the sphere's rational form; equal radii give the sphere itself.
 
 Lofts ([`loft/`](../src/loft/mod.rs)) match sections edge to edge when every section has as many,
 otherwise split at the polar angles of every section's vertices. Edge to edge, each section's loop
@@ -1720,7 +1722,7 @@ triangle of the mesh also uses is split at its middle, so no mesh edge is used m
 | `geom/`       | Curves and surfaces                                                       |
 | `topo/`       | The arena, builders, names, pcurves, facts, tolerances, similarities      |
 | `profile`     | Planar sketch profiles, the readings of point lists, regions combined     |
-| `primitive`   | Block, cylinder, sphere, torus, cone, and a block under a height field    |
+| `primitive`   | Block, cylinder, sphere, ellipsoid, torus, cone; a height-field block     |
 | `sweep`       | Profiles extruded, turned, along legs, a helix or a curve; moving solids  |
 | `loft`        | Solids skinned through planar sections                                    |
 | `boolean/`    | Intersection (closed form, swept, traced), contact, splitting, sewing     |

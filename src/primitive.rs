@@ -1,5 +1,6 @@
-//! The five primitive solids, each placed by a frame: a block and a cylinder extruded along the
-//! frame's z, a sphere, a torus and a cone revolved about it.
+//! The primitive solids, each placed by a frame: a block and a cylinder extruded along the
+//! frame's z, a sphere, a torus and a cone revolved about it, and an ellipsoid stretched from a
+//! ball.
 
 mod slab;
 
@@ -8,6 +9,7 @@ pub use slab::slab;
 use std::f64::consts::{PI, TAU};
 
 use crate::Result;
+use crate::edit::{Affine, affine};
 use crate::error::invalid;
 use crate::math::{Frame, Vec2, Vec3};
 use crate::profile::{NamedSegment, Profile, ProfileLoop, Segment};
@@ -79,6 +81,37 @@ pub fn sphere(frame: &Frame, radius: f64, feature: &str) -> Result<Brep> {
         ),
     ]);
     turned(&half, frame, feature)
+}
+
+/// The solid ellipsoid about the frame's origin, its semi-axes `radii.x`, `radii.y` and `radii.z`
+/// along the frame's x, y and z: the unit ball stretched along those axes, its one face `skin`.
+/// Equal radii give the sphere; otherwise the face is the exact rational image of the sphere's
+/// rational form under the stretch (`edit::affine`), poles on the frame's z axis.
+pub fn ellipsoid(frame: &Frame, radii: Vec3, feature: &str) -> Result<Brep> {
+    let r = [radii.x, radii.y, radii.z];
+    if r.iter().any(|&x| !(x > 0.0 && x.is_finite())) {
+        return invalid("an ellipsoid's radii must be positive");
+    }
+    if (r[0] - r[2]).abs() <= tol::LINEAR && (r[1] - r[2]).abs() <= tol::LINEAR {
+        return sphere(frame, r[2], feature);
+    }
+    let ball = sphere(frame, 1.0, feature)?;
+    let axes = [frame.x, frame.y, frame.z];
+    let mut m = [[0.0; 3]; 3];
+    for (i, row) in m.iter_mut().enumerate() {
+        for (j, cell) in row.iter_mut().enumerate() {
+            *cell = (0..3)
+                .map(|k| r[k] * axes[k].to_array()[i] * axes[k].to_array()[j])
+                .sum();
+        }
+    }
+    let stretch = Affine { m, t: Vec3::ZERO };
+    let o = frame.origin;
+    let stretch = Affine {
+        t: o - stretch.vector(o),
+        ..stretch
+    };
+    affine(&ball, &stretch)
 }
 
 /// The solid torus about the frame's z axis, its tube's centre circle `major` from the axis and the

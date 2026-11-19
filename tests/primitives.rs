@@ -7,7 +7,7 @@ use springrep::{
     Error, check,
     math::{Frame, Vec3},
     measure,
-    primitive::{block, cone, cylinder, sphere, torus},
+    primitive::{block, cone, cylinder, ellipsoid, sphere, torus},
     topo::Brep,
 };
 
@@ -71,6 +71,41 @@ fn a_torus_rings_its_frames_z_axis() {
     let tube = PI * 0.75 * 0.75;
     assert_solid(&b, tube * 2.0 * PI * 3.0, 2.0 * PI * 0.75 * 2.0 * PI * 3.0);
     assert_at(local_centroid(&b, &f), [0.0; 3]);
+}
+
+#[test]
+fn an_ellipsoid_stretches_the_ball_along_its_frames_axes() {
+    let f = tilted();
+    let (a, b, c) = (3.0, 2.0, 1.5);
+    let e = ellipsoid(&f, Vec3::new(a, b, c), "ell").unwrap();
+    assert!(check::check(&e).is_empty());
+    let v = measure::volume(&e);
+    let want = 4.0 / 3.0 * PI * a * b * c;
+    assert!((v - want).abs() <= 1e-9 * want, "volume {v} vs {want}");
+    assert_at(local_centroid(&e, &f), [0.0; 3]);
+    assert_eq!(e.face_count(), 1);
+    // The box's half-extent along a world axis w is √Σ (rₖ eₖ·w)², eₖ the frame's axes.
+    let bb = measure::bbox(&e);
+    for (k, w) in [Vec3::X, Vec3::Y, Vec3::Z].into_iter().enumerate() {
+        let half = [(a, f.x), (b, f.y), (c, f.z)]
+            .iter()
+            .map(|&(r, e)| (r * e.dot(w)).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        let mid = f.origin.to_array()[k];
+        assert!((bb.min.to_array()[k] - (mid - half)).abs() < 1e-9, "{bb:?}");
+        assert!((bb.max.to_array()[k] - (mid + half)).abs() < 1e-9, "{bb:?}");
+    }
+    // A prolate spheroid's area: 2πa²(1 + c·asin(ε)/(a·ε)), ε² = 1 − a²/c².
+    let s = ellipsoid(&f, Vec3::new(2.0, 2.0, 3.0), "sph").unwrap();
+    let eps = (1.0 - 4.0 / 9.0f64).sqrt();
+    let area = 2.0 * PI * 4.0 * (1.0 + 3.0 * eps.asin() / (2.0 * eps));
+    let got = measure::area(&s);
+    assert!((got - area).abs() <= 1e-9 * area, "area {got} vs {area}");
+    // Equal radii are the sphere.
+    let ball = ellipsoid(&f, Vec3::new(2.0, 2.0, 2.0), "sph").unwrap();
+    assert_solid(&ball, 4.0 / 3.0 * PI * 8.0, 4.0 * PI * 4.0);
+    assert!(ellipsoid(&f, Vec3::new(2.0, 0.0, 2.0), "sph").is_err());
 }
 
 #[test]
