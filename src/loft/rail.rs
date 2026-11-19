@@ -231,6 +231,36 @@ impl Rail {
         }
     }
 
+    /// The point at `t`.
+    pub(crate) fn at(&self, t: f64) -> Point3 {
+        let mut h = [0.0; 4];
+        for (b, p) in basis(self.degree, &self.knots, t).iter().zip(&self.pw) {
+            for i in 0..4 {
+                h[i] += b * p[i];
+            }
+        }
+        point(h)
+    }
+
+    /// The same curve with its parameter mapped piecewise linearly, `from[i]` onto `to[i]`, both
+    /// rising and spanning the domain: each `from[i]` becomes a knot of full multiplicity first,
+    /// so every piece is a polynomial of its own and the map changes no point.
+    pub(crate) fn reparameterized(&self, from: &[f64], to: &[f64]) -> Rail {
+        let r = self.refined(&from[1..from.len() - 1]);
+        let map = |t: f64| {
+            let i = from
+                .windows(2)
+                .position(|w| t <= w[1])
+                .unwrap_or(from.len() - 2);
+            let s = (t - from[i]) / (from[i + 1] - from[i]);
+            to[i] + (to[i + 1] - to[i]) * s.clamp(0.0, 1.0)
+        };
+        Rail {
+            knots: r.knots.iter().map(|&k| map(k)).collect(),
+            ..r
+        }
+    }
+
     /// The same curve with every one of `breaks` a knot of full multiplicity.
     pub(crate) fn refined(&self, breaks: &[f64]) -> Rail {
         let mut r = self.clone();

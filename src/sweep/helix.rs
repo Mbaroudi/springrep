@@ -66,6 +66,51 @@ impl Helix {
         Transform::rotation(self.origin, self.axis, self.sign * t)
             .then(&Transform::translation(self.axis * (self.rise * t)))
     }
+
+    /// The path of `p` through turns 0 to `angle`, its parameter the turn, while its distance from
+    /// the axis changes by `growth` per radian: a helix when `growth` is 0, a conical spiral
+    /// otherwise. Degree-7 Hermite pieces through the path's points and first three derivatives,
+    /// spaced as a screw sweep's columns are, so they stay within `SCREW_FIT` of it.
+    pub fn spiral(&self, p: Point3, angle: f64, growth: f64) -> Result<Curve> {
+        let Some(axis) = self.axis.unit() else {
+            return invalid("a spiral needs an axis");
+        };
+        if !(angle.is_finite() && angle > tol::ANGULAR && growth.is_finite()) {
+            return invalid("a spiral runs through a positive angle");
+        }
+        let screw = Helix { axis, ..*self };
+        let q = p - screw.origin;
+        let r0 = (q - axis * q.dot(axis)).norm();
+        let r1 = r0 + growth * angle;
+        if r0 <= tol::LINEAR || r1 <= tol::LINEAR {
+            return invalid("a spiral keeps off its axis");
+        }
+        // With f(t) = 1 + k·t the radius's scale and R(t) the point turned about the axis, the
+        // path is f·R plus the rise: P′ = kR + fR′, P″ = 2kR′ + fR″, P‴ = 3kR″ + fR‴.
+        let k = growth / r0;
+        let d3 = |t: f64| -> [Vec3; 4] {
+            let [at, d1, d2, d3] = screw.d3(p, t);
+            let lift = screw.axis * (screw.rise * t);
+            let r = at - lift - (screw.origin + axis * q.dot(axis));
+            let r1 = d1 - screw.axis * screw.rise;
+            let f = 1.0 + k * t;
+            [
+                at - r + r * f,
+                r * k + r1 * f + screw.axis * screw.rise,
+                r1 * (2.0 * k) + d2 * f,
+                d2 * (3.0 * k) + d3 * f,
+            ]
+        };
+        // An eighth derivative of f·R is at most r·(f + 8|k|): the nodes for that radius.
+        let reach = r0.max(r1) + 8.0 * growth.abs();
+        let nodes = nodes(angle, reach);
+        let mut pts = vec![d3(nodes[0])[0]];
+        for w in nodes.windows(2) {
+            pts.extend(hermite(d3(w[0]), d3(w[1]), w[1] - w[0]));
+        }
+        let c = NurbsCurve::new(DEGREE, knots(&nodes), pts, None)?;
+        Ok(Curve::Nurbs(Box::new(c)))
+    }
 }
 
 /// Knots of a curve in Hermite pieces between `nodes`.

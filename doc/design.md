@@ -161,6 +161,25 @@ gives a flat triangle, a curved one a cone over it with its apex at the corner, 
 surface whose pole is the corner. Where both outlines hold a corner over a range, the two corners
 are joined by a side edge alone.
 
+`loft_guided` lofts along guide curves, one through each vertex of every loop of every section.
+Each guide is cut into a rail, the plane of each inner section found on it by sign changes of the
+distance over 512 samples and bisection, and the vertex there matched; the guides of a loop are
+ordered by the first section's vertices, and every section must hold them in that order. Each guide
+is then reparameterized piecewise linearly, its crossing parameters made knots of full multiplicity
+and moved to the guides' mean, so that all of a loop's guides cross each section at one parameter.
+The side between two neighbouring guides is the Gordon surface of its network (Gordon 1969; Piegl
+and Tiller 1997, §10.5): the ruled surface between the guides, plus the section edges interpolated
+across the sections (linearly through two rows, by the not-a-knot cubic through more), less the
+same interpolation of the corners ruled across; the three are brought to common degrees and knots
+in both directions and their control points summed. It then runs along both guides and through
+every section edge, and where the edges are straight it is the ruled surface between the guides,
+each ruling joining the points of one parameter. The sum is only the summed surface for polynomial
+nets, so a guided loft refuses rational curves. A loft to an apex ends every guide there.
+`Helix::spiral` gives a guide that is the path of a point screwed about an axis while its distance
+from the axis changes linearly with the turn (a helix when it does not change), in degree-7 Hermite
+pieces through its points and first three derivatives, spaced as a screw sweep's columns are with
+the radius raised to `r + 8|growth|` to bound the eighth derivative.
+
 ## Tolerance policy
 
 There is one linear tolerance, [`tol::LINEAR`](../src/tol.rs) = 1e-7 mm, and one angular tolerance,
@@ -1815,6 +1834,8 @@ The papers this document and the source cite by author and year.
   1990, pp. 83–99 and 101–127.
 - **Farin 2002.** G. Farin, _Curves and Surfaces for CAGD: A Practical Guide_, 5th ed., Morgan
   Kaufmann, 2002.
+- **Gordon 1969.** W. J. Gordon, "Spline-blended surface interpolation through curve networks",
+  _Journal of Mathematics and Mechanics_ 18(10), 1969, pp. 931–952.
 - **Gregory 1974.** J. A. Gregory, "Smooth interpolation without twist constraints", in R. E.
   Barnhill and R. F. Riesenfeld (eds.), _Computer Aided Geometric Design_, Academic Press, 1974.
 - **Hartmann 2001.** E. Hartmann, "Parametric Gⁿ blending of curves and surfaces", _The Visual
@@ -1831,6 +1852,7 @@ The papers this document and the source cite by author and year.
   objects", _Computer-Aided Design_ 22(4), 1990, pp. 223–234.
 - **Nocedal and Wright 2006.** J. Nocedal and S. J. Wright, _Numerical Optimization_, 2nd ed.,
   Springer, 2006.
+- **Piegl and Tiller 1997.** L. Piegl and W. Tiller, _The NURBS Book_, 2nd ed., Springer, 1997.
 - **Rossignac and Requicha 1984.** J. R. Rossignac and A. A. G. Requicha, "Constant-radius blending
   in solid modelling", _Computers in Mechanical Engineering_ 3(1), 1984, pp. 65–73.
 - **Rossignac and Requicha 1986.** J. R. Rossignac and A. A. G. Requicha, "Offsetting operations

@@ -10,6 +10,7 @@
 //! Bézier through the first and last sections that fits the others within the linear tolerance.
 
 mod developable;
+mod guide;
 pub(crate) mod rail;
 mod skin;
 #[cfg(test)]
@@ -18,6 +19,7 @@ mod tests;
 use std::f64::consts::TAU;
 
 pub use developable::loft_developable;
+pub use guide::{Guide, loft_guided};
 use rail::{Across, Hom, Rail, point};
 use skin::{Band, CapEdge};
 
@@ -655,5 +657,32 @@ fn skin(col: &[Rail], picked: &[usize], acr: &Across) -> Result<Surface> {
     }
     let (pts, w) = split_hom(&net);
     let s = NurbsSurface::new((col[0].degree, acr.degree), (ku, kv), (nu, nv), pts, w)?;
+    Ok(Surface::Nurbs(Box::new(s)))
+}
+
+/// The surface of the net `net[m][i]`, `i` along `u` and `m` along `v`, carried on past its four
+/// edges by [`RUN_ON`].
+fn extended_surface(
+    degrees: (usize, usize),
+    knots: (&[f64], &[f64]),
+    net: &[Vec<Hom>],
+) -> Result<Surface> {
+    let rows: Vec<(Vec<f64>, Vec<Hom>)> = net
+        .iter()
+        .map(|row| rail::extended(degrees.0, knots.0, row, RUN_ON))
+        .collect();
+    let ku = rows[0].0.clone();
+    let nu = rows[0].1.len();
+    let mut kv = Vec::new();
+    let mut pw: Vec<Hom> = Vec::new();
+    for i in 0..nu {
+        let data: Vec<Hom> = rows.iter().map(|r| r.1[i]).collect();
+        let (k, ctrl) = rail::extended(degrees.1, knots.1, &data, RUN_ON);
+        kv = k;
+        pw.extend(ctrl);
+    }
+    let nv = pw.len() / nu;
+    let (pts, w) = split_hom(&pw);
+    let s = NurbsSurface::new(degrees, (ku, kv), (nu, nv), pts, w)?;
     Ok(Surface::Nurbs(Box::new(s)))
 }

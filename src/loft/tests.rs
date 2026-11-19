@@ -480,3 +480,189 @@ fn a_developable_loft_refuses_a_section_that_is_not_convex() {
     ];
     assert!(loft_developable(&sections, "l").is_err());
 }
+
+/// The cubic Bézier through `ctrl` and its mirror images in the xz plane, the yz plane and both,
+/// as guides over `[0, 1]`.
+fn mirrored_guides(ctrl: [[f64; 3]; 4]) -> Vec<Guide> {
+    [(1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)]
+        .iter()
+        .map(|&(sx, sy)| {
+            let pts = ctrl
+                .iter()
+                .map(|c| Vec3::new(sx * c[0], sy * c[1], c[2]))
+                .collect();
+            let knots = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+            Guide {
+                curve: Curve::Nurbs(Box::new(NurbsCurve::new(3, knots, pts, None).unwrap())),
+                range: (0.0, 1.0),
+            }
+        })
+        .collect()
+}
+
+// Rectangles centred on z, their corners on four mirrored cubic guides (p, q, z)(t): the volume is
+// ∫ 4pq dz over t, a polynomial, 426312/175; each wall is the guide's plane curve carried across,
+// its area ∫ 2q·|(p′, z′)| dt, and these guides are Pythagorean-hodograph cubics,
+// |(p′, z′)| = |(q′, z′)| = 3(9 + (1 − 3t)²), so the walls are ∫ 4(p + q)·3(9 + (1 − 3t)²) dt with
+// p + q = 15.2: 4·15.2·30.
+#[test]
+fn a_loft_along_guides_follows_them_between_its_sections() {
+    let b = loft_guided(
+        &[
+            sec(Profile::rect(Vec2::ZERO, 24.0, 6.4), at_z(0.0)),
+            sec(Profile::rect(Vec2::ZERO, 6.0, 24.4), at_z(24.0)),
+        ],
+        &mirrored_guides([
+            [12.0, 3.2, 0.0],
+            [18.0, -2.8, 8.0],
+            [15.0, 0.2, 19.0],
+            [3.0, 12.2, 24.0],
+        ]),
+        None,
+        "slab",
+    )
+    .unwrap();
+    assert_eq!(b.face_count(), 6);
+    assert!(rel(volume(&b), 426312.0 / 175.0) < 1e-9, "{}", volume(&b));
+    let area = 24.0 * 6.4 + 6.0 * 24.4 + 4.0 * 15.2 * 30.0;
+    assert!(rel(measure::area(&b), area) < 1e-9, "{}", measure::area(&b));
+}
+
+// A square at z = 0 closing to a point at (0, 0, 24) along four ridges (g, g, z)(t): the volume is
+// ∫ 4g² dz = 329832/35, and the walls' area ∫ 8g·3(9 + (1 − 3t)²) dt = 10368/5.
+#[test]
+fn a_loft_along_guides_closes_at_its_apex() {
+    let b = loft_guided(
+        &[sec(Profile::rect(Vec2::ZERO, 18.0, 18.0), at_z(0.0))],
+        &mirrored_guides([
+            [9.0, 9.0, 0.0],
+            [15.0, 15.0, 8.0],
+            [12.0, 12.0, 19.0],
+            [0.0, 0.0, 24.0],
+        ]),
+        Some(Vec3::new(0.0, 0.0, 24.0)),
+        "spire",
+    )
+    .unwrap();
+    assert_eq!(b.face_count(), 5);
+    assert!(rel(volume(&b), 329832.0 / 35.0) < 1e-9, "{}", volume(&b));
+    let area = 324.0 + 10368.0 / 5.0;
+    assert!(rel(measure::area(&b), area) < 1e-9, "{}", measure::area(&b));
+}
+
+// A 10 × 2 rectangle at z = 0, 10 and 20, its corners on four helices turning once over the 20:
+// every level section is the same rectangle turned, so the volume is 20·20 to within the helices'
+// fit, whatever the middle section adds.
+#[test]
+fn a_loft_along_helical_guides_twists_its_section() {
+    let screw = crate::sweep::Helix {
+        origin: Vec3::ZERO,
+        axis: Vec3::Z,
+        rise: 20.0 / TAU,
+        sign: 1.0,
+    };
+    let corners = [(5.0, -1.0), (5.0, 1.0), (-5.0, 1.0), (-5.0, -1.0)];
+    let guides: Vec<Guide> = corners
+        .iter()
+        .map(|&(x, y)| Guide {
+            curve: screw.spiral(Vec3::new(x, y, 0.0), TAU, 0.0).unwrap(),
+            range: (0.0, TAU),
+        })
+        .collect();
+    let turned = |z: f64| {
+        let a = TAU * z / 20.0;
+        sec(
+            Profile::rect(Vec2::ZERO, 10.0, 2.0),
+            Frame::new(Vec3::Z * z, Vec3::Z, Vec3::new(a.cos(), a.sin(), 0.0)).unwrap(),
+        )
+    };
+    for sections in [
+        vec![turned(0.0), turned(20.0)],
+        vec![turned(0.0), turned(10.0), turned(20.0)],
+    ] {
+        let b = loft_guided(&sections, &guides, None, "blade").unwrap();
+        assert_eq!(b.face_count(), 6);
+        assert!(rel(volume(&b), 400.0) < 1e-9, "{}", volume(&b));
+    }
+}
+
+#[test]
+fn a_guide_that_misses_a_vertex_is_refused() {
+    let mut guides = mirrored_guides([
+        [12.0, 3.2, 0.0],
+        [18.0, -2.8, 8.0],
+        [15.0, 0.2, 19.0],
+        [3.0, 12.2, 24.0],
+    ]);
+    guides[0].range = (0.0, 0.9);
+    let sections = [
+        sec(Profile::rect(Vec2::ZERO, 24.0, 6.4), at_z(0.0)),
+        sec(Profile::rect(Vec2::ZERO, 6.0, 24.4), at_z(24.0)),
+    ];
+    assert!(loft_guided(&sections, &guides, None, "slab").is_err());
+}
+
+// A square of side 30 − z/2 from z = 0 to 40, turned half a turn on the way, its corners on four
+// conical spirals: every level is a square, so the volume is ∫ s² dz = 52000/3.
+#[test]
+fn a_loft_along_spiral_guides_twists_and_tapers() {
+    let screw = crate::sweep::Helix {
+        origin: Vec3::ZERO,
+        axis: Vec3::Z,
+        rise: 40.0 / PI,
+        sign: 1.0,
+    };
+    let growth = -10.0 * 2f64.sqrt() / PI;
+    let guides: Vec<Guide> = [(15.0, 15.0), (-15.0, 15.0), (-15.0, -15.0), (15.0, -15.0)]
+        .iter()
+        .map(|&(x, y)| Guide {
+            curve: screw.spiral(Vec3::new(x, y, 0.0), PI, growth).unwrap(),
+            range: (0.0, PI),
+        })
+        .collect();
+    let sections = [
+        sec(Profile::rect(Vec2::ZERO, 30.0, 30.0), at_z(0.0)),
+        sec(Profile::rect(Vec2::ZERO, 10.0, 10.0), at_z(40.0)),
+    ];
+    let b = loft_guided(&sections, &guides, None, "tw").unwrap();
+    assert_eq!(b.face_count(), 6);
+    assert!(rel(volume(&b), 52000.0 / 3.0) < 1e-9, "{}", volume(&b));
+}
+
+// A hollow square duct round a quarter turn of radius 30 about z, its half-width h running 9 → 6
+// and its wall 2: each corner, at (30 ± h) from the axis and z = ±h, runs on a spiral. Pappus
+// over the turn: ∫ 30·16(h − 1) dθ = 1560π.
+#[test]
+fn a_loft_along_guides_carries_a_hole_on_its_own_guides() {
+    let dh = -6.0 / PI;
+    let mut guides = Vec::new();
+    for wall in [0.0, 2.0] {
+        for (sr, sz) in [(1.0, -1.0), (1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0)] {
+            let h = 9.0 - wall;
+            let screw = crate::sweep::Helix {
+                origin: Vec3::ZERO,
+                axis: Vec3::Z,
+                rise: sz * dh,
+                sign: 1.0,
+            };
+            let p = Vec3::new(30.0 + sr * h, 0.0, sz * h);
+            guides.push(Guide {
+                curve: screw.spiral(p, PI / 2.0, sr * dh).unwrap(),
+                range: (0.0, PI / 2.0),
+            });
+        }
+    }
+    let sections = [
+        sec(
+            hollow_square(18.0, 14.0),
+            Frame::new(Vec3::new(30.0, 0.0, 0.0), Vec3::Y, Vec3::X).unwrap(),
+        ),
+        sec(
+            hollow_square(12.0, 8.0),
+            Frame::new(Vec3::new(0.0, 30.0, 0.0), -Vec3::X, Vec3::Y).unwrap(),
+        ),
+    ];
+    let b = loft_guided(&sections, &guides, None, "duct").unwrap();
+    assert_eq!(b.face_count(), 10);
+    assert!(rel(volume(&b), 1560.0 * PI) < 1e-9, "{}", volume(&b));
+}
