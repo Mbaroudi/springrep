@@ -589,6 +589,35 @@ fn a_rod_across_the_axis_turned_partway() {
     assert!(rel(got, want) < 1e-9, "{got} {want}");
 }
 
+// A V-wheel leaning 20°, its rim the triangle (7.5, ±2.5 tan 30°), (10, 0) about its axis, turned a
+// whole turn about the z axis, which passes outside it. Its inner cylinder grazes the turn along a
+// curve that crosses the cylinder's seam where the turn runs along the seam, so the seam's swept
+// face leaves the cylinder there at no angle and comes back into it along a second curve through
+// that point; the sweep is built in parts, whose union must find that curve. A turn keeps each
+// point's distance from the axis, so the rod of radius 5 about it loses to the whole wheel's sweep
+// what it loses to the sweep of the wheel's part within 5.5 of the axis, which grazes nowhere near.
+#[test]
+fn a_leaning_v_wheel_turned_a_whole_turn_cuts_a_rod_as_its_near_part_does() {
+    let flank = 2.5 * 30f64.to_radians().tan();
+    let points =
+        [(7.5, -flank), (10.0, 0.0), (7.5, flank)].map(|(x, y)| crate::math::Vec2::new(x, y));
+    let rim = crate::profile::Profile::polygon(&points, &["rim"]);
+    let (s, c) = 20f64.to_radians().sin_cos();
+    let (center, axis, across) = (Vec3::new(14.0, 0.0, 10.0), Vec3::new(0.0, s, c), -Vec3::X);
+    let sketch = Frame::new(center, across.cross(axis), across).unwrap();
+    let wheel = crate::sweep::revolve(&rim, &sketch, center, axis, 2.0 * PI, "wheel").unwrap();
+    let rod = cylinder(&Frame::WORLD, 5.0, 20.0, "rod").unwrap();
+    let low = Frame::WORLD.translated(Vec3::new(0.0, 0.0, -10.0));
+    let reach = cylinder(&low, 5.5, 40.0, "reach").unwrap();
+    let near = crate::boolean::intersection(&wheel, &reach).unwrap();
+    let swept = solid(&wheel, &about_z(2.0 * PI), "sw").unwrap();
+    assert!(check::check(&swept).is_empty());
+    let got = measure::volume(&crate::boolean::difference(&rod, &swept).unwrap());
+    let part = solid(&near, &about_z(2.0 * PI), "sw").unwrap();
+    let want = measure::volume(&crate::boolean::difference(&rod, &part).unwrap());
+    assert!(rel(got, want) < 1e-9, "{got} {want}");
+}
+
 // A drum of radius 1 and height 1 about the upright line through (10, 0), screwed about the z axis
 // rising c = ½/(2π) a radian from −Θ to Θ, Θ = 140°. Along each helix of the screw at radius ρ the
 // drum spans angles within α(ρ) of its own, ∫ρα dρ = π/2 (half its area), at heights a band 1 +

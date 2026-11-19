@@ -202,6 +202,19 @@ pub(crate) fn band(a: &Surface, b: &Surface, q: Point3, dir: Vec3) -> f64 {
     (2.0 * tol::LINEAR / (2.0 * gap / (h * h))).sqrt()
 }
 
+/// How far from `p`, a point of both surfaces where they are tangent and cross, a point within the
+/// tolerance of both can lie in every direction: `√(2·tol/|λ|)` for the gap form's eigenvalue `λ`
+/// of largest size. Two branches of their intersection cross there, and a trace of either passes
+/// the point only to within that reach. `None` where they are not tangent at `p`, or the gap form
+/// is definite (they touch at `p` alone) or nearly singular (they touch along a curve).
+pub(crate) fn crossing_reach(a: &Surface, b: &Surface, p: Point3) -> Option<f64> {
+    let ((l1, l2), _, _) = gap_form(a, b, p)?;
+    let (least, most) = (l1.abs().min(l2.abs()), l1.abs().max(l2.abs()));
+    // A form whose one eigenvalue is this small a share of the other is read off differences of
+    // normals that only nearly agree along a curve of contact, not off two branches crossing.
+    (l1 * l2 < 0.0 && least > 1e-3 * most).then(|| (2.0 * tol::LINEAR / most).sqrt())
+}
+
 /// A guard against rounding in the normals' differences, not a tolerance: an eigenvalue nearer
 /// zero than this share of the other may be zero.
 const ROUNDING: f64 = 1e-6;

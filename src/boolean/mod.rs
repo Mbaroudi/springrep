@@ -1988,13 +1988,26 @@ impl<'a> Work<'a> {
                 continue;
             }
             let (d, t) = csi::curve_distance(curve, base.range, p);
-            if d <= tol::between(base.tol, self.vtol[vi]).max(grazing(vi)) {
+            let within = tol::between(base.tol, self.vtol[vi]).max(grazing(vi));
+            if d <= within || (d <= GRAZE_REACH && self.branch_point(cut, vi, d)) {
                 out.push((t, vi, d));
             }
         }
         out.sort_by(|a, b| a.0.total_cmp(&b.0));
         out.dedup_by_key(|x| x.1);
         out
+    }
+
+    /// Whether vertex `vi`, `d` off the cut between faces `cut`, lies on both their surfaces where
+    /// they are tangent, within the reach there that a trace through the point keeps to: two
+    /// branches of the intersection cross at such a point (a swept sheet's edge and the curve where
+    /// the sheet comes back into the face it left), and the trace passes it only that near.
+    fn branch_point(&self, cut: Option<(usize, usize)>, vi: usize, d: f64) -> bool {
+        let Some((fa, fb)) = cut else { return false };
+        let p = self.pool[vi];
+        let (sa, sb) = (&self.faces[fa].dom.surface, &self.faces[fb].dom.surface);
+        let on = |s: &Surface| csi::signed_distance(s, p).abs() <= self.vtol[vi];
+        on(sa) && on(sb) && contact::crossing_reach(sa, sb, p).is_some_and(|r| d <= r)
     }
 
     /// Step 2a: every base split at its vertices into pieces; intersection pieces outside either
@@ -2011,9 +2024,15 @@ impl<'a> Work<'a> {
                 .map(|(t, v, d)| {
                     // The piece ends where the curve passes the vertex, which must hold it.
                     if d > self.vtol[v] {
-                        // A grazing meeting is known only to its reach: the vertex says so.
+                        // A grazing meeting is known only to its reach, and a branch point only
+                        // to the trace's: the vertex says so.
                         let met = self.meetings.get(&v).into_iter().flatten();
-                        let reach = met.map(|m| m.2).fold(0.0, f64::max);
+                        let mut reach = met.map(|m| m.2).fold(0.0, f64::max);
+                        if let BaseKind::Cut { fa, fb, .. } = self.bases[bi].kind
+                            && self.branch_point(Some((fa, fb)), v, d)
+                        {
+                            reach = reach.max(d);
+                        }
                         self.vtol[v] = d.min(self.cap.max(reach));
                         self.widest = self.widest.max(self.vtol[v]);
                         if !self.tolerant.contains(&v) {

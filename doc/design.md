@@ -650,7 +650,13 @@ number never overrides what topology or a closed form already decided (Sugihara 
    surfaces lies ahead of it in the same band, on that point exactly
    ([`march.rs`](../src/boolean/march.rs)). Two blend sections that start as straight as the face
    they share touch each other there to the fourth order: no search finds such a touching to better
-   than a few millionths, but the faces' edges that cross at it do.
+   than a few millionths, but the faces' edges that cross at it do. Where the surfaces are tangent
+   at a known vertex and cross there (their gap form is indefinite), two branches of the
+   intersection cross at the vertex and a trace passes it only to within `√(2·tol/|λ|)`, `λ` the
+   form's larger eigenvalue: within that reach the vertex still splits the branch, and its
+   tolerance grows to cover the gap. A sheet a sweep makes from an edge leaves the face beside it
+   at such a point, where the face's grazing curve meets the edge, and comes back into a concave
+   face along the second branch.
 
 A stub of this kind, from a fillet's rim meeting a pocket's corner round, came from a pair that both
 later layers now cover: the r 1.5 round's cylinder against the r 4 wall cylinder, axes not parallel,
