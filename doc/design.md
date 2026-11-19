@@ -1202,14 +1202,18 @@ the move with the error it gave.
 ### Growing a solid
 
 `edit::offset` grows a solid by a distance `d`: every point within `d` of it. It first moves every
-face out and rounds the convex edges at `d`. Where that cannot keep the topology (a face beside a
-convex edge closes on the way, as a groove's walls cross; a cone's apex is a convex point; a torus's
-tube grows past its axis), it builds the set itself ([`near.rs`](../src/edit/near.rs)). A point
-outside the solid within `d` of it has its foot, its nearest point, inside a face, on an edge or at
-a vertex; so the grown solid is the union of the solid, each face's slab (the points the face sweeps
-moving out along its normal), a tube about each convex edge and a ball about each corner (Rossignac
-and Requicha 1986). A concave edge's foot never lies off its faces, so it needs no tube; a vertex
-where the convex edges only run on into each other tangentially needs no ball. Each piece is exact:
+face out and rounds the convex edges at `d`. A hole's cylindrical wall no wider than `d` closes on
+the way; over each end of it the rim leaves a dimple, the part of the torus of radius `d` about the
+rim inside it, taken from the grown face there. A hole exactly `d` wide (to the tolerance) closes
+onto its axis as the move ends, and its dimple comes down to a cusp on the axis. Where that cannot
+keep the topology (a face beside a convex edge closes on the way, as a groove's walls cross; a
+cone's apex is a convex point; a torus's tube grows past its axis), it builds the set itself
+([`near.rs`](../src/edit/near.rs)). A point outside the solid within `d` of it has its foot, its
+nearest point, inside a face, on an edge or at a vertex; so the grown solid is the union of the
+solid, each face's slab (the points the face sweeps moving out along its normal), a tube about each
+convex edge and a ball about each corner (Rossignac and Requicha 1986). A concave edge's foot never
+lies off its faces, so it needs no tube; a vertex where the convex edges only run on into each other
+tangentially needs no ball. Each piece is exact:
 
 - a plane face's slab is the face extruded along its normal;
 - a cylinder's, cone's, sphere's or torus's face, bounded by parallels about its axis, sweeps a

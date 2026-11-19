@@ -229,11 +229,10 @@ fn moved_and_rounded(s: &Brep, distance: f64, feature: &str) -> Result<Brep> {
     let (moved, closed) = tweak::offset_faces_closing(s, &by)?;
     // A hole's rim is rounded by the dimple below; any other convex edge beside a face that
     // closed would leave its round missing.
-    let dimpled = |f: FaceId| {
-        let face = s.face(f);
-        matches!(&face.surface, Surface::Cylinder(c) if face.reversed && c.radius < distance)
-    };
-    let closed: Vec<FaceId> = closed.into_iter().filter(|&f| !dimpled(f)).collect();
+    let closed: Vec<FaceId> = closed
+        .into_iter()
+        .filter(|&f| hole_radius(s, f, distance).is_none())
+        .collect();
     closed_beside(
         s,
         &convex_edges(s)?,
@@ -247,14 +246,10 @@ fn moved_and_rounded(s: &Brep, distance: f64, feature: &str) -> Result<Brep> {
         blend::fillet_edges_mitred(&moved, &edges, distance, feature)?
     };
     for f in s.face_ids() {
-        let face = s.face(f);
-        let Surface::Cylinder(c) = &face.surface else {
+        let Some(radius) = hole_radius(s, f, distance) else {
             continue;
         };
-        if !face.reversed || c.radius >= distance {
-            continue;
-        }
-        for &lp in &face.loops {
+        for &lp in &s.face(f).loops {
             for &co in &s.lp(lp).coedges {
                 let e = s.coedge(co).edge;
                 let Some(Curve::Circle(rim)) = &s.edge(e).curve else {
@@ -271,12 +266,25 @@ fn moved_and_rounded(s: &Brep, distance: f64, feature: &str) -> Result<Brep> {
                 let (_, up) = plane_of(s, g)?;
                 out = boolean::difference(
                     &out,
-                    &dimple(rim.frame.origin, up, c.radius, distance, feature)?,
+                    &dimple(rim.frame.origin, up, radius, distance, feature)?,
                 )?;
             }
         }
     }
     Ok(out)
+}
+
+/// The radius of face `f` where it is a hole's cylindrical wall that an offset by `distance`
+/// closes: no wider than `distance`, or wider by under the tolerance, which closes onto its axis
+/// just as the move ends, its dimples coming down to a cusp there.
+fn hole_radius(s: &Brep, f: FaceId, distance: f64) -> Option<f64> {
+    let face = s.face(f);
+    match &face.surface {
+        Surface::Cylinder(c) if face.reversed && c.radius < distance + tol::LINEAR => {
+            Some(c.radius.min(distance))
+        }
+        _ => None,
+    }
 }
 
 /// An error naming `what` when a face of `closed` lies beside one of `edges`: the move followed
@@ -896,5 +904,34 @@ mod tests {
         };
         let area = crate::numeric::integrate(&mut green, lo, PI - lo, 1e-13);
         close(measure::volume(&out), area * 5.0);
+    }
+
+    #[test]
+    fn a_plate_grown_by_its_hole_s_radius_fills_the_hole_and_dimples_to_a_cusp() {
+        // A plate a × b × c with a hole of radius ρ = d through it, grown by d: the box grown by
+        // Steiner's formula, V₀ = abc + 2(ab + bc + ca)d + π(a + b + c)d² + 4πd³/3, with the hole
+        // filled, less over each end of it the dimple inside the horn torus of radius d about the
+        // rim: in the meridian, under z = d and above the quarter circle of radius d about (d, 0),
+        // of volume 2π∫₀^d ρ(d − √(d² − (d − ρ)²)) dρ = 2πd³(5/6 − π/4). Its area: the box's grown,
+        // A₀ = 2(ab + bc + ca) + 2π(a + b + c)d + 4πd², less the disk πd² over each end and plus
+        // the torus inside the rim, 2π∫ρ ds = 2πd²(π/2 − 1).
+        for (a, b, c, d) in [(20.0, 20.0, 4.0, 3.0), (30.0, 24.0, 2.0, 10.0)] {
+            let plate =
+                crate::primitive::block(&Frame::WORLD, Vec3::new(a, b, c), "plate").unwrap();
+            let at = Frame::WORLD.translated(Vec3::new(a / 2.0, b / 2.0, -1.0));
+            let drill = crate::primitive::cylinder(&at, d, c + 2.0, "hole").unwrap();
+            let s = boolean::difference(&plate, &drill).unwrap();
+            let out = offset(&s, d, "o").unwrap();
+            assert!(crate::check::check(&out).is_empty());
+            let v0 = a * b * c
+                + 2.0 * (a * b + b * c + c * a) * d
+                + PI * (a + b + c) * d * d
+                + 4.0 / 3.0 * PI * d.powi(3);
+            let a0 = 2.0 * (a * b + b * c + c * a) + 2.0 * PI * (a + b + c) * d + 4.0 * PI * d * d;
+            let dimple = TAU * d.powi(3) * (5.0 / 6.0 - PI / 4.0);
+            close(measure::volume(&out), v0 - 2.0 * dimple);
+            let rim = TAU * d * d * (PI / 2.0 - 1.0) - PI * d * d;
+            close(measure::area(&out), a0 + 2.0 * rim);
+        }
     }
 }
