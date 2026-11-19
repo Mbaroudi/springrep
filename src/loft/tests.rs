@@ -1,7 +1,7 @@
 use std::f64::consts::PI;
 
 use super::*;
-use crate::{measure, profile::PointsInterp};
+use crate::{geom::NurbsCurve, measure, profile::PointsInterp};
 
 fn at_z(z: f64) -> Frame {
     Frame::WORLD.translated(Vec3::Z * z)
@@ -321,4 +321,75 @@ fn a_rail_cut_from_a_rational_spline_stays_on_it() {
         }
         assert!((point(h).norm() - 1.0).abs() < 1e-12, "{s}");
     }
+}
+
+fn hollow_square(outside: f64, hole: f64) -> Profile {
+    let hole = Profile::rect(Vec2::ZERO, hole, hole).loops.remove(0);
+    Profile::rect(Vec2::ZERO, outside, outside).with_holes([hole])
+}
+
+// A tube tapering from 24 square with a 20 square hole to 12 with an 8 hole over 40: the outside
+// frustum less the hole's, each h/3 · (A₀ + A₁ + √(A₀A₁)).
+#[test]
+fn a_hole_is_lofted_with_its_match() {
+    let b = loft(
+        &[
+            sec(hollow_square(24.0, 20.0), at_z(0.0)),
+            sec(hollow_square(12.0, 8.0), at_z(40.0)),
+        ],
+        true,
+        "tube",
+    )
+    .unwrap();
+    assert_eq!(b.face_count(), 10);
+    let frustum = |a: f64, c: f64| 40.0 / 3.0 * (a * a + c * c + a * c);
+    let want = frustum(24.0, 12.0) - frustum(20.0, 8.0);
+    assert!(rel(volume(&b), want) < 1e-12, "{}", volume(&b));
+    let caps = 24.0 * 24.0 - 400.0 + 144.0 - 64.0;
+    let walls = 4.0 * (18.0 + 14.0) * (40f64 * 40.0 + 36.0).sqrt();
+    assert!(rel(measure::area(&b), caps + walls) < 1e-12);
+}
+
+#[test]
+fn sections_with_unequal_holes_are_refused() {
+    let sections = [
+        sec(hollow_square(24.0, 20.0), at_z(0.0)),
+        sec(Profile::rect(Vec2::ZERO, 12.0, 12.0), at_z(40.0)),
+    ];
+    assert!(loft(&sections, true, "tube").is_err());
+}
+
+// A square to a point straight above its centre is a pyramid of four flat triangles, A·h/3; a
+// circle to a point off its axis an oblique cone, its volume the same by Cavalieri.
+#[test]
+fn a_loft_to_a_point_closes_in_a_pyramid_or_a_cone() {
+    let square = [sec(Profile::rect(Vec2::ZERO, 10.0, 10.0), at_z(0.0))];
+    let b = loft_to_point(&square, Vec3::new(0.0, 0.0, 6.0), true, "py").unwrap();
+    assert_eq!(b.face_count(), 5);
+    assert!(b.face_ids().all(|f| b.face(f).surface.kind() == "plane"));
+    assert!(rel(volume(&b), 200.0) < 1e-12, "{}", volume(&b));
+    let slant = (25.0f64 + 36.0).sqrt();
+    assert!(rel(measure::area(&b), 100.0 + 2.0 * 10.0 * slant) < 1e-12);
+
+    let circle = [sec(Profile::circle(Vec2::ZERO, 10.0), at_z(0.0))];
+    let b = loft_to_point(&circle, Vec3::new(3.0, 1.0, 6.0), true, "cone").unwrap();
+    assert_eq!(b.face_count(), 2);
+    let want = PI * 25.0 * 6.0 / 3.0;
+    assert!(rel(volume(&b), want) < 1e-9, "{}", volume(&b));
+}
+
+// Two squares and an apex, smooth: the sides pass through every section and close in a point.
+#[test]
+fn a_smooth_loft_runs_through_its_sections_to_the_apex() {
+    let sections = [
+        sec(Profile::rect(Vec2::ZERO, 10.0, 10.0), at_z(0.0)),
+        sec(Profile::rect(Vec2::ZERO, 12.0, 12.0), at_z(4.0)),
+    ];
+    let b = loft_to_point(&sections, Vec3::new(0.0, 0.0, 10.0), false, "sp").unwrap();
+    assert_eq!(b.face_count(), 5);
+    let bb = measure::bbox(&b);
+    assert!(
+        bb.max.x >= 6.0 - 1e-9 && (bb.max.z - 10.0).abs() < 1e-9,
+        "{bb:?}"
+    );
 }

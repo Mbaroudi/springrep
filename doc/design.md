@@ -141,6 +141,13 @@ tenth of its parameter range on past every edge that is not a seam, as a swept s
 its profile's ends, so an intersection that ends on a loft edge is traced across it and meets the
 edge's vertex.
 
+Every loop of a section is lofted: the sections have as many holes, and each hole is matched and
+skinned with the hole at its place in the next section by the same rules as the outer loop, its
+sides facing into the hole; the caps carry a loop for each. `loft_to_point` adds the apex as a last
+row whose every piece is the one point: each column's rail there has all its control points at the
+apex, so a ruled side between two straight edges and the apex is a flat triangle, and any other side
+is a surface with a pole along its top, which its face meets in a degenerate edge of its own.
+
 ## Tolerance policy
 
 There is one linear tolerance, [`tol::LINEAR`](../src/tol.rs) = 1e-7 mm, and one angular tolerance,
