@@ -21,7 +21,7 @@ use crate::{
 
 mod affine;
 mod delete;
-mod near;
+pub(crate) mod near;
 mod parallel;
 mod rounded;
 pub(crate) mod tweak;

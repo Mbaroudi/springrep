@@ -179,7 +179,24 @@ fn vertex_shells(b: &Brep) -> HashMap<VertexId, ShellId> {
     out
 }
 
+/// Checks a sheet: open shells of faces in no solid (doc/design.md, "Sheets"). Every edge is used
+/// once, on the sheet's boundary, or twice, by coedges that run opposite ways in faces of one shell;
+/// everything else [`check`] finds of faces, loops, edges and vertices holds as for a solid.
+pub fn check_sheet(b: &Brep) -> Vec<Issue> {
+    checked(b, false, None, true, true)
+}
+
 fn check_with(b: &Brep, each: bool, sides: Option<&[Option<usize>]>, crossing: bool) -> Vec<Issue> {
+    checked(b, each, sides, crossing, false)
+}
+
+fn checked(
+    b: &Brep,
+    each: bool,
+    sides: Option<&[Option<usize>]>,
+    crossing: bool,
+    sheet: bool,
+) -> Vec<Issue> {
     let mut out = Vec::new();
     let found = std::cell::Cell::new(0usize);
     let mut issue = |m: String| {
@@ -267,6 +284,18 @@ fn check_with(b: &Brep, each: bool, sides: Option<&[Option<usize>]>, crossing: b
             }
             continue;
         }
+        // A sheet's boundary edge has one use, and its other edges two.
+        if sheet && u.len() == 1 {
+            continue;
+        }
+        if sheet && u.len() > 2 {
+            issue(format!(
+                "edge {} is used by {} coedges, not 1 or 2",
+                e.index(),
+                u.len()
+            ));
+            continue;
+        }
         // Two uses, or pairs of them where pieces touch along the edge: each coedge and its
         // partner run opposite ways and bound one sheet.
         if u.len() < 2 || !u.len().is_multiple_of(2) {
@@ -321,8 +350,11 @@ fn check_with(b: &Brep, each: bool, sides: Option<&[Option<usize>]>, crossing: b
         }
         match face.shell {
             None => issue(format!("face {} is in no shell", f.index())),
-            Some(s) if b.shell(s).solid.is_none() => {
+            Some(s) if !sheet && b.shell(s).solid.is_none() => {
                 issue(format!("shell {} is in no solid", s.index()))
+            }
+            Some(s) if sheet && b.shell(s).solid.is_some() => {
+                issue(format!("shell {} of a sheet is in a solid", s.index()))
             }
             _ => {}
         }

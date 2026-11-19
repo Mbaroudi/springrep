@@ -30,7 +30,17 @@ fn unsupported<T>(why: &str) -> Result<T> {
 /// The solid of the points swept by `f` moving `by` along its outward normal (inward where `by`
 /// is negative), every face of it named as `f` is.
 pub(crate) fn slab(s: &Brep, f: FaceId, by: f64, feature: &str) -> Result<Brep> {
-    let mut out = match &s.face(f).surface {
+    let mut out = slab_of(s, f, by, feature)?;
+    let names = s.face(f).names.clone();
+    for g in out.face_ids().collect::<Vec<_>>() {
+        out.set_face_names(g, names.clone());
+    }
+    Ok(out)
+}
+
+/// [`slab`] with the faces named as the pieces it is built from name them.
+pub(crate) fn slab_of(s: &Brep, f: FaceId, by: f64, feature: &str) -> Result<Brep> {
+    Ok(match &s.face(f).surface {
         Surface::Plane(_) => plane_slab(s, f, by, feature)?,
         Surface::Cylinder(_) | Surface::Cone(_) | Surface::Sphere(_) | Surface::Torus(_) => {
             turned_slab(s, f, by, feature)?
@@ -42,12 +52,7 @@ pub(crate) fn slab(s: &Brep, f: FaceId, by: f64, feature: &str) -> Result<Brep> 
                 other.kind()
             ));
         }
-    };
-    let names = s.face(f).names.clone();
-    for g in out.face_ids().collect::<Vec<_>>() {
-        out.set_face_names(g, names.clone());
-    }
-    Ok(out)
+    })
 }
 
 /// The profile segment `curve` makes over `(t0, t1)`, run from `t0`, drawn in `fr`'s xy plane.
@@ -145,8 +150,11 @@ fn extruded_slab(s: &Brep, f: FaceId, by: f64, feature: &str) -> Result<Brep> {
         unreachable!("an extrusion face")
     };
     let curve = &ex.curve;
-    let (Some(period), Some(up)) = (curve.period(), ex.dir.unit()) else {
-        return unsupported("the slab of an extrusion of an open curve");
+    let Some(up) = ex.dir.unit() else {
+        return unsupported("the slab of an extrusion along no direction");
+    };
+    let Some(period) = curve.period() else {
+        return open_extruded_slab(s, f, curve, up, by, feature);
     };
     let u0 = curve.domain().0;
     let base = curve.eval(u0);
@@ -246,6 +254,125 @@ fn extruded_slab(s: &Brep, f: FaceId, by: f64, feature: &str) -> Result<Brep> {
     extrude(&Profile { loops }, &fr, hi - lo, feature)
 }
 
+/// An extrusion face's slab, where the face is a stretch of an open plane curve extruded square to
+/// its plane, bounded by two copies of the stretch and the two lines its ends sweep: the region
+/// between the stretch and its parallel at `by` along its normal, joined by the normals at its
+/// ends, extruded. The parallel must not run past the curve's radius of curvature anywhere, where
+/// it would turn back on itself.
+fn open_extruded_slab(
+    s: &Brep,
+    f: FaceId,
+    curve: &Curve,
+    up: Vec3,
+    by: f64,
+    feature: &str,
+) -> Result<Brep> {
+    let face = s.face(f);
+    let mut ends: Vec<f64> = Vec::new();
+    let mut rims: Vec<f64> = Vec::new();
+    let (u0, u1) = curve.domain();
+    let base = curve.eval(u0);
+    let height = |p: Point3| (p - base).dot(up);
+    for &lp in &face.loops {
+        for &c in &s.lp(lp).coedges {
+            let x = s.edge(s.coedge(c).edge);
+            let Some(c) = &x.curve else {
+                return unsupported("the slab of an extrusion face with a pole");
+            };
+            let (t0, t1) = x.range;
+            let hs = [t0, 0.5 * (t0 + t1), t1].map(|t| height(c.eval(t)));
+            if hs.iter().all(|h| (h - hs[0]).abs() <= tol::LINEAR) {
+                if !rims.iter().any(|r| (r - hs[0]).abs() <= tol::LINEAR) {
+                    rims.push(hs[0]);
+                }
+            } else if matches!(c, Curve::Line(l) if l.dir.cross(up).norm() <= tol::ANGULAR) {
+                let u = face.surface.project(c.eval(t0)).x;
+                if !ends.iter().any(|e| (e - u).abs() <= 1e-9 * (u1 - u0)) {
+                    ends.push(u);
+                }
+            } else {
+                return unsupported(
+                    "the slab of an extrusion face bounded by other than copies of its curve",
+                );
+            }
+        }
+    }
+    let (&[lo, hi], &[ua, ub]) = (&rims[..], &ends[..]) else {
+        return unsupported("the slab of an extrusion face other than one stretch of its curve");
+    };
+    let ((lo, hi), (ua, ub)) = ((lo.min(hi), lo.max(hi)), (ua.min(ub), ua.max(ub)));
+    if (0..=64).any(|k| height(curve.eval(ua + (ub - ua) * k as f64 / 64.0)).abs() > tol::LINEAR) {
+        return unsupported("the slab of an extrusion of a curve off the plane square to it");
+    }
+    let fr = Frame::from_axis(base + up * lo, up)?;
+    let flat = |v: Vec3| {
+        let l = fr.dir_to_local(v);
+        Vec2::new(l.x, l.y)
+    };
+    // The surface's normal is q′ × up, the right side of the curve's direction in the frame.
+    let side = if face.reversed { 1.0 } else { -1.0 } * by.signum();
+    let d = by.abs();
+    let parallel = |u: f64| {
+        let (p, dp, ddp) = curve.d2(u);
+        let l = fr.to_local(p);
+        let (dp, ddp) = (flat(dp), flat(ddp));
+        let n = dp.perp() * (side / dp.norm());
+        (Vec2::new(l.x, l.y) + n * d, n.dot(ddp) / dp.dot(dp))
+    };
+    if (0..=1024).any(|k| d * parallel(ua + (ub - ua) * k as f64 / 1024.0).1 >= 1.0 - 1e-6) {
+        return unsupported("the slab of an extrusion past its curve's radius of curvature");
+    }
+    let whole = (ua - u0).abs() <= 1e-12 * (u1 - u0) && (ub - u1).abs() <= 1e-12 * (u1 - u0);
+    let point_at = |p: Point3| {
+        let l = fr.to_local(p);
+        Vec2::new(l.x, l.y)
+    };
+    let stretch = match curve {
+        Curve::BSpline(b) if whole => Segment::Spline {
+            curve: b.transformed(&fr.to_transform().inverse()),
+            reversed: false,
+        },
+        // One rational Bézier span, its knots only at its two ends.
+        Curve::Nurbs(n) if whole && n.knots().len() == 2 * (n.degree() + 1) => Segment::Bezier {
+            ctrl: n.control_points().iter().map(|&p| point_at(p)).collect(),
+            weights: n
+                .weights()
+                .map_or_else(|| vec![1.0; n.control_points().len()], <[f64]>::to_vec),
+        },
+        Curve::BSpline(_) | Curve::Nurbs(_) => {
+            return unsupported("the slab of an extrusion face on part of a spline");
+        }
+        _ => segment_on(&fr, curve, (ua, ub))?,
+    };
+    let at = |u: f64| {
+        let q = parallel(u).0;
+        Point3::new(q.x, q.y, 0.0)
+    };
+    let fit = super::tweak::fit_offset_curve(&at, (ua, ub), None, &curve.breakpoints(ua, ub))?;
+    let point = |u: f64| point_at(curve.eval(u));
+    let line = |a: Vec2, b: Vec2| NamedSegment::new(Segment::Line { a, b }, "slab");
+    let segments = vec![
+        NamedSegment::new(stretch, "slab"),
+        line(point(ub), parallel(ub).0),
+        NamedSegment::new(
+            Segment::Spline {
+                curve: fit,
+                reversed: true,
+            },
+            "slab",
+        ),
+        line(parallel(ua).0, point(ua)),
+    ];
+    extrude(
+        &Profile {
+            loops: vec![ProfileLoop { segments }],
+        },
+        &fr,
+        hi - lo,
+        feature,
+    )
+}
+
 /// The loop of the whole closed `curve` drawn in `fr`'s xy plane, in two halves where it is no
 /// closed profile segment on its own.
 fn whole_loop(fr: &Frame, curve: &Curve, u0: f64, period: f64) -> Result<ProfileLoop> {
@@ -318,8 +445,27 @@ fn turned_slab(s: &Brep, f: FaceId, by: f64, feature: &str) -> Result<Brep> {
         let l = sf.to_local(p);
         Vec2::new(l.x.hypot(l.y), l.z)
     };
-    // The face must be bounded by parallels about its axis, its seam and its poles alone: it turns
-    // a whole turn, between the parallels' places on the meridian.
+    // The face must be bounded by parallels about its axis, its seam and its poles, and at most two
+    // meridians: it turns a whole turn, or from one meridian to the other, between the parallels'
+    // places on the meridian.
+    let angle_of = |p: Point3| {
+        let l = sf.to_local(p);
+        l.y.atan2(l.x)
+    };
+    let meridian_at = |c: &Curve, (t0, t1): (f64, f64)| {
+        let ps: Vec<Point3> = (0..=4)
+            .map(|k| c.eval(t0 + (t1 - t0) * k as f64 / 4.0))
+            .collect();
+        let off = ps
+            .iter()
+            .copied()
+            .find(|&p| half_plane(p).x > tol::LINEAR)?;
+        let n = sf.z.cross(off - sf.origin).unit()?;
+        ps.iter()
+            .all(|&p| (p - sf.origin).dot(n).abs() <= tol::LINEAR)
+            .then(|| angle_of(off))
+    };
+    let mut meridians: Vec<f64> = Vec::new();
     let mut uses: HashMap<EdgeId, usize> = HashMap::new();
     for &lp in &face.loops {
         for &c in &s.lp(lp).coedges {
@@ -343,6 +489,13 @@ fn turned_slab(s: &Brep, f: FaceId, by: f64, feature: &str) -> Result<Brep> {
             }
             // A seam runs along the meridian, its ends on the parallels.
             Some(_) if n == 2 => continue,
+            Some(c) if let Some(a) = meridian_at(c, x.range) => {
+                let apart = |b: &f64| (a - b + PI).rem_euclid(TAU) - PI;
+                if !meridians.iter().any(|b| apart(b).abs() <= tol::ANGULAR) {
+                    meridians.push(a);
+                }
+                continue;
+            }
             Some(_) => {
                 return unsupported(
                     "the slab of a face of revolution bounded by other than its parallels",
@@ -458,15 +611,62 @@ fn turned_slab(s: &Brep, f: FaceId, by: f64, feature: &str) -> Result<Brep> {
             }
         }
     }
-    let plane = Frame::new(sf.origin, -sf.y, sf.x)?;
+    // A part of a turn runs from the meridian it leaves the interior point's way round.
+    let (from, turn) = match meridians[..] {
+        [] => (0.0, TAU),
+        [a, b] => {
+            let mid = angle_of(surface.eval(uv.x, uv.y));
+            let (a, b) = if (mid - a).rem_euclid(TAU) < (b - a).rem_euclid(TAU) {
+                (a, b)
+            } else {
+                (b, a)
+            };
+            if pieces.iter().any(crosses_axis) {
+                return unsupported("the slab of part of a turn carried past its axis");
+            }
+            (a, (b - a).rem_euclid(TAU))
+        }
+        _ => {
+            return unsupported(
+                "the slab of a face of revolution bounded by other than two meridians",
+            );
+        }
+    };
+    let radial = sf.x * from.cos() + sf.y * from.sin();
+    let plane = Frame::new(sf.origin, -sf.z.cross(radial), radial)?;
     let mut parts = Vec::new();
     for piece in pieces {
         for profile in clipped(&piece)? {
-            parts.push(revolve(&profile, &plane, sf.origin, sf.z, TAU, feature)?);
+            parts.push(revolve(&profile, &plane, sf.origin, sf.z, turn, feature)?);
         }
     }
     let refs: Vec<&Brep> = parts.iter().collect();
     boolean::union_all(&refs)
+}
+
+/// Whether `region` reaches past the axis, `ρ < 0`: the points a turn of less than a whole one
+/// carries there lie on the far side, outside the turn.
+fn crosses_axis(region: &Region) -> bool {
+    region
+        .loops
+        .iter()
+        .flat_map(|l| &l.segs)
+        .any(|s| match s.geom {
+            Geom::Line { a, b } => a.x.min(b.x) < -tol::LINEAR,
+            Geom::Arc { c, r, a0, sweep } => {
+                let (lo, span) = if sweep >= 0.0 {
+                    (a0, sweep)
+                } else {
+                    (a0 + sweep, -sweep)
+                };
+                let left = if (PI - lo).rem_euclid(TAU) <= span {
+                    c.x - r
+                } else {
+                    (c.x + r * a0.cos()).min(c.x + r * (a0 + sweep).cos())
+                };
+                left < -tol::LINEAR
+            }
+        })
 }
 
 /// The profiles of `region` where `ρ ≥ 0`, the side of the axis it turns about.

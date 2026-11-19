@@ -1124,14 +1124,19 @@ where the convex edges only run on into each other tangentially needs no ball. E
 - a cylinder's, cone's, sphere's or torus's face, bounded by parallels about its axis, sweeps a
   strip or an annular sector in the meridian half plane, cut into pieces of at most a half turn and
   clipped at the axis, and turned a whole turn. A point the sweep carries past the axis lies nearer
-  the same face on the other side of it, so the clip loses nothing;
+  the same face on the other side of it, so the clip loses nothing. A face bounded by two meridians
+  as well is turned from one to the other, the way round its inside lies; there a point carried past
+  the axis would lie outside the turn, so such a sweep is refused;
 - an extrusion face round a whole closed plane curve, square to its plane, sweeps the region
   between the curve and its parallel at `d`, extruded. Where `d` passes the curve's radius of
   curvature the parallel loops back in a swallowtail; it is cut where it crosses itself, and the
   pieces whose points lie nearer than `d` to the curve are dropped (Farouki and Neff 1990)
   ([`parallel.rs`](../src/edit/parallel.rs)). A shrink past an ellipse's curvature, built as the
   solid less its complement grown, keeps the parallel's arcs between their crossings on the long
-  axis, which meet there in a sharp edge;
+  axis, which meet there in a sharp edge. A face on a stretch of an open plane curve, bounded by two
+  copies of the stretch and the lines its ends sweep, sweeps the region between the stretch, its
+  parallel and the normals at its ends; one that reaches the curve's radius of curvature is
+  refused;
 - a line edge's tube is a cylinder, and a circle's the disk of radius `d` turned along it, clipped
   at its axis where `d` passes the circle's radius;
 - a corner's ball is a sphere.
@@ -1178,6 +1183,43 @@ moved out added and those of the faces moved in taken away, where that is the mo
 face beside one that stays meets it square, so the slab's side lies on the other face, and two
 faces moved by one distance meet where the slabs leave a sharp corner (moved in at a convex edge,
 out at a concave one) or tangentially.
+
+## Sheets
+
+A sheet is faces with no solid behind them: one or more shells, each in no solid
+([`sheet`](../src/sheet.rs)). `sheet::from_faces` copies faces of a solid, each keeping its surface,
+its outward normal and its names; faces that share an edge in the solid share it in the sheet, and
+an edge only one of them uses is on the sheet's boundary. Each piece of faces joined edge to edge is
+one shell. A sheet's front is the side its faces' normals point to; `sheet::flipped` turns it over,
+reversing each face and each loop.
+
+`check::check_sheet` holds a sheet to the rules of [Validity](#validity) with two changes: every
+non-degenerate edge is used once, on the boundary, or twice, by coedges that run opposite ways in
+faces of one shell, never more; and every shell is in no solid. The volume, inside-out and nesting
+tests have no solid to test.
+
+`sheet::thicken(sheet, front, back, corners, feature)` builds the solid the sheet sweeps moving
+from `back` behind it to `front` in front of it along its normals. Each side is built alone, and
+two sides are united along the sheet.
+
+- **Rounded.** One side thickened by `d` is the points within `d` of the sheet on that side, the
+  union of a piece for each face, crease and corner (Rossignac and Requicha 1986)
+  ([`sheet/near.rs`](../src/sheet/near.rs)): each face's slab ([Growing a solid](#growing-a-solid));
+  at each crease the side turns convex at, the sector of the tube about the crease between its two
+  faces' normals (a straight crease's extruded, a circle's turned, each while the normals keep
+  their angle to the crease along it); and at each corner where two or more such creases meet other
+  than running on tangentially, the part of the ball about it inside the cone its faces' normals
+  span, the ball cut by each plane through two normals that has the rest on one side. Where the side
+  turns concave the slabs overlap, and two faces that meet tangentially share a slab's side. A
+  corner on the boundary or beside a crease turned the other way is refused.
+- **Sharp.** The moved faces extended until they meet, as `edit::thicken` moves a solid's faces:
+  the rounded thickening of the sheet's back by `d` is a solid whose faces beside the sheet's
+  boundary lie along the sheet's normals there, so the sheet's faces in it moved `d` out
+  ([Moving faces](#moving-faces)), less it, is the sheet thickened to its front with every crease
+  sharp.
+
+The faces on the sheet and those moved from it keep the sheet's faces' names; the walls at its
+boundary are `<feature>.side` and the rounds `<feature>.round`.
 
 ## Moving whole solids
 
@@ -1689,6 +1731,7 @@ triangle of the mesh also uses is split at its middle, so no mesh edge is used m
 | `codec`       | The binary encoding of built geometry kept on disk                        |
 | `rays`        | Where rays cross faces, touches included                                  |
 | `sew`         | Solids sewn from bounded pieces of given surfaces; Coons patches          |
+| `sheet`       | Sheets: faces in no solid, taken from a solid, turned over, thickened     |
 | `check`       | The validity checker                                                      |
 | `probe`       | Thin places in a valid solid: narrow faces, slivers and gaps, for hygiene |
 
