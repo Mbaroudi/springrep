@@ -310,6 +310,56 @@ fn an_arc_whose_circle_lies_across_the_axis_turns_into_a_lemon() {
     assert_solid(&b, PI * moment, skin / 2.0 + 2.0 * segment, lo, hi, 1e-11);
 }
 
+/// The closed uniform quadratic on the square of half-side `h` about `(cx, cy)`: four parabolic
+/// arcs, each from the middle of one side to the middle of the next.
+fn rounded_square(cx: f64, cy: f64, h: f64) -> Profile {
+    let corners = [(h, h), (-h, h), (-h, -h), (h, -h)];
+    let polygon: Vec<Vec3> = corners
+        .iter()
+        .map(|&(x, y)| Vec3::new(cx + x, cy + y, 0.0))
+        .collect();
+    let curve = springrep::geom::BSpline::periodic_uniform(2, &polygon).unwrap();
+    let side = Segment::Spline {
+        curve,
+        reversed: false,
+    };
+    Profile::outline(vec![NamedSegment::new(side, "side")])
+}
+
+/// The area of [`rounded_square`] (the square less a third of each corner's triangle the arc cuts
+/// off) and the length of its outline, four arcs h(1 + ln(1 + √2)/√2) long.
+fn rounded_square_measures(h: f64) -> (f64, f64) {
+    let area = 4.0 * h * h - 4.0 * (h * h / 2.0) / 3.0;
+    let arc = h * (1.0 + (1.0 + 2f64.sqrt()).ln() / 2f64.sqrt());
+    (area, 4.0 * arc)
+}
+
+#[test]
+fn a_periodic_quadratic_profile_extrudes_and_turns_into_closed_sides() {
+    let h = 10.0;
+    let (section, outline) = rounded_square_measures(h);
+    let b = extrude(&rounded_square(0.0, 0.0, h), &Frame::WORLD, 10.0, "prism").unwrap();
+    let (lo, hi) = ([-h, -h, 0.0], [h, h, 10.0]);
+    assert_solid(
+        &b,
+        10.0 * section,
+        2.0 * section + 10.0 * outline,
+        lo,
+        hi,
+        1e-9,
+    );
+    assert_eq!(b.face_count(), 3);
+    // The section of half-side 3 about (10, 0), turned whole: Pappus on both.
+    let h = 3.0;
+    let (section, outline) = rounded_square_measures(h);
+    let ring = rounded_square(10.0, 0.0, h);
+    let b = revolve(&ring, &xz_frame(), Vec3::ZERO, Vec3::Z, 2.0 * PI, "ring").unwrap();
+    let (lo, hi) = ([-13.0, -13.0, -h], [13.0, 13.0, h]);
+    let path = 2.0 * PI * 10.0;
+    assert_solid(&b, path * section, path * outline, lo, hi, 1e-9);
+    assert_eq!(b.face_count(), 1);
+}
+
 #[test]
 fn turned_stack_with_a_cone() {
     let pts = [

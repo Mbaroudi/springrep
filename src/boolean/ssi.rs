@@ -816,7 +816,7 @@ fn projected_along(c: &Curve, dir: Vec3, o: Point3, n: Vec3) -> Option<Curve> {
         Curve::BSpline(s) => {
             let ctrl = s.control_points().iter().map(|&q| onto(q)).collect();
             let image = if s.is_periodic() {
-                crate::geom::BSpline::periodic_cubic(s.knots().to_vec(), ctrl).ok()?
+                crate::geom::BSpline::periodic(s.degree(), s.knots().to_vec(), ctrl).ok()?
             } else {
                 crate::geom::BSpline::new(s.degree(), s.knots().to_vec(), ctrl).ok()?
             };

@@ -103,6 +103,13 @@ other curves give extrusion or revolution surfaces. The ellipsoid primitive is t
 stretched along its frame's axes by the affine map (`edit::affine`), so its face is the exact
 rational image of the sphere's rational form; equal radii give the sphere itself.
 
+A periodic B-spline of any degree up to 3 is made from its knots and control points
+(`BSpline::periodic`, the first `p` points repeated after the rest and the knots a period apart at
+both ends) or from a control polygon alone (`BSpline::periodic_uniform`, one unit knot span to each
+point). A periodic quadratic on a square is four parabolic arcs, each from one side's middle to the
+next; as a profile segment it is a closed loop on its own, and extruded or turned it gives a side
+closed round on itself, which a seam cuts as on any periodic surface.
+
 Lofts ([`loft/`](../src/loft/mod.rs)) match sections edge to edge when every section has as many,
 otherwise split at the polar angles of every section's vertices. Edge to edge, each section's loop
 starts where its vertices, taken about its centre, best fit the last section's, read either along
