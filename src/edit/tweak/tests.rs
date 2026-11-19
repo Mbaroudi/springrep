@@ -168,6 +168,38 @@ fn a_spline_sphere_octant_offset_is_the_octant_of_the_grown_sphere() {
     assert!(worst <= 2.0 * OFFSET_FIT, "{worst:e}");
 }
 
+// A quarter of the cylinder of radius 5 about the z axis, 8 tall, as a rational spline whose
+// lines along v are straight, offset 1: the offset is the quarter of the cylinder of radius 6, its
+// lines along v still straight, so the first steps across v already hold it and only u is refined.
+#[test]
+fn a_spline_quarter_cylinder_offset_refines_only_across_its_arc() {
+    use std::f64::consts::FRAC_1_SQRT_2 as H;
+    let arc = [(5., 0.), (5., 5.), (0., 5.)];
+    let ctrl = arc
+        .iter()
+        .flat_map(|&(x, y)| [Vec3::new(x, y, 0.), Vec3::new(x, y, 8.)])
+        .collect();
+    let knots = (vec![0., 0., 0., 1., 1., 1.], vec![0., 0., 1., 1.]);
+    let weights = Some(vec![1., 1., H, H, 1., 1.]);
+    let n = crate::geom::NurbsSurface::new((2, 1), knots, (3, 2), ctrl, weights).unwrap();
+    let s = crate::geom::Surface::Nurbs(Box::new(n));
+    let off = offset_fitted(&s, 1.0, ((0., 1.), (0., 1.))).unwrap();
+    let crate::geom::Surface::Nurbs(n) = &off else {
+        panic!("the offset is a spline")
+    };
+    let (u_spans, v_spans) = n.span_counts();
+    assert_eq!(v_spans, 8, "{u_spans} by {v_spans}");
+    assert!(u_spans > 8);
+    let mut worst = 0.0f64;
+    for i in 0..=37 {
+        for j in 0..=37 {
+            let p = n.eval(i as f64 / 37.0, j as f64 / 37.0);
+            worst = worst.max((p.x.hypot(p.y) - 6.0).abs());
+        }
+    }
+    assert!(worst <= 2.0 * OFFSET_FIT, "{worst:e}");
+}
+
 // The ball of radius 5 as one biquadratic rational spline face, closed on its seam and pinched at
 // its poles, offset 2: its pcurves span the whole period and both poles, so the fit covers the
 // whole face, and the fit cut at the circles' double knots holds the ball of radius 7.

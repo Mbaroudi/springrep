@@ -612,13 +612,19 @@ fn offset_fitted(s: &Surface, d: f64, (u, v): ((f64, f64), (f64, f64))) -> Resul
                 cuts(u, s.u_breakpoints(u.0, u.1)),
                 cuts(v, s.v_breakpoints(v.0, v.1)),
             );
-            let mut per = 8;
-            while (ucuts.len() - 1).max(vcuts.len() - 1) * per <= 512 {
+            // Each column of blocks has its own steps across u and each row its own across v, so
+            // the rows of a column, and the columns of a row, still share their nodes along each
+            // join. A block off the tolerance halves the steps of its column where the fit strays
+            // between its u nodes, and of its row where it strays between its v nodes.
+            let (mut uper, mut vper) =
+                (vec![8usize; ucuts.len() - 1], vec![8usize; vcuts.len() - 1]);
+            while uper.iter().sum::<usize>() <= 512 && vper.iter().sum::<usize>() <= 512 {
                 // Even steps, each block's end steps halved: a not-a-knot interpolant's error is
                 // largest there, and at a block's corner both directions' ends meet.
-                let nodes = |c: &[f64]| -> Vec<Vec<f64>> {
+                let nodes = |c: &[f64], per: &[usize]| -> Vec<Vec<f64>> {
                     c.windows(2)
-                        .map(|w| {
+                        .zip(per)
+                        .map(|(w, &per)| {
                             let h = (w[1] - w[0]) / per as f64;
                             let mut n: Vec<f64> = (0..=per).map(|k| w[0] + h * k as f64).collect();
                             n.insert(1, w[0] + 0.5 * h);
@@ -627,28 +633,39 @@ fn offset_fitted(s: &Surface, d: f64, (u, v): ((f64, f64), (f64, f64))) -> Resul
                         })
                         .collect()
                 };
-                let (ubl, vbl) = (nodes(&ucuts), nodes(&vcuts));
+                let (ubl, vbl) = (nodes(&ucuts, &uper), nodes(&vcuts, &vper));
                 let fit = fit_blocks(&at, &ubl, &vbl)?;
-                let mut worst = 0.0f64;
-                for us in &ubl {
-                    for vs in &vbl {
+                let miss = |a: f64, b: f64| fit.eval(a, b).dist(at(a, b));
+                let (mut finer_u, mut finer_v) = (vec![false; uper.len()], vec![false; vper.len()]);
+                for (i, us) in ubl.iter().enumerate() {
+                    for (j, vs) in vbl.iter().enumerate() {
                         for w in us.windows(2) {
                             for z in vs.windows(2) {
-                                for (a, b) in [
-                                    (0.5 * (w[0] + w[1]), 0.5 * (z[0] + z[1])),
-                                    (0.5 * (w[0] + w[1]), z[0]),
-                                    (w[0], 0.5 * (z[0] + z[1])),
-                                ] {
-                                    worst = worst.max(fit.eval(a, b).dist(at(a, b)));
-                                }
+                                let (a, b) = (0.5 * (w[0] + w[1]), 0.5 * (z[0] + z[1]));
+                                let (across_u, across_v) = (miss(a, z[0]), miss(w[0], b));
+                                // Off only in the middle: the direction that strays more.
+                                let middle =
+                                    across_u.max(across_v) <= OFFSET_FIT && miss(a, b) > OFFSET_FIT;
+                                finer_u[i] |=
+                                    across_u > OFFSET_FIT || middle && across_u >= across_v;
+                                finer_v[j] |=
+                                    across_v > OFFSET_FIT || middle && across_v > across_u;
                             }
                         }
                     }
                 }
-                if worst <= OFFSET_FIT {
+                if !finer_u.contains(&true) && !finer_v.contains(&true) {
                     return Ok(Surface::Nurbs(Box::new(fit)));
                 }
-                per *= 2;
+                for (per, finer) in uper
+                    .iter_mut()
+                    .zip(finer_u)
+                    .chain(vper.iter_mut().zip(finer_v))
+                {
+                    if finer {
+                        *per *= 2;
+                    }
+                }
             }
             unsupported("offsetting a face whose offset no spline holds to the tolerance")
         }
