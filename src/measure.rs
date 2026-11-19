@@ -515,7 +515,7 @@ fn integrate_pieces<const K: usize>(
             Some(r) => r,
             None => {
                 let (whole, _) = gauss_k(f, w[0], w[1], order);
-                adapt_k(f, (w[0], w[1]), whole, tol, order, 0)
+                adapt_k(f, (w[0], w[1]), whole, tol, order, 0, f64::INFINITY)
             }
         };
         for i in 0..K {
@@ -528,6 +528,16 @@ fn integrate_pieces<const K: usize>(
 /// How many rounding errors of a rule's own sum two rules may differ by and still agree: halving
 /// cannot settle a difference that small, since each half's sum is rounded as coarsely.
 const ROUNDING: f64 = 64.0 * f64::EPSILON;
+
+/// The share of its last miss a halving must cut an adaptive rule's miss to, below which the miss
+/// is the rule's error and above which it is noise in the integrand.
+const STALL: f64 = 0.75;
+
+/// The largest share of the size of an integrand's values that its noise is taken to reach. A face
+/// integral's boundary integrand is itself an inner integral, by a fixed rule on each knot span
+/// the inner parameter crosses, so it jumps by that rule's error, near 1e-8 of it on a fitted
+/// sheet's `|su × sv|`, each time the boundary crosses a knot.
+const NOISE: f64 = 1e-6;
 
 /// `∫ f` over `[a, b]` by a Kronrod rule where the Gauss rule inside it agrees to `tol`: the Gauss
 /// rule is then that accurate itself, and the Kronrod rule more so.
@@ -578,6 +588,14 @@ fn gauss_k<const K: usize>(
     (s.map(|x| x * h), size.map(|x| x * h.abs()))
 }
 
+/// `∫ f` over `[a, b]`, halved until the rule over the halves agrees with `whole`, the rule over
+/// the whole, to `tol`. `last` is how many times its tolerance the halves of the piece this one was
+/// cut from missed by. The tolerance halves with the piece, so where the rules differ by noise in
+/// `f` (small jumps where an inner rule changes) and not by the rule's error, which shrinks by
+/// orders with each halving, they miss by about as many times at every depth: once a halving no
+/// longer cuts the miss to below `STALL` of the last, and the miss is within `NOISE` of the size
+/// of `f` there, the halves are as near as `f` allows and are taken (the round-off test of
+/// Piessens et al. 1983). Across a kink the miss halves each time.
 fn adapt_k<const K: usize>(
     f: &dyn Fn(f64) -> [f64; K],
     (a, b): (f64, f64),
@@ -585,6 +603,7 @@ fn adapt_k<const K: usize>(
     tol: [f64; K],
     order: usize,
     depth: u32,
+    last: f64,
 ) -> [f64; K] {
     let m = 0.5 * (a + b);
     let ((l, ls), (r, rs)) = (gauss_k(f, a, m, order), gauss_k(f, m, b, order));
@@ -592,16 +611,20 @@ fn adapt_k<const K: usize>(
     for i in 0..K {
         both[i] = l[i] + r[i];
     }
-    let ok = (0..K).all(|i| {
-        let floor = (1e-14 * both[i].abs()).max(ROUNDING * (ls[i] + rs[i]));
-        (both[i] - whole[i]).abs() <= tol[i].max(floor)
-    });
-    if ok || depth >= 20 {
+    let miss = (0..K)
+        .map(|i| {
+            let floor = (1e-14 * both[i].abs()).max(ROUNDING * (ls[i] + rs[i]));
+            (both[i] - whole[i]).abs() / tol[i].max(floor)
+        })
+        .fold(0.0, f64::max);
+    // A miss larger than `NOISE` of the size of `f` is the rule's error, however slowly it shrinks.
+    let small = (0..K).all(|i| (both[i] - whole[i]).abs() <= NOISE * (ls[i] + rs[i]));
+    if miss <= 1.0 || depth >= 20 || (small && miss >= STALL * last) {
         return both;
     }
     let half = tol.map(|t| t * 0.5);
-    let x = adapt_k(f, (a, m), l, half, order, depth + 1);
-    let y = adapt_k(f, (m, b), r, half, order, depth + 1);
+    let x = adapt_k(f, (a, m), l, half, order, depth + 1, miss);
+    let y = adapt_k(f, (m, b), r, half, order, depth + 1, miss);
     let mut out = [0.0; K];
     for i in 0..K {
         out[i] = x[i] + y[i];
@@ -1947,6 +1970,24 @@ mod tests {
         profile::{NamedSegment, Profile, ProfileLoop, Segment},
         sweep::extrude,
     };
+
+    // x² + 1e-9·sin(1e7·x) on [0, 1]: no rule settles the ripple until its pieces are shorter
+    // than its wavelength, 23 halvings down, so to a tolerance of 1e-14 its rules differ by about
+    // as much at every depth. The integral is 1/3 + 1e-16·(1 − cos 1e7), and it is found to within
+    // the ripple's own size after a few halvings, not the millions to depth 20.
+    #[test]
+    fn an_integrand_noisier_than_its_tolerance_is_integrated_to_its_noise_in_few_steps() {
+        let calls = std::cell::Cell::new(0usize);
+        let f = |x: f64| {
+            calls.set(calls.get() + 1);
+            [x * x, x * x + 1e-9 * (1e7 * x).sin()]
+        };
+        let got = integrate_pieces(&f, &[0.0, 1.0], [1e-14, 1e-14], EXACT);
+        let want = 1.0 / 3.0 + 1e-16 * (1.0 - 1e7f64.cos());
+        assert!((got[0] - 1.0 / 3.0).abs() <= 1e-15, "{}", got[0]);
+        assert!((got[1] - want).abs() <= 1e-9, "{}", got[1]);
+        assert!(calls.get() <= 10_000, "{} calls", calls.get());
+    }
 
     #[test]
     fn a_face_whose_edges_run_through_a_cusp_of_its_parameter_lines_has_its_closed_form_area() {

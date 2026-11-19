@@ -1682,7 +1682,13 @@ solid never pinches.
 parameter domain becomes a boundary integral by Green's theorem; the inner integral runs along a
 parameter in which the integrand is a low-order polynomial or trigonometric polynomial (so a fixed
 Gauss rule is exact to rounding; on a B-spline surface the held parameter's basis is summed into one
-iso-line per boundary point), and the boundary integral is adaptive. Volume is `⅓∮ (p − c)·n dA`
+iso-line per boundary point), and the boundary integral is adaptive. Its tolerance halves with each
+halving of a piece, so where the two rules differ by noise in the integrand rather than by their
+error (the inner rule's own error, near 1e-8 of `|su × sv|` on a fitted sheet, jumps each time the
+boundary point crosses a knot), they miss it by about as many times at every depth; once a halving
+no longer cuts the miss to three quarters of the last and the miss is within a millionth of the
+integrand's size, the halves are taken (the round-off test of Piessens et al. 1983), where halving
+to the depth limit took minutes. Volume is `⅓∮ (p − c)·n dA`
 over the faces. Area and volume agree with closed forms to about 1e-15 relative on analytic solids.
 The same integral carries the first and second moments, `¼∬ xᵢ(x·n)` and `⅕∬ xᵢxⱼ(x·n) dA`, for the
 centre and the inertia tensor about it, each settled to a tolerance in the size of the loose box
@@ -1876,6 +1882,8 @@ The papers this document and the source cite by author and year.
 - **Nocedal and Wright 2006.** J. Nocedal and S. J. Wright, _Numerical Optimization_, 2nd ed.,
   Springer, 2006.
 - **Piegl and Tiller 1997.** L. Piegl and W. Tiller, _The NURBS Book_, 2nd ed., Springer, 1997.
+- **Piessens et al. 1983.** R. Piessens, E. de Doncker-Kapenga, C. W. Überhuber and D. K. Kahaner,
+  _QUADPACK: A Subroutine Package for Automatic Integration_, Springer, 1983.
 - **Rossignac and Requicha 1984.** J. R. Rossignac and A. A. G. Requicha, "Constant-radius blending
   in solid modelling", _Computers in Mechanical Engineering_ 3(1), 1984, pp. 65–73.
 - **Rossignac and Requicha 1986.** J. R. Rossignac and A. A. G. Requicha, "Offsetting operations
