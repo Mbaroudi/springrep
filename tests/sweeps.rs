@@ -271,6 +271,45 @@ fn full_revolve_of_an_off_axis_circle_is_a_torus() {
     assert_solid(&b, v, a, [-12.0, -12.0, -2.0], [12.0, 12.0, 2.0], 1e-11);
 }
 
+/// The lemon: the segment of the disk of radius `r` about (−d, 0) cut off by the axis x = 0, its
+/// arc's circle across the axis from the arc, turned through `angle`.
+fn lemon(r: f64, d: f64, angle: f64) -> Brep {
+    let reach = (d / r).acos();
+    let top = (r * r - d * d).sqrt();
+    let p = Profile::outline(vec![
+        NamedSegment::arc(Vec2::new(-d, 0.0), r, -reach, 2.0 * reach, "skin"),
+        NamedSegment::line(Vec2::new(0.0, top), Vec2::new(0.0, -top), "axis"),
+    ]);
+    revolve(&p, &xz_frame(), Vec3::ZERO, Vec3::Z, angle, "lemon").unwrap()
+}
+
+#[test]
+fn an_arc_whose_circle_lies_across_the_axis_turns_into_a_lemon() {
+    let (r, d): (f64, f64) = (50.0, 30.0);
+    let theta = (d / r).acos();
+    let top = (r * r - d * d).sqrt();
+    // The segment's area, and its first moment about its chord: 2π times that is the volume.
+    let segment = r * r * theta - d * top;
+    let moment = 2.0 / 3.0 * top.powi(3) - d * segment;
+    let skin = 4.0 * PI * r * (r * theta.sin() - d * theta);
+    let b = lemon(r, d, 2.0 * PI);
+    assert_eq!(b.face_count(), 1);
+    let w = r - d;
+    assert_solid(
+        &b,
+        2.0 * PI * moment,
+        skin,
+        [-w, -w, -top],
+        [w, w, top],
+        1e-11,
+    );
+    // half a turn has the segment as its two flat ends
+    let b = lemon(r, d, PI);
+    assert_eq!(b.face_count(), 3);
+    let (lo, hi) = ([-w, 0.0, -top], [w, w, top]);
+    assert_solid(&b, PI * moment, skin / 2.0 + 2.0 * segment, lo, hi, 1e-11);
+}
+
 #[test]
 fn turned_stack_with_a_cone() {
     let pts = [

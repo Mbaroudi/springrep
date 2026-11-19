@@ -93,7 +93,13 @@ searches the patches that poke out of it.
 
 Sweeps choose the analytic surface whenever one exists: an extruded line is a plane and an extruded
 circle a cylinder; a revolved line is a cylinder, plane or cone, and a revolved circle a sphere
-(centre on the axis) or torus. Only other curves give extrusion or revolution surfaces.
+(centre on the axis) or torus. An arc whose circle's centre lies across the axis from it turns
+into the inner sheet of a spindle torus, where the torus's closed-form projection, which takes the
+half-plane the point lies in, finds the outer sheet; it is the surface of revolution of the arc's
+circle instead, which projects onto the arc. The torus primitive takes any tube: one as wide as
+its circle is the horn torus, its circle turned whole and pinched at the centre; a wider one is the
+spindle torus counted once, its outer arc turned between the two points it meets the axis at. Only
+other curves give extrusion or revolution surfaces.
 
 Lofts ([`loft/`](../src/loft/mod.rs)) match sections edge to edge when every section has as many,
 otherwise split at the polar angles of every section's vertices. Edge to edge, each section's loop

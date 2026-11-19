@@ -74,6 +74,35 @@ fn a_torus_rings_its_frames_z_axis() {
 }
 
 #[test]
+fn a_horn_torus_pinches_to_a_point_at_its_frames_origin() {
+    let f = tilted();
+    let b = torus(&f, 1.5, 1.5, "tor").unwrap();
+    // Pappus: the disk's area and perimeter times the path of its centre, 2π·1.5
+    assert_solid(&b, PI * 2.25 * 3.0 * PI, 3.0 * PI * 3.0 * PI);
+    assert_at(local_centroid(&b, &f), [0.0; 3]);
+    assert_eq!(b.face_count(), 1);
+}
+
+#[test]
+fn a_spindle_torus_is_its_tubes_outer_arc_turned() {
+    let f = tilted();
+    let (big, small) = (1.5, 2.5);
+    let b = torus(&f, big, small, "tor").unwrap();
+    // The axis cuts a segment off the disk, its chord subtending 2θ at the tube's centre,
+    // cos θ = R/r. The volume is 2π times the first moment about the axis of the rest of the disk,
+    // and the area is the outer arc turned, 4πr(Rφ + r sin φ), φ = π − θ.
+    let theta = (big / small).acos();
+    let chord = (small * small - big * big).sqrt();
+    let cut = small * small * theta - big * chord;
+    let moment = PI * small * small * big - big * cut + 2.0 / 3.0 * chord.powi(3);
+    let phi = PI - theta;
+    let area = 4.0 * PI * small * (big * phi + small * phi.sin());
+    assert_solid(&b, 2.0 * PI * moment, area);
+    assert_at(local_centroid(&b, &f), [0.0; 3]);
+    assert_eq!(b.face_count(), 1);
+}
+
+#[test]
 fn a_cone_is_a_frustum_or_comes_to_an_apex_at_either_end() {
     let f = tilted();
     let frustum = |r0: f64, r1: f64, h: f64| {
@@ -103,7 +132,6 @@ fn a_size_at_or_below_zero_is_invalid_input() {
     assert!(refused(sphere(&f, 0.0, "sph")));
     assert!(refused(cone(&f, 0.0, 0.0, 3.0, "con")));
     assert!(refused(cone(&f, 1.0, -0.5, 3.0, "con")));
-    // A tube as wide as its ring crosses the axis.
-    assert!(refused(torus(&f, 1.0, 1.0, "tor")));
-    assert!(refused(torus(&f, 1.0, 1.5, "tor")));
+    assert!(refused(torus(&f, 0.0, 1.0, "tor")));
+    assert!(refused(torus(&f, 1.0, 0.0, "tor")));
 }

@@ -12,6 +12,7 @@ use crate::error::invalid;
 use crate::math::{Frame, Vec2, Vec3};
 use crate::profile::{NamedSegment, Profile, ProfileLoop, Segment};
 use crate::sweep::{extrude, revolve};
+use crate::tol;
 use crate::topo::Brep;
 
 fn named(segment: Segment, name: &str) -> NamedSegment {
@@ -80,20 +81,45 @@ pub fn sphere(frame: &Frame, radius: f64, feature: &str) -> Result<Brep> {
     turned(&half, frame, feature)
 }
 
-/// The ring about the frame's z axis, its tube's centre circle `major` from the axis and the tube
-/// of radius `minor`, which must be less; its one face is `tube`.
+/// The solid torus about the frame's z axis, its tube's centre circle `major` from the axis and the
+/// tube of radius `minor`: every point within `minor` of that circle. Its one face is `tube`. A
+/// tube as wide as its circle (a horn torus) touches the axis at the frame's origin, where the face
+/// pinches to a point; a wider one (a spindle torus) crosses the axis, and the solid is bounded by
+/// the tube's outer arc alone, turned, which meets the axis in a dimple above and below.
 pub fn torus(frame: &Frame, major: f64, minor: f64, feature: &str) -> Result<Brep> {
-    if minor <= 0.0 || major <= minor {
-        return invalid("a torus's tube must be positive and clear of its axis");
+    if minor <= 0.0 || major <= 0.0 {
+        return invalid("a torus's centre circle and tube must be positive");
     }
-    let tube = one(vec![named(
-        Segment::Circle {
-            center: Vec2::new(major, 0.0),
+    let centre = Vec2::new(major, 0.0);
+    let tube = if minor < major + tol::LINEAR {
+        let minor = if minor > major - tol::LINEAR {
+            major
+        } else {
+            minor
+        };
+        one(vec![named(
+            Segment::Circle {
+                center: centre,
+                radius: minor,
+                ccw: true,
+            },
+            "tube",
+        )])
+    } else {
+        // The outer arc meets the axis at ±(π − acos(major / minor)) about the tube's centre.
+        let reach = PI - (major / minor).acos();
+        let top = Vec2::new(0.0, (minor * minor - major * major).sqrt());
+        let arc = Segment::Arc {
+            center: centre,
             radius: minor,
-            ccw: true,
-        },
-        "tube",
-    )]);
+            start: -reach,
+            sweep: 2.0 * reach,
+        };
+        one(vec![
+            named(arc, "tube"),
+            named(Segment::Line { a: top, b: -top }, "axis"),
+        ])
+    };
     turned(&tube, frame, feature)
 }
 

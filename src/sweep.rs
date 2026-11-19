@@ -411,33 +411,48 @@ fn classify(axis: &Axis, s: &PlacedSegment) -> Sweep {
             let mid = phi0 + sign * 0.5 * (s.range.0 + s.range.1);
             let phi0 = phi0 - (mid / TAU).round() * TAU;
             let frame = axis.at_height(h);
-            let surface = if rho <= tol::LINEAR {
-                Surface::Sphere(Sphere {
+            if rho <= tol::LINEAR {
+                let surface = Surface::Sphere(Sphere {
                     frame,
                     radius: c.radius,
-                })
-            } else {
-                Surface::Torus(Torus {
-                    frame,
-                    major: rho,
-                    minor: c.radius,
-                })
-            };
+                });
+                return Sweep::Curved {
+                    surface,
+                    v0: phi0,
+                    dv: sign,
+                };
+            }
+            if (c.frame.origin - axis.origin).dot(e_rho) < 0.0 {
+                // The circle's centre lies across the axis from the arc: the arc turns into the
+                // inner sheet of a spindle torus, where a torus's closed-form projection, which
+                // takes the half-plane of the point, finds the outer sheet. Its exact surface of
+                // revolution projects onto the arc itself.
+                return revolution(axis, &s.curve);
+            }
+            let surface = Surface::Torus(Torus {
+                frame,
+                major: rho,
+                minor: c.radius,
+            });
             Sweep::Curved {
                 surface,
                 v0: phi0,
                 dv: sign,
             }
         }
-        other => Sweep::Curved {
-            surface: Surface::Revolution(Box::new(Revolution {
-                curve: other.clone(),
-                origin: axis.origin,
-                axis: a,
-            })),
-            v0: 0.0,
-            dv: 1.0,
-        },
+        other => revolution(axis, other),
+    }
+}
+
+fn revolution(axis: &Axis, curve: &Curve) -> Sweep {
+    Sweep::Curved {
+        surface: Surface::Revolution(Box::new(Revolution {
+            curve: curve.clone(),
+            origin: axis.origin,
+            axis: axis.frame.z,
+        })),
+        v0: 0.0,
+        dv: 1.0,
     }
 }
 
