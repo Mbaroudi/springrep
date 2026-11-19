@@ -424,6 +424,76 @@ fn coedge_integral<const K: usize>(
         cuts.sort_by(f64::total_cmp);
     }
     cuts.push(t1);
+    let sum = match iso_line(table) {
+        Some((v_fixed, at)) => {
+            // Along a parameter line of the surface the integral runs along that parameter
+            // between the edge's two ends, and no point of the edge is projected. Beside a cusp of
+            // the line the edge's points have two feet within its tolerance, on either side of
+            // the cusp, and a projection's pick between them is noise no rule can settle.
+            let (start, end) = if coedge.reversed {
+                (table[TABLE], table[0])
+            } else {
+                (table[0], table[TABLE])
+            };
+            let (s0, s1) = if v_fixed {
+                (start.x, end.x)
+            } else {
+                (start.y, end.y)
+            };
+            let g = |s: f64| -> [f64; K] {
+                match (inner_v, v_fixed) {
+                    (true, true) => inner(s, at).map(|g| -g),
+                    (false, false) => inner(s, at),
+                    _ => [0.0; K],
+                }
+            };
+            let mut cuts = vec![s0];
+            if inner_v == v_fixed {
+                let (lo, hi) = (s0.min(s1), s0.max(s1));
+                let mut knots = if v_fixed {
+                    surface.u_breakpoints(lo, hi)
+                } else {
+                    surface.v_breakpoints(lo, hi)
+                };
+                knots.retain(|&k| k > lo && k < hi);
+                if s1 < s0 {
+                    knots.reverse();
+                }
+                cuts.extend(knots);
+            }
+            cuts.push(s1);
+            integrate_pieces(&g, &cuts, tol, rel)
+        }
+        None => integrate_pieces(&f, &cuts, tol, rel),
+    };
+    if coedge.reversed {
+        sum.map(|x| -x)
+    } else {
+        sum
+    }
+}
+
+/// Whether a projected coedge's table runs along one parameter line of its surface: `v` the same
+/// at every entry (`true`) or `u`, and that value.
+fn iso_line(table: &[Vec2]) -> Option<(bool, f64)> {
+    let first = *table.first()?;
+    let same = |x: f64, y: f64| (x - y).abs() <= 1e-12 * (1.0 + y.abs());
+    if table.iter().all(|p| same(p.y, first.y)) {
+        Some((true, first.y))
+    } else if table.iter().all(|p| same(p.x, first.x)) {
+        Some((false, first.x))
+    } else {
+        None
+    }
+}
+
+/// `∫ f` over the pieces between successive `cuts`, each value to its own tolerance in `tol`.
+fn integrate_pieces<const K: usize>(
+    f: &dyn Fn(f64) -> [f64; K],
+    cuts: &[f64],
+    tol: [f64; K],
+    rel: f64,
+) -> [f64; K] {
     let order = if rel > EXACT { 8 } else { 16 };
     let mut sum = [0.0; K];
     for w in cuts.windows(2) {
@@ -431,24 +501,20 @@ fn coedge_integral<const K: usize>(
         // third of the points the halving below takes to accept one. To a rough tolerance the
         // shorter pair settles most of them with half as many again.
         let short = (rel > EXACT)
-            .then(|| kronrod_k(&f, w[0], w[1], tol, &KRONROD_7))
+            .then(|| kronrod_k(f, w[0], w[1], tol, &KRONROD_7))
             .flatten();
-        let r = match short.or_else(|| kronrod_k(&f, w[0], w[1], tol, &KRONROD_15)) {
+        let r = match short.or_else(|| kronrod_k(f, w[0], w[1], tol, &KRONROD_15)) {
             Some(r) => r,
             None => {
-                let (whole, _) = gauss_k(&f, w[0], w[1], order);
-                adapt_k(&f, (w[0], w[1]), whole, tol, order, 0)
+                let (whole, _) = gauss_k(f, w[0], w[1], order);
+                adapt_k(f, (w[0], w[1]), whole, tol, order, 0)
             }
         };
         for i in 0..K {
             sum[i] += r[i];
         }
     }
-    if coedge.reversed {
-        sum.map(|x| -x)
-    } else {
-        sum
-    }
+    sum
 }
 
 /// How many rounding errors of a rule's own sum two rules may differ by and still agree: halving
@@ -1873,6 +1939,92 @@ mod tests {
         profile::{NamedSegment, Profile, ProfileLoop, Segment},
         sweep::extrude,
     };
+
+    #[test]
+    fn a_face_whose_edges_run_through_a_cusp_of_its_parameter_lines_has_its_closed_form_area() {
+        // S(u, v) = (v², v³, u) over [0, 1] × [−1, 1]: each line u = const is a cuspidal cubic,
+        // and the two edges along such lines pass the cusp at v = 0, where an edge point near it
+        // has a foot on either branch within the tolerance. The area is
+        // ∫∫ |v| √(4 + 9v²) dv du = 2 (13√13 − 8) / 27.
+        use crate::geom::{Curve, Line, NurbsCurve, NurbsSurface};
+        use crate::topo::{CoedgeSpec, PCurve};
+        let row = |u: f64| {
+            [
+                (1.0, -1.0),
+                (-1.0 / 3.0, 1.0),
+                (-1.0 / 3.0, -1.0),
+                (1.0, 1.0),
+            ]
+            .map(|(x, y)| Point3::new(x, y, u))
+        };
+        let cubic = vec![-1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0];
+        let net: Vec<Point3> = row(0.0).into_iter().chain(row(1.0)).collect();
+        let surface = NurbsSurface::new(
+            (1, 3),
+            (vec![0.0, 0.0, 1.0, 1.0], cubic.clone()),
+            (2, 4),
+            net,
+            None,
+        )
+        .unwrap();
+        let mut b = Brep::new();
+        let corner = |u: f64, v: f64| Point3::new(v * v, v * v * v, u);
+        let [a, c, d, e] = [(0.0, -1.0), (1.0, -1.0), (1.0, 1.0), (0.0, 1.0)]
+            .map(|(u, v)| b.add_vertex(corner(u, v)));
+        let line = |from: Point3, dir: Vec3| Curve::Line(Line { origin: from, dir });
+        let cusp = |u: f64| {
+            let c = NurbsCurve::new(3, cubic.clone(), row(u).to_vec(), None).unwrap();
+            Curve::Nurbs(Box::new(c))
+        };
+        let e0 = b.add_edge(line(corner(0.0, -1.0), Vec3::Z), (0.0, 1.0), a, c);
+        let e1 = b.add_edge(cusp(1.0), (-1.0, 1.0), c, d);
+        let e2 = b.add_edge(line(corner(1.0, 1.0), -Vec3::Z), (0.0, 1.0), d, e);
+        let e3 = b.add_edge(cusp(0.0), (-1.0, 1.0), a, e);
+        let f = b.add_face(Surface::Nurbs(Box::new(surface)), false, []);
+        let spec = |edge, reversed, pcurve| CoedgeSpec {
+            edge,
+            reversed,
+            pcurve,
+        };
+        b.add_loop(
+            f,
+            vec![
+                spec(
+                    e0,
+                    false,
+                    PCurve::Affine {
+                        origin: Vec2::new(0.0, -1.0),
+                        dir: Vec2::new(1.0, 0.0),
+                    },
+                ),
+                spec(
+                    e1,
+                    false,
+                    PCurve::Projected {
+                        seed: Vec2::new(1.0, -1.0),
+                    },
+                ),
+                spec(
+                    e2,
+                    false,
+                    PCurve::Affine {
+                        origin: Vec2::new(1.0, 1.0),
+                        dir: Vec2::new(-1.0, 0.0),
+                    },
+                ),
+                spec(
+                    e3,
+                    true,
+                    PCurve::Projected {
+                        seed: Vec2::new(0.0, 1.0),
+                    },
+                ),
+            ],
+        );
+        let (area, _) = face_integrals(&b, f, Point3::ZERO, 2.0, EXACT);
+        let want = 2.0 * (13.0 * 13f64.sqrt() - 8.0) / 27.0;
+        assert!((area - want).abs() < 1e-12, "{area} against {want}");
+    }
 
     #[test]
     fn a_face_moved_keeps_its_box_moved() {
