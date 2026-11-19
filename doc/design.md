@@ -110,6 +110,14 @@ point). A periodic quadratic on a square is four parabolic arcs, each from one s
 next; as a profile segment it is a closed loop on its own, and extruded or turned it gives a side
 closed round on itself, which a seam cuts as on any periodic surface.
 
+A path of legs (`sweep::along`) is laid out frame by frame first. A mitered corner (`Leg::Miter`)
+turns the heading on the spot like a sharp turn, but fills nothing: each straight leg beside it is
+extruded on past the corner by the profile's reach times `1 + tan(θ/2)`, θ the turn, and cut by
+the plane through the corner square to the sum of the two headings, which bisects the turn. The
+section meets that plane in the same outline from either leg, so the two cut faces coincide and
+the union removes them. A path whose last leg is a miter that brings it back to its start, heading
+and section axes as they started, is closed, and that miter cuts the first leg's start too.
+
 Lofts ([`loft/`](../src/loft/mod.rs)) match sections edge to edge when every section has as many,
 otherwise split at the polar angles of every section's vertices. Edge to edge, each section's loop
 starts where its vertices, taken about its centre, best fit the last section's, read either along

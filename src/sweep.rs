@@ -5,6 +5,7 @@
 
 mod curve;
 mod helix;
+mod miter;
 mod solid;
 
 pub use curve::along_curve;
@@ -38,6 +39,12 @@ pub enum Leg {
     /// either side run to the corner, and the part of the profile outside the turn is turned
     /// about the corner to fill it. The profile must be bounded by lines and arcs.
     Turn { angle: f64, axis: Vec3 },
+    /// A sharp corner through `angle` on the spot, right-handed about `axis`, mitered: the
+    /// straight legs either side run on past the corner and are cut by, and meet in, the plane
+    /// through it that bisects the turn. Both neighbouring legs must be straight, and the turn
+    /// less than half a turn. A path whose last leg is a miter that brings it back to its start,
+    /// heading as it started, is closed: that miter joins the last straight leg to the first.
+    Miter { angle: f64, axis: Vec3 },
 }
 
 /// A turn's axis as a unit vector, which must be square to the heading.
@@ -87,17 +94,15 @@ fn sharp_turn(
 
 /// `profile`, drawn on `frame`'s xy plane, carried along `legs` from the frame's origin, starting
 /// along its z and staying square to the path: an extrusion for each straight leg, a revolution
-/// for each bend and the fill of each sharp turn, joined into one solid.
+/// for each bend and the fill of each sharp turn, joined into one solid. A straight leg beside a
+/// miter is extruded on past the corner and cut back to the miter's plane.
 pub fn along(profile: &Profile, frame: &Frame, legs: &[Leg], feature: &str) -> Result<Brep> {
-    let mut fr = *frame;
+    let path = miter::Path::of(profile, frame, legs)?;
     let mut whole: Option<Brep> = None;
-    for leg in legs {
+    for (i, leg) in legs.iter().enumerate() {
+        let fr = path.frames[i];
         let pieces = match *leg {
-            Leg::Line { length } => {
-                let b = extrude(profile, &fr, length, feature)?;
-                fr = fr.translated(fr.z * length);
-                vec![b]
-            }
+            Leg::Line { length } => vec![path.line(profile, i, length, feature)?],
             Leg::Arc {
                 radius,
                 angle,
@@ -105,16 +110,13 @@ pub fn along(profile: &Profile, frame: &Frame, legs: &[Leg], feature: &str) -> R
             } => {
                 let n = turn_axis(axis, &fr)?;
                 let centre = fr.origin + n.cross(fr.z) * radius;
-                let b = revolve(profile, &fr, centre, n, angle, feature)?;
-                fr = fr.transformed(&Transform::rotation(centre, n, angle));
-                vec![b]
+                vec![revolve(profile, &fr, centre, n, angle, feature)?]
             }
             Leg::Turn { angle, axis } => {
                 let n = turn_axis(axis, &fr)?;
-                let filled = sharp_turn(profile, &fr, n, angle, feature)?;
-                fr = fr.transformed(&Transform::rotation(fr.origin, n, angle));
-                filled
+                sharp_turn(profile, &fr, n, angle, feature)?
             }
+            Leg::Miter { .. } => Vec::new(),
         };
         for piece in pieces {
             whole = Some(match whole {
