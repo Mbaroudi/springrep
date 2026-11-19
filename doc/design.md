@@ -653,7 +653,9 @@ number never overrides what topology or a closed form already decided (Sugihara 
    than a few millionths, but the faces' edges that cross at it do. Where the surfaces are tangent
    at a known vertex and cross there (their gap form is indefinite), two branches of the
    intersection cross at the vertex and a trace passes it only to within `√(2·tol/|λ|)`, `λ` the
-   form's larger eigenvalue: within that reach the vertex still splits the branch, and its
+   form's larger eigenvalue, where that bends the gap by at least a thousandth per mm (flatter,
+   the faces lie along each other over a patch, as a milled floor's do, and a vertex there is on
+   no branch in particular): within that reach the vertex still splits the branch, and its
    tolerance grows to cover the gap. A sheet a sweep makes from an edge leaves the face beside it
    at such a point, where the face's grazing curve meets the edge, and comes back into a concave
    face along the second branch.
