@@ -1149,6 +1149,29 @@ face beside it that closes (the sharp shell has no corner to meet there, and the
 wall of the edge round it) and every open face meets the walls at a right angle or less, so the
 walls' slabs reach it as the moved walls would.
 
+### Shrinking a solid, and round shells
+
+`edit::offset` with a negative `d` shrinks a solid: the points of it at least `|d|` from its
+outside ([`rounded.rs`](../src/edit/rounded.rs)). It moves every face in by `|d|` and rounds each
+concave edge at `|d|`, the round being the cylinder of radius `|d|` about the edge itself; the
+convex edges stay sharp. Where a face beside a concave edge closes on the way (a neck narrower than
+`2|d|`), or a cone's apex is a concave point, it builds the set: a point inside the solid within
+`|d|` of its outside has its foot inside a face, on a concave edge or at a concave corner (a convex
+edge's inward normals all lie nearer one of its faces), so the shrunk solid is the solid less the
+union of each face's slab moved in, a tube about each concave edge and a ball at each corner of
+them (Rossignac and Requicha 1986). Every piece holds only points within `|d|` of the outside, so
+a piece more than needed loses nothing. Where the shrink cuts the solid in two, the difference
+keeps every piece as a solid of its own.
+
+`edit::shell_rounded` hollows a solid as `edit::shell` does, its wall every point within the
+thickness of the faces other than the open ones. An inward wall's cavity is the solid shrunk with
+the open faces left where they are; an outward wall's outside is the solid grown that way, each
+convex edge between two moved faces rounded and each corner a ball's patch, less the solid. Where a
+wall meets an opening, the moved face runs on to the opening's surface, the rim, as in the sharp
+shell. An inward wall that cannot be followed is the solid less the union of the walls' slabs, the
+tubes about the concave edges beside a wall and the balls at their corners, where each open face
+meets the walls at a right angle or less; an outward wall that cannot be followed is refused.
+
 Faces moved by `offset_faces` that run into faces they did not meet (two holes widened until they
 merge) cannot be followed either. The moved solid is then the solid with the slabs of the faces
 moved out added and those of the faces moved in taken away, where that is the moved solid: every

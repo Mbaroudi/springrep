@@ -23,10 +23,12 @@ mod affine;
 mod delete;
 mod near;
 mod parallel;
+mod rounded;
 pub(crate) mod tweak;
 
 pub use affine::{Affine, affine};
 pub use delete::delete_faces;
+pub use rounded::shell_rounded;
 pub use tweak::{draft, move_faces, move_faces_by, offset_faces};
 
 fn named(segment: Segment, name: &str) -> NamedSegment {
@@ -116,11 +118,11 @@ fn edge_faces(s: &Brep, e: EdgeId) -> Option<(FaceId, FaceId)> {
 }
 
 /// An inward shell of `s` built as `s` less its points farther than `t` from its faces other than
-/// `open`: the union of those faces' slabs `t` in, and a tube about each concave edge, where the
-/// moved faces cannot be followed (walls that close beside a concave edge, or a bore's moved wall
-/// running into another). That is the sharp shell only where it rounds every concave edge, which
-/// it may only where a face beside the edge closes, and where each open face meets the walls at a
-/// right angle or less, so the walls' slabs reach it as the moved walls would; otherwise an error.
+/// `open` ([`rounded::near_inside`]), where the moved faces cannot be followed (walls that close
+/// beside a concave edge, or a bore's moved wall running into another). That is the sharp shell
+/// only where it rounds every concave edge, which it may only where a face beside the edge closes,
+/// and where each open face meets the walls at a right angle or less, so the walls' slabs reach it
+/// as the moved walls would; otherwise an error.
 fn hollowed(s: &Brep, open: &[FaceId], t: f64, feature: &str) -> Result<Brep> {
     let refuse = || {
         Err(Error::Unsupported(
@@ -136,8 +138,7 @@ fn hollowed(s: &Brep, open: &[FaceId], t: f64, feature: &str) -> Result<Brep> {
     let closed = tweak::offset_faces_closing(s, &by)
         .map(|(_, closed)| closed)
         .unwrap_or_default();
-    let concave = concave_edges(s)?;
-    for &e in &concave {
+    for &e in &concave_edges(s)? {
         let Some((f, g)) = edge_faces(s, e) else {
             return refuse();
         };
@@ -145,39 +146,10 @@ fn hollowed(s: &Brep, open: &[FaceId], t: f64, feature: &str) -> Result<Brep> {
             return refuse();
         }
     }
-    let outward = |f: FaceId, p: Point3| {
-        let sf = &s.face(f).surface;
-        let uv = sf.project(p);
-        let n = sf.normal(uv.x, uv.y);
-        if s.face(f).reversed { -n } else { n }
-    };
-    let convex = convex_edges(s)?;
-    for e in s.edge_ids() {
-        let Some((f, g)) = edge_faces(s, e) else {
-            continue;
-        };
-        if open.contains(&f) == open.contains(&g) {
-            continue;
-        }
-        let x = s.edge(e);
-        let Some(c) = &x.curve else { continue };
-        let p = c.eval(0.5 * (x.range.0 + x.range.1));
-        if !convex.contains(&e) || outward(f, p).dot(outward(g, p)) > tol::ANGULAR {
-            return refuse();
-        }
+    if rounded::square_openings(s, open).is_err() {
+        return refuse();
     }
-    let mut parts = Vec::new();
-    for f in s.face_ids().filter(|f| !open.contains(f)) {
-        parts.push(near::slab(s, f, -t, feature)?);
-    }
-    for &e in &concave {
-        parts.push(near::tube(s, e, t, feature)?);
-    }
-    for v in near::corners(s, &concave, |_| false) {
-        parts.push(near::ball(s.vertex(v).point, t, feature)?);
-    }
-    let refs: Vec<&Brep> = parts.iter().collect();
-    let mut cavity = boolean::difference(s, &boolean::union_all(&refs)?)?;
+    let mut cavity = rounded::near_inside(s, open, t, feature)?;
     let inner = FaceName::new(feature, FaceName::INNER);
     for f in cavity.face_ids().collect::<Vec<_>>() {
         cavity.set_face_names(f, std::iter::once(inner.clone()).collect());
@@ -191,12 +163,17 @@ fn hollowed(s: &Brep, open: &[FaceId], t: f64, feature: &str) -> Result<Brep> {
 /// cannot be built (a face beside a convex edge closes on the way, as the walls of a narrow slot,
 /// or a cone's apex is convex), the union of `s` with a slab for each face, a tube about each
 /// convex edge and a ball about each corner; an error where a piece of that is not built.
+///
+/// A negative `distance` shrinks `s`: the points of `s` at least `-distance` from its outside,
+/// each face moved in and each concave edge rounded, or where a face beside a concave edge closes
+/// on the way, `s` less a slab for each face, a tube about each concave edge and a ball about each
+/// concave corner. A solid the shrink splits keeps every piece.
 pub fn offset(s: &Brep, distance: f64, feature: &str) -> Result<Brep> {
     if distance == 0.0 {
         return Ok(s.clone());
     }
     if distance < 0.0 {
-        return Err(Error::Unsupported("an inward offset".into()));
+        return rounded::shrunk(s, -distance, feature);
     }
     moved_and_rounded(s, distance, feature).or_else(|e| grown(s, distance, feature).map_err(|_| e))
 }
