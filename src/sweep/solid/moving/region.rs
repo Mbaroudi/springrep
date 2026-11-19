@@ -146,8 +146,15 @@ fn sheet_over<'a>(
     if !(hi.x > lo.x && hi.y > lo.y) {
         return Err(Error::Numerical("a face of a sweep spans nothing".into()));
     }
+    let sites: Vec<Vec2> = plane
+        .nodes
+        .iter()
+        .zip(&plane.ids)
+        .filter(|(_, id)| id.is_some())
+        .map(|(q, _)| *q)
+        .collect();
     Ok(Sheet {
-        surface: fit::surface(map, lo, hi, ctx.size, care)?,
+        surface: fit::surface(map, lo, hi, ctx.size, care, &sites)?,
         map,
     })
 }

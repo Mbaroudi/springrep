@@ -15,13 +15,15 @@ use crate::{
 const SHEET_FIT: f64 = FIT / 10.0;
 
 /// The surface through `map` over the rectangle from `lo` to `hi`, whose points are `size` across,
-/// held to the map where `care` says it matters.
+/// held to the map where `care` says it matters, and a spline one through it exactly at each of
+/// `sites`.
 pub(super) fn surface(
     map: &dyn Fn(Vec2) -> Point3,
     lo: Vec2,
     hi: Vec2,
     size: f64,
     care: &dyn Fn(Vec2) -> bool,
+    sites: &[Vec2],
 ) -> Result<Surface> {
     let at = |i: usize, j: usize, n: usize| {
         map(Vec2::new(
@@ -61,10 +63,16 @@ pub(super) fn surface(
     let even = |a: f64, b: f64, n: usize| -> Vec<f64> {
         (0..=n).map(|i| a + (b - a) * i as f64 / n as f64).collect()
     };
+    // The grid's lines pass through the sites, so the sheet holds them exactly: a vertex where the
+    // map drops rank, at a cusp of the envelope, is then found at its own parameters, which no
+    // projection onto the sheet there can recover.
     let (mut xs, mut ys) = (
-        even(lo.x, hi.x, 16),
+        through(even(lo.x, hi.x, 16), sites.iter().map(|q| q.x)),
         even(lo.y, hi.y, if ruled { 1 } else { 4 }),
     );
+    if !ruled {
+        ys = through(ys, sites.iter().map(|q| q.y));
+    }
     for _ in 0..16 {
         let s = grid(map, &xs, &ys)?;
         let err = |u: f64, v: f64| {
@@ -107,6 +115,30 @@ pub(super) fn surface(
     Err(Error::Numerical(
         "a swept surface's fit did not reach its tolerance".into(),
     ))
+}
+
+/// The increasing `lines` with a line at each of `sites` inside them: the nearest inner line moved
+/// there where it is within a quarter of a spacing, else one more line.
+fn through(mut lines: Vec<f64>, sites: impl Iterator<Item = f64>) -> Vec<f64> {
+    let (lo, hi) = (lines[0], lines[lines.len() - 1]);
+    for x in sites {
+        if x.is_nan() || x <= lo || x >= hi || lines.contains(&x) {
+            continue;
+        }
+        let i = lines.partition_point(|&l| l < x);
+        let width = lines[i] - lines[i - 1];
+        let near = if x - lines[i - 1] < lines[i] - x {
+            i - 1
+        } else {
+            i
+        };
+        if near > 0 && near + 1 < lines.len() && (lines[near] - x).abs() <= 0.25 * width {
+            lines[near] = x;
+        } else {
+            lines.insert(i, x);
+        }
+    }
+    lines
 }
 
 /// `sites` with each interval whose middle strays more than [`SHEET_FIT`] halved, and then each
@@ -304,7 +336,7 @@ mod tests {
     fn a_sheet_with_a_steep_band_is_refined_in_the_band() {
         let map = |q: Vec2| Point3::new(q.x, q.y, ((q.y - 0.5) / 0.01).tanh() + q.x * q.x);
         let (lo, hi) = (Vec2::new(0.0, 0.0), Vec2::new(1.0, 1.0));
-        let Surface::Nurbs(s) = surface(&map, lo, hi, 2.0, &|_| true).unwrap() else {
+        let Surface::Nurbs(s) = surface(&map, lo, hi, 2.0, &|_| true, &[]).unwrap() else {
             panic!("not a spline");
         };
         let n = 97;
@@ -321,5 +353,28 @@ mod tests {
             "{}",
             s.control_points().len()
         );
+    }
+
+    // The sheet `(u + v, (u − v)², (u − v)³)` has both tangents along x where `u = v`: a cusp, past
+    // which it folds back. A cubic, its quintic interpolant is exact. The point at `(½, ½)` is
+    // found there from a start a little off, as both ends of two edges meeting at a cusp of a
+    // swept face must be: the distance falls only with the fourth power of the step there.
+    #[test]
+    fn a_point_at_a_cusp_projects_to_its_own_parameters() {
+        let map = |q: Vec2| {
+            let w = q.x - q.y;
+            Point3::new(q.x + q.y, w * w, w * w * w)
+        };
+        let lines: Vec<f64> = (0..=8).map(|i| i as f64 / 8.0).collect();
+        let s = grid(&map, &lines, &lines).unwrap();
+        let foot = Vec2::new(0.5, 0.5);
+        for hint in [
+            Vec2::new(0.503, 0.497),
+            Vec2::new(0.49, 0.51),
+            Vec2::new(0.52, 0.5),
+        ] {
+            let uv = s.project_near(map(foot), hint);
+            assert!(uv.dist(foot) <= 2e-8, "{uv:?} from {hint:?}");
+        }
     }
 }
