@@ -191,6 +191,38 @@ fn a_ball_turned_about_a_line_through_it_adds_a_piece_of_torus() {
     );
 }
 
+// The ball of radius 2 about (1, 0, 0) turned 120° about the z axis. At height z it is the disc of
+// radius s = √(4 − z²) about (1, 0), and the circle of radius ρ about the axis meets it whole for
+// ρ ≤ s − 1, else in an arc 2 acos((ρ² + 1 − s²)/(2ρ)) wide, which the turn widens by θ up to the
+// whole circle: up to ρ_c, where the arc is 2π − θ, the circle is whole. So the solid is
+// ∫∫ ρ min(arc + θ, 2π) dρ dz. Near the axis the balls at the two ends overlap between the points
+// the axis pierces both, with no edge of either crossing the other.
+#[test]
+fn a_ball_turned_far_about_a_line_through_it_closes_round_the_axis() {
+    let angle = 2.0 * PI / 3.0;
+    let ball = sphere(&Frame::WORLD.translated(Vec3::X), 2.0, "ball").unwrap();
+    let b = solid(&ball, &about_z(angle), "sw").unwrap();
+    assert!(check::check(&b).is_empty());
+    let slice = |z: f64| {
+        let s = (4.0 - z * z).sqrt();
+        let arc = |rho: f64| {
+            let c = (rho * rho + 1.0 - s * s) / (2.0 * rho);
+            2.0 * c.clamp(-1.0, 1.0).acos()
+        };
+        let c = -(angle / 2.0).cos();
+        let whole = (s - 1.0).max(0.0).max(c + (c * c - 1.0 + s * s).sqrt());
+        let mut widened = |rho: f64| rho * (arc(rho) + angle);
+        // a circle nearer the axis than 1 − s misses a disc that does not reach it
+        let from = whole.max(1.0 - s);
+        let partial = crate::numeric::integrate(&mut widened, from, s + 1.0, 1e-13);
+        PI * whole * whole + partial
+    };
+    let mut column = |a: f64| slice(2.0 * a.sin()) * 2.0 * a.cos();
+    let want = crate::numeric::integrate(&mut column, -PI / 2.0, PI / 2.0, 1e-12);
+    let got = measure::volume(&b);
+    assert!(rel(got, want) < 1e-9, "{got} {want}");
+}
+
 // The unit cube from (1, 0, 0) turned about the z axis: its shadow spans radii 1 to √5 at every
 // height, a moment of (5 − 1)/2.
 #[test]

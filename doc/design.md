@@ -302,7 +302,12 @@ plane's side, an analytic surface's distance from the box's centre, or the proje
 stretch's middle against the box's farthest corner), so an edge that only passes near a face costs a
 few distances. An edge that lies in the other face's surface is located at its quarter points; it
 can only enter the face elsewhere by crossing the face's boundary, whose edges then meet the first
-face. Two curved faces that meet only along a closed curve inside both are not found. A pair found
+face. Two faces can also cross along a curve that meets no edge of either away from vertices they
+share, as two balls turned apart about a line through both overlap between the points where it
+pierces them: where two faces share a vertex but no edge and their tangent planes there cross, a
+step along the line they cross in, either way, is brought onto both surfaces by alternating
+projections, and if it lands inside both faces, they cross. Two curved faces that meet only along a
+closed curve inside both are not found. A pair found
 apart is recorded in both faces' memos and never tested again while their geometry is unchanged. A
 boolean's result tests only pairs that take one face from each input: each input is valid, so two
 faces cut from one meet only where the faces they were cut from did, along edges and at vertices the

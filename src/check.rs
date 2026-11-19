@@ -917,6 +917,14 @@ fn crossings(b: &Brep, sides: Option<&[Option<usize>]>, each: bool) -> Vec<Cross
                     }
                 }
             }
+            if hit.is_none() {
+                hit = crossing_from_shared_vertex(
+                    b,
+                    (fa, fb),
+                    (&verts[&fa], &verts[&fb]),
+                    &mut cache,
+                );
+            }
             match hit {
                 Some(at) => out.push(Crossing { a: fa, b: fb, at }),
                 None => apart(ma, mb),
@@ -1085,6 +1093,63 @@ fn edge_meets_face(
     found
         .into_iter()
         .find(|&p| dom.on_boundary(p) || dom.exact_side(p).is_some())
+}
+
+/// Where two faces that share a vertex but no edge cross each other along a curve out of it: their
+/// surfaces cut across each other there, and a step along the line where their tangent planes
+/// meet, either way, lands inside both faces. No edge of either need meet the other's inside, as
+/// where two balls turned apart overlap between the two points where the turn's axis pierces both.
+fn crossing_from_shared_vertex(
+    b: &Brep,
+    (fa, fb): (FaceId, FaceId),
+    (va, vb): (&[VertexId], &[VertexId]),
+    cache: &mut PairCache,
+) -> Option<Point3> {
+    let (sa, sb) = (&b.face(fa).surface, &b.face(fb).surface);
+    let size = cache
+        .face_box(b, fa)
+        .diagonal()
+        .min(cache.face_box(b, fb).diagonal());
+    let mut seen: Vec<VertexId> = Vec::new();
+    for &v in va.iter().filter(|v| vb.contains(v)) {
+        if seen.contains(&v) {
+            continue;
+        }
+        seen.push(v);
+        let p = b.vertex(v).point;
+        let normal = |s: &Surface| {
+            let uv = s.project(p);
+            s.normal(uv.x, uv.y)
+        };
+        let Some(line) = normal(sa).cross(normal(sb)).unit() else {
+            continue;
+        };
+        if normal(sa).cross(normal(sb)).norm() <= tol::TANGENT {
+            continue;
+        }
+        let step = 1e-3 * size;
+        for sign in [1.0, -1.0] {
+            // A point of both surfaces a step out along the line, by alternating projections.
+            let mut q = p + line * (sign * step);
+            for _ in 0..8 {
+                let on_a = sa.project(q);
+                q = sa.eval(on_a.x, on_a.y);
+                let on_b = sb.project(q);
+                q = sb.eval(on_b.x, on_b.y);
+            }
+            if signed_distance(sa, q).abs() > tol::LINEAR || q.dist(p) < 0.5 * step {
+                continue;
+            }
+            let inside = |f: FaceId, cache: &mut PairCache| {
+                let dom = cache.domains.entry(f).or_insert_with(|| face_domain(b, f));
+                matches!(dom.locate(q), Where::Inside(_))
+            };
+            if inside(fa, cache) && inside(fb, cache) {
+                return Some(q);
+            }
+        }
+    }
+    None
 }
 
 /// Pairs of distinct vertices closer than the linear tolerance.
