@@ -1,7 +1,7 @@
 //! Surfaces through the points of a map of two parameters: a plane or an extrusion where the points
 //! lie on one, else the B-spline that interpolates them on a grid in those parameters (C. de Boor,
-//! "A Practical Guide to Splines", 1978, chapter XVII), its grid refined until it lies within
-//! [`SHEET_FIT`] of the map halfway between the grid's points.
+//! "A Practical Guide to Splines", 1978, chapter XVII), its grid refined where it strays until it
+//! lies within [`SHEET_FIT`] of the map halfway between the grid's points.
 
 use super::super::grazing::FIT;
 use crate::{
@@ -58,11 +58,15 @@ pub(super) fn surface(
         let (a, b) = (at(i, 0, k), at(i, k, k));
         (1..k).all(|j| (at(i, j, k) - a.lerp(b, j as f64 / k as f64)).norm() <= exact)
     });
-    let (mut nx, mut ny) = (16usize, if ruled { 1 } else { 4 });
-    for _ in 0..12 {
-        let s = grid(map, lo, hi, (nx, ny))?;
-        let x = |i: usize, n: usize| lo.x + (hi.x - lo.x) * i as f64 / n as f64;
-        let y = |j: usize, n: usize| lo.y + (hi.y - lo.y) * j as f64 / n as f64;
+    let even = |a: f64, b: f64, n: usize| -> Vec<f64> {
+        (0..=n).map(|i| a + (b - a) * i as f64 / n as f64).collect()
+    };
+    let (mut xs, mut ys) = (
+        even(lo.x, hi.x, 16),
+        even(lo.y, hi.y, if ruled { 1 } else { 4 }),
+    );
+    for _ in 0..16 {
+        let s = grid(map, &xs, &ys)?;
         let err = |u: f64, v: f64| {
             let q = Vec2::new(u, v);
             if care(q) {
@@ -71,34 +75,64 @@ pub(super) fn surface(
                 0.0
             }
         };
-        let ex = (0..nx)
-            .flat_map(|i| (0..=ny).map(move |j| (i, j)))
-            .map(|(i, j)| err(x(2 * i + 1, 2 * nx), y(j, ny)))
-            .fold(0.0, f64::max);
-        let ey = (0..=nx)
-            .flat_map(|i| (0..ny).map(move |j| (i, j)))
-            .map(|(i, j)| err(x(i, nx), y(2 * j + 1, 2 * ny)))
-            .fold(0.0, f64::max);
-        let exy = (0..nx)
-            .flat_map(|i| (0..ny).map(move |j| (i, j)))
-            .map(|(i, j)| err(x(2 * i + 1, 2 * nx), y(2 * j + 1, 2 * ny)))
-            .fold(0.0, f64::max);
-        if ex.max(ey).max(exy) <= SHEET_FIT {
+        let mid = |a: &[f64], i: usize| 0.5 * (a[i] + a[i + 1]);
+        // The worst stray at the middle of each interval each way, along the other way's lines;
+        // a cell's middle counts toward the way whose lines stray more there.
+        let mut bad_x: Vec<f64> = (0..xs.len() - 1)
+            .map(|i| ys.iter().map(|&v| err(mid(&xs, i), v)).fold(0.0, f64::max))
+            .collect();
+        let mut bad_y: Vec<f64> = (0..ys.len() - 1)
+            .map(|j| xs.iter().map(|&u| err(u, mid(&ys, j))).fold(0.0, f64::max))
+            .collect();
+        for (i, bx) in bad_x.iter_mut().enumerate() {
+            for (j, by) in bad_y.iter_mut().enumerate() {
+                let e = err(mid(&xs, i), mid(&ys, j));
+                if *bx >= *by || ruled {
+                    *bx = bx.max(e);
+                } else {
+                    *by = by.max(e);
+                }
+            }
+        }
+        let worst = bad_x.iter().chain(&bad_y).fold(0.0f64, |a, &b| a.max(b));
+        if worst <= SHEET_FIT {
             return Ok(Surface::Nurbs(Box::new(s)));
         }
-        if ex > SHEET_FIT || (exy > SHEET_FIT && ex >= ey) {
-            nx *= 2;
-        }
-        if !ruled && (ey > SHEET_FIT || (exy > SHEET_FIT && ey > ex)) {
-            ny *= 2;
-        }
-        if nx > 2048 || ny > 256 || nx * ny > 1 << 15 {
+        xs = refine(&xs, &bad_x);
+        ys = refine(&ys, &bad_y);
+        if xs.len() > 4097 || ys.len() > 1025 || xs.len() * ys.len() > 1 << 18 {
             break;
         }
     }
     Err(Error::Numerical(
         "a swept surface's fit did not reach its tolerance".into(),
     ))
+}
+
+/// `sites` with each interval whose middle strays more than [`SHEET_FIT`] halved, and then each
+/// interval more than twice as long as a neighbour halved, so the spacing changes gradually.
+fn refine(sites: &[f64], bad: &[f64]) -> Vec<f64> {
+    let mut out = vec![sites[0]];
+    for i in 0..bad.len() {
+        if bad[i] > SHEET_FIT {
+            out.push(0.5 * (sites[i] + sites[i + 1]));
+        }
+        out.push(sites[i + 1]);
+    }
+    loop {
+        let w: Vec<f64> = out.windows(2).map(|p| p[1] - p[0]).collect();
+        let long: Vec<usize> = (0..w.len())
+            .filter(|&i| {
+                (i > 0 && w[i] > 2.0 * w[i - 1]) || (i + 1 < w.len() && w[i] > 2.0 * w[i + 1])
+            })
+            .collect();
+        if long.is_empty() {
+            return out;
+        }
+        for &i in long.iter().rev() {
+            out.insert(i + 1, 0.5 * (out[i] + out[i + 1]));
+        }
+    }
 }
 
 /// How far the tangent of `c` over `[a, b]`, seen along `dir`, turns in all.
@@ -136,31 +170,19 @@ fn flat(pts: &[Point3], exact: f64) -> Option<Surface> {
     None
 }
 
-/// The B-spline through `map` on a grid of `n` cells over the rectangle, at the grid's own
-/// parameters.
-fn grid(
-    map: &dyn Fn(Vec2) -> Point3,
-    lo: Vec2,
-    hi: Vec2,
-    n: (usize, usize),
-) -> Result<NurbsSurface> {
-    let xs: Vec<f64> = (0..=n.0)
-        .map(|i| lo.x + (hi.x - lo.x) * i as f64 / n.0 as f64)
-        .collect();
-    let ys: Vec<f64> = (0..=n.1)
-        .map(|j| lo.y + (hi.y - lo.y) * j as f64 / n.1 as f64)
-        .collect();
+/// The B-spline through `map` on the grid of lines `xs` by `ys`, at the grid's own parameters.
+fn grid(map: &dyn Fn(Vec2) -> Point3, xs: &[f64], ys: &[f64]) -> Result<NurbsSurface> {
     // Each row along x through its points, then each column of their control points along y.
     let mut rows: Vec<Spline> = Vec::with_capacity(ys.len());
-    for &y in &ys {
+    for &y in ys {
         let pts: Vec<Point3> = xs.iter().map(|&x| map(Vec2::new(x, y))).collect();
-        rows.push(interpolate(&pts, &xs)?);
+        rows.push(interpolate(&pts, xs)?);
     }
     let cu = rows[0].ctrl.len();
     let mut cols: Vec<Spline> = Vec::with_capacity(cu);
     for i in 0..cu {
         let pts: Vec<Point3> = rows.iter().map(|r| r.ctrl[i]).collect();
-        cols.push(interpolate(&pts, &ys)?);
+        cols.push(interpolate(&pts, ys)?);
     }
     let cv = cols[0].ctrl.len();
     let mut ctrl = Vec::with_capacity(cu * cv);
@@ -269,4 +291,35 @@ pub(super) fn fit_curve(at: &dyn Fn(f64) -> Point3, range: (f64, f64)) -> Result
     Err(Error::Numerical(
         "a swept curve's fit did not reach its tolerance".into(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A sheet that rises by 1 across a band a hundredth wide, `z = tanh((y − ½) / 0.01)`, needs
+    // grid lines a few thousandths apart in the band and few elsewhere: the grid is refined only
+    // where it strays, so it fits within the tolerance everywhere.
+    #[test]
+    fn a_sheet_with_a_steep_band_is_refined_in_the_band() {
+        let map = |q: Vec2| Point3::new(q.x, q.y, ((q.y - 0.5) / 0.01).tanh() + q.x * q.x);
+        let (lo, hi) = (Vec2::new(0.0, 0.0), Vec2::new(1.0, 1.0));
+        let Surface::Nurbs(s) = surface(&map, lo, hi, 2.0, &|_| true).unwrap() else {
+            panic!("not a spline");
+        };
+        let n = 97;
+        for i in 0..=n {
+            for j in 0..=n {
+                let q = Vec2::new(i as f64 / n as f64, j as f64 / n as f64);
+                let d = s.eval(q.x, q.y).dist(map(q));
+                assert!(d <= 10.0 * SHEET_FIT, "{d} at {q:?}");
+            }
+        }
+        // An even grid fine enough for the band would hold hundreds of rows.
+        assert!(
+            s.control_points().len() < 64 * 200,
+            "{}",
+            s.control_points().len()
+        );
+    }
 }
