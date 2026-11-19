@@ -928,7 +928,7 @@ fn closed_form(a: &Surface, b: &Surface, region: &Aabb) -> Option<Ssi> {
                 let pts = meridian_points(plane_meridian, meridian(b, axis)?)?;
                 return Some(circles_about(axis, axis.dir.any_perpendicular(), pts));
             }
-            return sweep::intersect(a, b);
+            return sweep::intersect(a, b, region);
         }
         (Surface::Plane(p), Surface::Cone(c)) => {
             let axis = axis_of(b)?;
@@ -945,7 +945,7 @@ fn closed_form(a: &Surface, b: &Surface, region: &Aabb) -> Option<Ssi> {
             return conic::plane_cone(p, c, region);
         }
         (Surface::Cylinder(x), Surface::Cylinder(y)) => {
-            return cylinder_cylinder(x, y, region).or_else(|| sweep::intersect(a, b));
+            return cylinder_cylinder(x, y, region).or_else(|| sweep::intersect(a, b, region));
         }
         _ => {}
     }
@@ -973,7 +973,7 @@ fn closed_form(a: &Surface, b: &Surface, region: &Aabb) -> Option<Ssi> {
             .flatten(),
         _ => same_axis(xa, xb).then(|| coaxial(a, b, xa)).flatten(),
     };
-    symmetric.or_else(|| sweep::intersect(a, b))
+    symmetric.or_else(|| sweep::intersect(a, b, region))
 }
 
 #[cfg(test)]
