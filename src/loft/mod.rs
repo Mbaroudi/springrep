@@ -9,6 +9,7 @@
 //! across the sections: linearly when ruled or with two sections, otherwise by the lowest-degree
 //! Bézier through the first and last sections that fits the others within the linear tolerance.
 
+mod developable;
 pub(crate) mod rail;
 mod skin;
 #[cfg(test)]
@@ -16,6 +17,7 @@ mod tests;
 
 use std::f64::consts::TAU;
 
+pub use developable::loft_developable;
 use rail::{Across, Hom, Rail, point};
 use skin::{Band, CapEdge};
 

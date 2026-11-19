@@ -393,3 +393,90 @@ fn a_smooth_loft_runs_through_its_sections_to_the_apex() {
         "{bb:?}"
     );
 }
+
+// A square 40 at z = 0 to the 28 square with its corners cut to 8√2 sides at z = 30: each side of
+// the square to the side parallel to it (a trapezoid), each corner to the cut side facing it (a
+// triangle). The level section at t = z/30 is the Minkowski mix (1 − t)S + tO, of area
+// (1 − t)²|S| + 2t(1 − t)M + t²|O|, M = ½Σ h_S(n)·ℓ_O(n) the mixed area, so the volume is
+// 30(|S| + M + |O|)/3.
+#[test]
+fn a_developable_loft_pairs_a_corner_with_a_side() {
+    let o: Vec<Vec2> = [
+        (6.0, -14.0),
+        (14.0, -6.0),
+        (14.0, 6.0),
+        (6.0, 14.0),
+        (-6.0, 14.0),
+        (-14.0, 6.0),
+        (-14.0, -6.0),
+        (-6.0, -14.0),
+    ]
+    .iter()
+    .map(|&(x, y)| Vec2::new(x, y))
+    .collect();
+    let b = loft_developable(
+        &[
+            sec(Profile::rect(Vec2::ZERO, 40.0, 40.0), at_z(0.0)),
+            sec(Profile::polygon(&o, &["o"]), at_z(30.0)),
+        ],
+        "hood",
+    )
+    .unwrap();
+    assert_eq!(b.face_count(), 10);
+    assert!(b.face_ids().all(|f| b.face(f).surface.kind() == "plane"));
+    let (s, oct) = (1600.0, 28.0 * 28.0 - 4.0 * 32.0);
+    let mixed = 0.5 * (4.0 * 20.0 * 12.0 + 4.0 * 20.0 * 2f64.sqrt() * 8.0 * 2f64.sqrt());
+    let want = 30.0 * (s + mixed + oct) / 3.0;
+    assert!(rel(volume(&b), want) < 1e-12, "{}", volume(&b));
+    let trapezoids = 4.0 * 0.5 * (40.0 + 12.0) * (36.0f64 + 900.0).sqrt();
+    let triangles = 4.0 * 0.5 * 8.0 * 2f64.sqrt() * 1100f64.sqrt();
+    let area = s + oct + trapezoids + triangles;
+    assert!(
+        rel(measure::area(&b), area) < 1e-12,
+        "{}",
+        measure::area(&b)
+    );
+}
+
+// A square 40 at z = 0 to a circle of radius 15 at z = 30: each side to the circle's nearest
+// point (a triangle), each corner to the quarter circle between (an oblique cone). The section at
+// t is (1 − t)S + tD, of area (1 − t)²·1600 + t(1 − t)·160·15 + t²·225π.
+#[test]
+fn a_developable_loft_pairs_a_corner_with_an_arc() {
+    let b = loft_developable(
+        &[
+            sec(Profile::rect(Vec2::ZERO, 40.0, 40.0), at_z(0.0)),
+            sec(Profile::circle(Vec2::ZERO, 30.0), at_z(30.0)),
+        ],
+        "sq",
+    )
+    .unwrap();
+    assert_eq!(b.face_count(), 10);
+    let planes = b
+        .face_ids()
+        .filter(|&f| b.face(f).surface.kind() == "plane")
+        .count();
+    assert_eq!(planes, 6);
+    let want = 30.0 * (1600.0 / 3.0 + 160.0 * 15.0 / 6.0 + 225.0 * PI / 3.0);
+    assert!(rel(volume(&b), want) < 1e-9, "{}", volume(&b));
+}
+
+#[test]
+fn a_developable_loft_refuses_a_section_that_is_not_convex() {
+    let l: Vec<Vec2> = [
+        (0.0, 0.0),
+        (10.0, 0.0),
+        (10.0, 5.0),
+        (5.0, 5.0),
+        (5.0, 10.0),
+        (0.0, 10.0),
+    ]
+    .iter()
+    .map(|&(x, y)| Vec2::new(x, y))
+    .collect();
+    let sections = [
+        sec(Profile::polygon(&l, &["l"]), at_z(0.0)),
+        sec(Profile::rect(Vec2::new(5.0, 5.0), 10.0, 10.0), at_z(10.0)),
+    ];
+    assert!(loft_developable(&sections, "l").is_err());
+}

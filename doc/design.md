@@ -148,6 +148,19 @@ row whose every piece is the one point: each column's rail there has all its con
 apex, so a ruled side between two straight edges and the apex is a flat triangle, and any other side
 is a surface with a pole along its top, which its face meets in a degenerate edge of its own.
 
+`loft_developable` joins two convex sections on parallel planes by rulings between points where
+their tangents run the same way, and so builds their convex hull: the plane through a ruling and
+the two parallel tangents at its ends touches the side all along the ruling. Each outline is read
+by its tangent's direction, which sweeps once round the circle: a straight edge holds one direction,
+a curved edge a range, a corner the range between its two edges. Both outlines are cut at every
+direction where either has a corner or the end of an edge. A straight edge pairs with what the
+other outline holds at its direction, and each range between cuts pairs with what the other holds
+over it, a curved edge being split where its tangent reaches the cut by bisection on its direction.
+A corner that pairs with an edge becomes a piece that is one point, as an apex is: a straight edge
+gives a flat triangle, a curved one a cone over it with its apex at the corner, a ruled rational
+surface whose pole is the corner. Where both outlines hold a corner over a range, the two corners
+are joined by a side edge alone.
+
 ## Tolerance policy
 
 There is one linear tolerance, [`tol::LINEAR`](../src/tol.rs) = 1e-7 mm, and one angular tolerance,
