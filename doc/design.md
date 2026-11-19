@@ -29,7 +29,12 @@ Solid ─ Shell ─ Face (surface, reversed, loops, names) ─ Loop ─ Coedge (
   turns a periodic parameter by over a quarter period, since beside a pole a short step can turn it
   by nearly half a period either way; at a pole, where every `u` is the same point, `u` is the angle
   the curve's tangent leaves the pole at, so every reader finds the same one however it samples the
-  curve. Booleans give every intersection edge a projected pcurve.
+  curve. Booleans give every intersection edge a projected pcurve. `PCurve::Spline` reads `uv` off
+  a cubic B-spline in `t` (its control points in the plane `z = 0`): for an edge whose exact
+  parameters are known at points along it, on a surface whose map nearly drops rank there, where
+  projection lands on the wrong foot. It holds over its own edge's range alone, so two edges whose
+  coedges carry one are not merged into one edge; an affine change of the parameter plane (a
+  period's shift, a mirror, a scale) maps its control points.
 - **Edge.** A curve and a range `t0 < t1`, from `start` at `curve(t0)` to `end` at `curve(t1)`. A
   closed curve's edge starts and ends at the same vertex. A **degenerate edge** has no curve: it is
   a pole (a cone's apex, a sphere's pole) that its face's loop spans in the parameter plane. It is
@@ -1166,7 +1171,7 @@ cylinder or sphere it moves is no longer one.
 - **Scale.** Each curve's parameter scales by the factor its geometry needs: a line's by s (its
   direction stays a unit vector), a conic's and a spline's not at all. Each surface's parameters
   scale the same way: a plane's both, a cylinder's or cone's height, an extrusion's sweep. Edge
-  ranges, affine pcurves and the local tolerances scale with them.
+  ranges, affine and spline pcurves and the local tolerances scale with them.
 
 ## Sweeps of solids
 
@@ -1324,8 +1329,14 @@ left. Each plane's surface is the one map fitted once: a plane or an extrusion w
 on one, else the quintic B-spline interpolating a grid of them at the plane's own parameters
 (de Boor 1978),
 refined until it lies within a hundredth of `LINEAR` of the points between, so the plane's
-straight sides are exact parameter lines of it. The caps are the body cut at the span's ends as for
-a steady motion.
+straight sides are exact parameter lines of it. Every other side is a curve whose points in the
+plane are known exactly, and its pcurve is the spline through them at the parameters of the edge's
+curve nearest their images, with points added where the surface over it strays from the curve by
+more than a quarter of `LINEAR`, each moved from the spline's by the least change that meets the
+curve (damped Gauss–Newton steps, Nocedal and Wright 2006, ch. 10), and kept on the plane's line
+where all its points lie on one. Projected instead, the curve's points land anywhere along a
+direction in which the map nearly drops rank, as where a grazing curve moves a thousandth as fast
+as the body. The caps are the body cut at the span's ends as for a steady motion.
 
 Where a face moves within its own surface for an instant (the sides of a key carried round an
 inflexion of its path), the side it carries outward turns over at once; the motion is cut there
@@ -1399,7 +1410,8 @@ solid never pinches.
   its own edge, each fan of faces round a vertex its own vertex, and neither a slit nor a vertex
   loop, which lie inside one piece's face. Each edge is a `SURFACE_CURVE` (a seam a `SEAM_CURVE`)
   with its pcurve on every face that uses it, in the surface's STEP parameters (a cone's `v` is its
-  height along the STEP axis, turned with it). An affine pcurve is a line, and on a plane a line or
+  height along the STEP axis, turned with it). An affine pcurve is a line, a spline one its own
+  spline, and on a plane a line or
   spline edge maps onto it exactly; any other pcurve is a cubic through the coedge's parameter-plane
   points, with points added where the surface over it strays more than 0.45 of the tolerance from
   the edge at any of seven points a span, which keeps it within half the tolerance between them (a
@@ -1696,6 +1708,8 @@ The papers this document and the source cite by author and year.
   surface construction algorithm", _Computer Graphics_ 21(4) (SIGGRAPH '87), 1987, pp. 163–169.
 - **Martin and Stephenson 1990.** R. R. Martin and P. C. Stephenson, "Sweeping of three-dimensional
   objects", _Computer-Aided Design_ 22(4), 1990, pp. 223–234.
+- **Nocedal and Wright 2006.** J. Nocedal and S. J. Wright, _Numerical Optimization_, 2nd ed.,
+  Springer, 2006.
 - **Rossignac and Requicha 1984.** J. R. Rossignac and A. A. G. Requicha, "Constant-radius blending
   in solid modelling", _Computers in Mechanical Engineering_ 3(1), 1984, pp. 65–73.
 - **Rossignac and Requicha 1986.** J. R. Rossignac and A. A. G. Requicha, "Offsetting operations

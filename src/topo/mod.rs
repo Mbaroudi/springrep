@@ -592,7 +592,7 @@ impl Brep {
         let co = self.coedge(c);
         let surface = &self.face(self.coedge_face(c)).surface;
         let periodic = surface.u_period().is_some() || surface.v_period().is_some();
-        if !periodic || ts.len() < 2 || matches!(co.pcurve, PCurve::Affine { .. }) {
+        if !periodic || ts.len() < 2 || !matches!(co.pcurve, PCurve::Projected { .. }) {
             return self.coedge_uvs_at(c, ts);
         }
         // An edge winding round its surface several times (a thread's helix) can turn more than
@@ -672,6 +672,7 @@ impl Brep {
         let edge = self.edge(co.edge);
         match &co.pcurve {
             PCurve::Affine { origin, dir } => ts.iter().map(|&t| *origin + *dir * t).collect(),
+            PCurve::Spline { uv } => ts.iter().map(|&t| pcurve::spline_uv(uv, t)).collect(),
             PCurve::Projected { seed } => {
                 let surface = &self.face(self.coedge_face(c)).surface;
                 let mut hint = *seed;

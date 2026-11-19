@@ -526,3 +526,37 @@ fn a_torus_grazing_along_a_whole_meridian_is_refused() {
         Err(crate::Error::Unsupported(_))
     ));
 }
+
+// A torus turned a quarter as fast about a vertical line as the frame it is seen from turns about
+// a level one. The grazing curve where the span starts runs round the tube across a sheet whose map
+// nearly drops rank, where projecting its points lands up to 2e-2 mm off the sheet; its pcurve is
+// the spline through its points in the sheet's own parameters, and the solid is valid.
+#[test]
+fn a_tumbling_torus_keeps_its_pcurves_on_its_sheets() {
+    let ring = crate::primitive::torus(
+        &Frame::WORLD.translated(Vec3::new(3.0, 0.0, 2.0)),
+        1.0,
+        0.5,
+        "ring",
+    )
+    .unwrap();
+    let (from, to) = (-75f64.to_radians(), 75f64.to_radians());
+    let h = 0.5f64.sqrt() * 45f64.to_radians().cos();
+    let motion = Motion::Then(
+        Box::new(Motion::Turn {
+            origin: Vec3::new(2.0, 0.0, 0.0),
+            axis: Vec3::Z,
+            from: 0.25 * from,
+            to: 0.25 * to,
+        }),
+        Box::new(Motion::Turn {
+            origin: Vec3::new(0.0, h, h),
+            axis: Vec3::X,
+            from: -from,
+            to: -to,
+        }),
+    );
+    let b = solid(&ring, &motion, "sw").unwrap();
+    let issues = check::check(&b);
+    assert!(issues.is_empty(), "{issues:?}");
+}

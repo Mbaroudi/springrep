@@ -462,7 +462,7 @@ pub(super) fn sewn(
                     let m = tmap[i][&co.edge];
                     let params = check::coedge_params(tool, c, 1);
                     let pcurve = |at_end: bool| -> PCurve {
-                        if m.own && matches!(co.pcurve, PCurve::Affine { .. }) {
+                        if m.own && !matches!(co.pcurve, PCurve::Projected { .. }) {
                             return co.pcurve.clone();
                         }
                         let uvs = tool.coedge_uvs(c, &params);

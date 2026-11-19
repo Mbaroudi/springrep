@@ -3122,6 +3122,13 @@ pub(crate) fn glue(a: &Brep, b: &Brep) -> Option<Brep> {
                                         *origin + *dir * if co.reversed { t.1 } else { t.0 }
                                     }
                                     PCurve::Projected { seed } => *seed,
+                                    PCurve::Spline { uv } => {
+                                        let t = src.edge(co.edge).range;
+                                        crate::topo::pcurve::spline_uv(
+                                            uv,
+                                            if co.reversed { t.1 } else { t.0 },
+                                        )
+                                    }
                                 };
                                 CoedgeSpec {
                                     edge,

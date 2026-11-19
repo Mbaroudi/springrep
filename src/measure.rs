@@ -22,7 +22,10 @@ use crate::{
     geom::{IsoLine, NurbsSurface, Patch, Surface},
     math::{Aabb, Point3, Vec2, Vec3},
     numeric::{KRONROD_7, KRONROD_15, gauss, solve2},
-    topo::{Brep, CoedgeId, FaceId, FaceVolume, IntegralKey, LoopId, PCurve, SolidId, VertexId},
+    topo::{
+        Brep, CoedgeId, FaceId, FaceVolume, IntegralKey, LoopId, PCurve, SolidId, VertexId,
+        pcurve::{spline_rate, spline_uv},
+    },
 };
 
 /// Whether a face's inner integral runs along v, and the lowest value its loops reach along that
@@ -327,7 +330,7 @@ fn pcurve_tables(b: &Brep, f: FaceId) -> &[Vec<Vec<Vec2>>] {
 /// One coedge's entry of [`pcurve_tables`].
 fn pcurve_table(b: &Brep, co: CoedgeId) -> Vec<Vec2> {
     let coedge = b.coedge(co);
-    if !matches!(coedge.pcurve, PCurve::Projected { .. }) || b.edge(coedge.edge).curve.is_none() {
+    if matches!(coedge.pcurve, PCurve::Affine { .. }) || b.edge(coedge.edge).curve.is_none() {
         return Vec::new();
     }
     b.coedge_uvs(co, &coedge_params(b, co, TABLE))
@@ -376,6 +379,7 @@ fn coedge_integral<const K: usize>(
     let uv_and_rate = |t: f64| -> (Vec2, Vec2) {
         match &coedge.pcurve {
             PCurve::Affine { origin, dir } => (*origin + *dir * t, *dir),
+            PCurve::Spline { uv } => (spline_uv(uv, t), spline_rate(uv, t)),
             PCurve::Projected { .. } => {
                 let curve = edge.curve.as_ref().expect("projected pcurves have curves");
                 let (p, dp) = curve.d1(t);
@@ -397,6 +401,10 @@ fn coedge_integral<const K: usize>(
     // piece between two of them, where the halving below takes far more points to find each one.
     if let Some(c) = &edge.curve {
         cuts.extend(c.breakpoints(t0, t1));
+    }
+    if let PCurve::Spline { uv } = &coedge.pcurve {
+        cuts.extend(uv.breakpoints(t0, t1));
+        cuts.sort_by(f64::total_cmp);
     }
     // Where a straight pcurve crosses the surface's knot lines the inner integral has a kink too:
     // along a pole, which has no curve of its own, the adaptive rule would have to find them.

@@ -737,8 +737,10 @@ pub(crate) fn face_bbox(dom: &Domain) -> Aabb {
 /// A coedge's parameter-plane points at edge parameters `ts`, given in its direction; points in
 /// between are sampled so periodic parameters continue across wide gaps.
 fn coedge_uv_at(b: &Brep, c: CoedgeId, ts: &[f64]) -> Vec<Vec2> {
-    if let PCurve::Affine { origin, dir } = &b.coedge(c).pcurve {
-        return ts.iter().map(|&t| *origin + *dir * t).collect();
+    match &b.coedge(c).pcurve {
+        PCurve::Affine { origin, dir } => return ts.iter().map(|&t| *origin + *dir * t).collect(),
+        PCurve::Spline { .. } => return b.coedge_uvs(c, ts),
+        PCurve::Projected { .. } => {}
     }
     let s = &b.face(b.coedge_face(c)).surface;
     // Only a periodic parameter needs the dense samples, to continue across a wide gap.
@@ -769,13 +771,7 @@ pub(crate) fn coedge_trim_with(
 ) -> Trim {
     let co = b.coedge(c);
     let edge = b.edge(co.edge);
-    let map = match &co.pcurve {
-        PCurve::Affine { origin, dir } => UvMap::Affine {
-            origin: *origin,
-            dir: *dir,
-        },
-        PCurve::Projected { .. } => UvMap::Projected,
-    };
+    let map = UvMap::of(&co.pcurve);
     Trim {
         piece,
         forward: !co.reversed,
@@ -2365,9 +2361,7 @@ impl<'a> Work<'a> {
                             if co.reversed { -d } else { d }
                         });
                         let mut tr = self.canon_trim(ci, start, along);
-                        if ci == pi
-                            && let UvMap::Affine { .. } = whole.map
-                        {
+                        if ci == pi && !matches!(whole.map, UvMap::Projected) {
                             tr.map = whole.map.clone();
                         }
                         tr

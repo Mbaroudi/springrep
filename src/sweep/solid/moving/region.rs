@@ -3,6 +3,7 @@
 //! region's links stand for, and its side the one the body's outward normal there faces.
 
 use std::collections::{BTreeSet, HashMap};
+use std::rc::Rc;
 
 use super::graph::{self, Link, Region};
 use super::{Ctx, fit};
@@ -14,7 +15,7 @@ use crate::{
     },
     geom::Surface,
     math::{Point3, Vec2, Vec3},
-    topo::FaceName,
+    topo::{FaceName, pcurve::fit_spline},
 };
 
 /// What a link stands for: a piece of the result, run along its parameter from the link's first
@@ -261,8 +262,12 @@ pub(super) fn face(
                 (link.b, link.a)
             };
             // On a surface fitted at the plane's own parameters a piece along a line of the plane
-            // has exact parameters there.
+            // has exact parameters there, and any other piece the spline through its points there:
+            // where the map nearly drops rank, projection lands on the wrong foot.
             let (pid, along, uvmap) = match plane.along[k] {
+                Along::Piece(pid, along) if fitted => {
+                    (pid, along, exact_map(ctx, plane, k, pid, along, &surface))
+                }
                 Along::Piece(pid, along) => (pid, along, UvMap::Projected),
                 Along::Line { piece, origin, dir } if fitted => {
                     (piece, true, UvMap::Affine { origin, dir })
@@ -307,4 +312,32 @@ pub(super) fn face(
         side: None,
     };
     Ok((face, folds))
+}
+
+/// The map of link `k` of `plane`, along piece `pid` (`along` its parameter or against it), on
+/// `surface` fitted at the plane's own parameters: the spline through the link's points.
+fn exact_map(
+    ctx: &Ctx,
+    plane: &Plane,
+    k: usize,
+    pid: usize,
+    along: bool,
+    surface: &Surface,
+) -> UvMap {
+    let link = &plane.links[k];
+    let pg = &ctx.pieces[pid];
+    let Some(curve) = &pg.curve else {
+        return UvMap::Projected;
+    };
+    let mut pts = link.pts.clone();
+    let last = pts.len() - 1;
+    pts[0] = plane.nodes[link.a];
+    pts[last] = plane.nodes[link.b];
+    if !along {
+        pts.reverse();
+    }
+    match fit_spline(surface, curve, pg.range, &pts) {
+        Some(s) => UvMap::Spline(Rc::new(s)),
+        None => UvMap::Projected,
+    }
 }

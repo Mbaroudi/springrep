@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use super::{
     classify,
-    domain::{Domain, Trim, UvMap, polygon_area},
+    domain::{Domain, Trim, polygon_area},
     ssi::{same_domain, same_domain_faces},
 };
 use crate::{
@@ -17,7 +17,7 @@ use crate::{
     geom::{Curve, Surface},
     math::{Aabb, Point3, Vec2},
     measure, tol,
-    topo::{Brep, CoedgeId, CoedgeSpec, EdgeId, FaceMemo, FaceName, PCurve, VertexId, radial},
+    topo::{Brep, CoedgeId, CoedgeSpec, EdgeId, FaceMemo, FaceName, VertexId, radial},
 };
 
 /// An edge piece's geometry, by piece id.
@@ -230,20 +230,11 @@ impl UvAffine {
         self.cu * p.x + self.cv * p.y + self.c
     }
 
-    fn dir(&self, d: Vec2) -> Vec2 {
-        self.cu * d.x + self.cv * d.y
-    }
-
     fn trim(&self, t: &Trim) -> Trim {
         let mut out = t.clone();
         out.uv0 = self.point(t.uv0);
         out.uv1 = self.point(t.uv1);
-        if let UvMap::Affine { origin, dir } = t.map {
-            out.map = UvMap::Affine {
-                origin: self.point(origin),
-                dir: self.dir(dir),
-            };
-        }
+        out.map = t.map.mapped(&|p| self.point(p));
         out
     }
 }
@@ -336,12 +327,7 @@ fn merge_group(
             let mut t = t.clone();
             t.uv0 = t.uv0 + d;
             t.uv1 = t.uv1 + d;
-            if let UvMap::Affine { origin, dir } = t.map {
-                t.map = UvMap::Affine {
-                    origin: origin + d,
-                    dir,
-                };
-            }
+            t.map = t.map.mapped(&|p| p + d);
             trims.push(t);
         }
     }
@@ -639,13 +625,7 @@ fn build(
                                 e
                             }
                         };
-                        let pcurve = match &t.map {
-                            UvMap::Affine { origin, dir } => PCurve::Affine {
-                                origin: *origin,
-                                dir: *dir,
-                            },
-                            UvMap::Projected => PCurve::Projected { seed: t.uv0 },
-                        };
+                        let pcurve = t.map.pcurve(t.uv0);
                         specs.push(CoedgeSpec {
                             edge: e,
                             reversed: !t.forward,

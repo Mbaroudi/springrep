@@ -40,7 +40,9 @@ impl Graph<'_> {
     fn departure(&self, tr: &Trim, reach: f64, node: Vec2) -> Departure {
         let chord_uv = match tr.map {
             UvMap::Affine { .. } => tr.uv1,
-            UvMap::Projected => tr.uv(self.surface, tr.param(fraction_at(tr, reach)), tr.uv0),
+            UvMap::Projected | UvMap::Spline(_) => {
+                tr.uv(self.surface, tr.param(fraction_at(tr, reach)), tr.uv0)
+            }
         };
         let chord = direction_angle(self.oriented(chord_uv - tr.uv0)).unwrap_or(0.0);
         let tangent =
@@ -63,9 +65,9 @@ impl Graph<'_> {
             let (p, q) = (self.oriented(a), self.oriented(b));
             0.5 * (p.x * q.y - p.y * q.x)
         };
-        let (UvMap::Projected, Some(c)) = (&tr.map, &tr.curve) else {
+        if matches!(tr.map, UvMap::Affine { .. }) || tr.curve.is_none() {
             return chord(tr.uv0, tr.uv1);
-        };
+        }
         let mut nodes: Vec<(f64, f64)> = crate::numeric::gauss(24).to_vec();
         nodes.sort_by(|a, b| a.0.total_cmp(&b.0));
         // The rule over [a, b], each point's parameters found from the one before, from `hint` at
@@ -77,7 +79,7 @@ impl Graph<'_> {
                 let t = m + h * x;
                 let uv = tr.uv(self.surface, t, hint);
                 hint = uv;
-                let rate = super::domain::uv_rate(self.surface, uv, c.d1(t).1);
+                let rate = tr.uv_rate_at(self.surface, t, uv);
                 let (p, d) = (self.oriented(uv), self.oriented(rate));
                 sum += w * (p.x * d.y - p.y * d.x);
             }
@@ -335,7 +337,7 @@ pub(crate) fn split(
     let lengths: Vec<f64> = hs
         .iter()
         .map(|h| match h.map {
-            UvMap::Projected => trim_length(h),
+            UvMap::Projected | UvMap::Spline(_) => trim_length(h),
             UvMap::Affine { .. } => f64::INFINITY,
         })
         .collect();
@@ -433,7 +435,7 @@ pub(crate) fn split(
         for &h in cyc {
             let n = match hs[h].map {
                 UvMap::Affine { .. } => 1,
-                UvMap::Projected => 16,
+                UvMap::Projected | UvMap::Spline(_) => 16,
             };
             let pl = hs[h].polyline(surface, n);
             for (k, &p) in pl[..pl.len() - 1].iter().enumerate() {
