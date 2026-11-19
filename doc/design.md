@@ -1408,8 +1408,10 @@ merges neighbours on one surface and runs the checker.
 What a curve of the boundary of `W` sweeps is a face bounded by the curve at the start, the curve
 at the end, and the paths of its two ends. It is exact where the motion has a closed form:
 
-- a slide sweeps an extrusion of the curve: a plane where the curve is a line, a cylinder where it
-  is a circle square to the slide;
+- a slide sweeps an extrusion of the curve: a plane where the curve is a line or lies in a plane
+  that holds the slide (a drum's rim pushed across its axis, whose end face slides within its own
+  plane: an extrusion there would turn singular where the rim runs along the slide), a cylinder
+  where it is a circle square to the slide;
 - a turn sweeps a plane where the curve lies square to the axis; a cylinder, cone, sphere or torus
   where the curve is a line or a circle in a plane through the axis; the rational B-spline whose
   columns follow its control points' circles, within `SCREW_FIT`, where it is a line askew to the

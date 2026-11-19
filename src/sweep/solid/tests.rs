@@ -113,6 +113,30 @@ fn a_cylinder_slid_aslant_adds_the_prism_of_its_shadow() {
     );
 }
 
+// A drum of radius 2 along x from 6 to 14 at z = −5 pushed up by 16 through the plate (0, −5, 0)–
+// (20, 5, 4) cuts the slot 6 ≤ x ≤ 14, |y| ≤ 2 through it: 800 − 128. Its end discs and the rims
+// they slide past sweep within the planes x = 6 and x = 14, so every face of the slot is a plane.
+#[test]
+fn a_drum_pushed_across_its_axis_slides_its_ends_within_their_planes() {
+    let end = Frame::new(Vec3::new(6.0, 0.0, -5.0), Vec3::X, Vec3::Y).unwrap();
+    let drum = cylinder(&end, 2.0, 8.0, "drum").unwrap();
+    let b = solid(&drum, &Motion::Slide(Vec3::new(0.0, 0.0, 16.0)), "sw").unwrap();
+    assert!(check::check(&b).is_empty());
+    let plate = block(
+        &Frame::WORLD.translated(Vec3::new(0.0, -5.0, 0.0)),
+        Vec3::new(20.0, 10.0, 4.0),
+        "plate",
+    )
+    .unwrap();
+    let cut = crate::boolean::difference(&plate, &b).unwrap();
+    let planes = cut
+        .face_ids()
+        .all(|f| matches!(cut.face(f).surface, crate::geom::Surface::Plane(_)));
+    assert!(planes);
+    let got = measure::volume(&cut);
+    assert!(rel(got, 672.0) < 1e-12, "{got}");
+}
+
 /// The turn about the z axis through `angle`, from where the body is drawn.
 fn about_z(angle: f64) -> Motion {
     Motion::Turn {

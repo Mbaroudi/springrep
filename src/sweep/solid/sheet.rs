@@ -91,6 +91,36 @@ fn lies_square_to(curve: &Curve, range: (f64, f64), dir: Vec3) -> bool {
     }
 }
 
+/// The unit normal of a plane holding the unit `dir` and all of `curve` over `range`, where there
+/// is one and the curve is not a line along `dir`.
+fn plane_along(curve: &Curve, range: (f64, f64), dir: Vec3) -> Option<Vec3> {
+    let normal = match curve {
+        Curve::Line(_) => return None,
+        Curve::Circle(c) => c.frame.z,
+        Curve::Ellipse(c) => c.frame.z,
+        _ => {
+            // Square to the slide and to the chord from the start to the point farthest across it.
+            let p0 = curve.eval(range.0);
+            let across = |p: Point3| (p - p0) - dir * (p - p0).dot(dir);
+            let far = (1..=32)
+                .map(|k| curve.eval(range.0 + (range.1 - range.0) * k as f64 / 32.0))
+                .max_by(|a, b| across(*a).norm().total_cmp(&across(*b).norm()))?;
+            across(far).cross(dir).unit()?
+        }
+    };
+    if normal.dot(dir).abs() > tol::ANGULAR {
+        return None;
+    }
+    let p0 = curve.eval(range.0);
+    let off = |t: f64| (curve.eval(t) - p0).dot(normal).abs() <= tol::LINEAR;
+    ((0..=32).all(|k| off(range.0 + (range.1 - range.0) * k as f64 / 32.0))
+        && curve
+            .extremes(normal, range.0, range.1)
+            .into_iter()
+            .all(off))
+    .then_some(normal)
+}
+
 /// What `curve` sweeps turning through `span` about the unit `axis` through `o`: a cylinder,
 /// cone or plane where the curve is a line in a plane through the axis, a torus or sphere where it
 /// is a circle in one, else the revolution of the curve. On each, the angle turned is `u`. The
@@ -527,6 +557,25 @@ impl Steady {
                         });
                     }
                     _ => {}
+                }
+                // A curve in a plane that holds the slide slides within that plane.
+                if let Some(normal) = plane_along(curve, range, dir) {
+                    let at = curve.eval(range.0);
+                    let plane = Frame::new(at, normal, dir)?;
+                    let c = curve.clone();
+                    return Ok(Sheet {
+                        surface: Surface::Plane(Plane { frame: plane }),
+                        span,
+                        origin: Vec2::ZERO,
+                        along: Vec2::new(1.0, 0.0),
+                        across: Vec2::ZERO,
+                        affine: false,
+                        along_affine: true,
+                        exact: Some(Box::new(move |s, t| {
+                            let q = plane.to_local(c.eval(t) + dir * s);
+                            Vec2::new(q.x, q.y)
+                        })),
+                    });
                 }
                 Ok(Sheet {
                     surface: Surface::Extrusion(Box::new(Extrusion {
