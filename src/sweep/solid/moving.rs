@@ -12,6 +12,8 @@ mod faces;
 mod fit;
 mod graph;
 mod region;
+#[cfg(test)]
+mod tests;
 mod zeros;
 
 use std::collections::HashMap;
@@ -44,10 +46,13 @@ pub(super) fn sweep(body: &Brep, motion: &Motion, feature: &str) -> Result<Brep>
     stops.push(1.0);
     let mut out: Option<Brep> = None;
     let last = stops.len() - 2;
+    // A face may move within its own surface where the motion starts or stops, too.
+    let held_at = |tau: f64| body.face_ids().any(|f| held(body, motion, f, tau));
+    let ends = (held_at(0.0), held_at(1.0));
     for (i, w) in stops.windows(2).enumerate() {
         let span = Span {
             at: (w[0], w[1]),
-            held: (i > 0, i < last),
+            held: (i > 0 || ends.0, i < last || ends.1),
         };
         let part = within(body, motion, feature, span, 0)?;
         out = Some(match out {
@@ -265,6 +270,35 @@ fn stills(body: &Brep, motion: &Motion) -> Vec<f64> {
     out
 }
 
+/// The rate of change of the body's velocity at `tau`, read toward the inside of a span that
+/// runs `len` from there (negative where the span ends at `tau`), times that span's sign: the sign
+/// the velocity takes on just inside. A one-sided difference of fourth order, so where a face moves
+/// within its own surface at `tau`, its grazing curve there is placed as exactly as one inside.
+pub(super) fn turning(motion: &Motion, tau: f64, len: f64) -> Twist {
+    let h = 1e-3 * len;
+    let weights = [-25.0, 48.0, -36.0, 16.0, -3.0];
+    let mut out = Twist {
+        omega: Vec3::ZERO,
+        v: Vec3::ZERO,
+    };
+    for (k, w) in weights.iter().enumerate() {
+        let tw = motion.body_twist(tau + h * k as f64);
+        out.omega += tw.omega * *w;
+        out.v += tw.v * *w;
+    }
+    out
+}
+
+/// Whether the motion keeps face `f` of `body` in its own surface at `tau`.
+pub(super) fn held(body: &Brep, motion: &Motion, f: FaceId, tau: f64) -> bool {
+    let tw = motion.body_twist(tau);
+    let size = measure::bbox(body).diagonal();
+    let speed = tw.omega.norm() * size + tw.v.norm();
+    face_samples(body, f)
+        .iter()
+        .all(|(p, n)| n.dot(tw.at(*p)).abs() <= 1e-9 * speed.max(1e-300))
+}
+
 /// The body cut along its grazing curves at the start of `span` (`first`) or its end. A face the
 /// motion keeps in its own surface there grazes, as the motion runs on, where the rate of change
 /// of its velocity lies in it, read by one-sided differences into the span.
@@ -277,29 +311,14 @@ fn end_cut(
 ) -> Result<Cut> {
     let (tau, dir) = if first { (span.0, 1.0) } else { (span.1, -1.0) };
     let tw = motion.body_twist(tau);
-    let h = 1e-4 * (span.1 - span.0) * dir;
-    let at = |k: f64| motion.body_twist(tau + k * h);
-    let (a, b, c) = (at(0.0), at(1.0), at(2.0));
-    // The second-order one-sided difference toward the inside: `±2h` times the rate of change,
-    // the sign the rate takes on just inside the span.
-    let change = Twist {
-        omega: b.omega * 4.0 - a.omega * 3.0 - c.omega,
-        v: b.v * 4.0 - a.v * 3.0 - c.v,
-    };
-    let size = measure::bbox(body).diagonal();
-    let speed = tw.omega.norm() * size + tw.v.norm();
+    let change = turning(motion, tau, dir * (span.1 - span.0));
     let plain = move |p: Point3| tw.at(p);
-    let turning = move |p: Point3| change.at(p);
+    let turned = move |p: Point3| change.at(p);
     let fields: Vec<&dyn Fn(Point3) -> Vec3> = faces
         .iter()
         .map(|f| {
-            let samples = face_samples(body, f.id);
-            let held = !f.still
-                && samples
-                    .iter()
-                    .all(|(p, n)| n.dot(tw.at(*p)).abs() <= 1e-9 * speed.max(1e-300));
-            if held {
-                &turning as &dyn Fn(Point3) -> Vec3
+            if !f.still && held(body, motion, f.id, tau) {
+                &turned as &dyn Fn(Point3) -> Vec3
             } else {
                 &plain as &dyn Fn(Point3) -> Vec3
             }

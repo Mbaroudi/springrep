@@ -8,6 +8,7 @@
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 use super::Ctx;
+use crate::sweep::solid::motion::Twist;
 use crate::{
     Error, Result,
     geom::Surface,
@@ -65,6 +66,9 @@ pub(super) struct CharMap<'c, 'a> {
     face: usize,
     kind: Kind,
     centre: Vec2,
+    /// At each end of the span where the motion keeps the face in its own surface, the rate of
+    /// change of the velocity, whose grazing curve is the limit of the face's there.
+    ends: [Option<Twist>; 2],
 }
 
 impl<'c, 'a> CharMap<'c, 'a> {
@@ -73,6 +77,15 @@ impl<'c, 'a> CharMap<'c, 'a> {
     /// round about that place, is refused.
     pub(super) fn of(ctx: &'c Ctx<'a>, f: usize) -> Result<Vec<CharMap<'c, 'a>>> {
         let face = &ctx.faces[f];
+        let (span, len) = (ctx.span, ctx.span.1 - ctx.span.0);
+        let end = |held: bool, tau: f64, len: f64| {
+            (held && super::held(ctx.body, ctx.motion, face.id, tau))
+                .then(|| super::turning(ctx.motion, tau, len))
+        };
+        let ends = [
+            end(ctx.bounds.held.0, span.0, len),
+            end(ctx.bounds.held.1, span.1, -len),
+        ];
         let kinds = match face.surface {
             Surface::Plane(_) => vec![Kind::Line],
             Surface::Cylinder(_) | Surface::Cone(_) if steep(ctx, f) => {
@@ -92,6 +105,7 @@ impl<'c, 'a> CharMap<'c, 'a> {
                 face: f,
                 kind,
                 centre: (face.dom.lo + face.dom.hi) * 0.5,
+                ends,
             })
             .collect();
         if let Some(m) = maps.first()
@@ -157,7 +171,20 @@ impl<'c, 'a> CharMap<'c, 'a> {
     fn rate(&self, tau: f64, uv: Vec2) -> f64 {
         let s = self.surface();
         let p = s.eval(uv.x, uv.y);
-        s.normal(uv.x, uv.y).dot(self.ctx.twist(tau).at(p)) * self.ctx.faces[self.face].out
+        s.normal(uv.x, uv.y).dot(self.twist(tau).at(p)) * self.ctx.faces[self.face].out
+    }
+
+    /// The velocity at `tau`, or at an end where the face moves within its own surface, its rate
+    /// of change: there the velocity is the rounding of terms that cancel, and its grazing curve
+    /// would jump from the one just inside.
+    fn twist(&self, tau: f64) -> Twist {
+        let (span, len) = (self.ctx.span, self.ctx.span.1 - self.ctx.span.0);
+        let hair = 1e-9 * len;
+        match self.ends {
+            [Some(tw), _] if tau <= span.0 + hair => tw,
+            [_, Some(tw)] if tau >= span.1 - hair => tw,
+            _ => self.ctx.motion.body_twist(tau),
+        }
     }
 
     /// A plane's line at `tau`: its point nearest the face's middle and its direction.
@@ -291,7 +318,7 @@ impl<'c, 'a> CharMap<'c, 'a> {
     fn along_velocity(&self, tau: f64, uv: Vec2) -> f64 {
         let s = self.surface();
         let (p, su, sv) = s.d1(uv.x, uv.y);
-        let vel = self.ctx.twist(tau).at(p);
+        let vel = self.twist(tau).at(p);
         // The velocity in the face's parameters, by least squares on its two tangents.
         let (a, b, c) = (su.dot(su), su.dot(sv), sv.dot(sv));
         let (r, t) = (vel.dot(su), vel.dot(sv));

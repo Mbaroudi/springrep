@@ -379,6 +379,86 @@ fn a_cube_slid_two_ways_at_once_adds_the_prism_of_its_shadow() {
     );
 }
 
+/// The volume a cube of side 2 about the origin fills as it is slid without turning along the arc
+/// `(−r sin a, r (1 − cos a), 0)` for `a` from `a0` to `a1` (within a quarter turn of 0): a section
+/// at `x` meets the squares whose `sin a` lies within `(−x ∓ 1) / r`, and its height runs from the
+/// lowest of their bottoms to the highest of their tops, as the height of the arc grows with `|a|`.
+fn arc_sweep_volume(r: f64, a0: f64, a1: f64) -> f64 {
+    let height = |a: f64| r * (1.0 - a.cos());
+    let (x0, x1) = (-r * a1.sin() - 1.0, -r * a0.sin() + 1.0);
+    let n = 200_000;
+    let dx = (x1 - x0) / n as f64;
+    let section = |x: f64| {
+        let lo = ((-x - 1.0) / r).max(a0.sin()).asin();
+        let hi = ((1.0 - x) / r).min(a1.sin()).asin();
+        let near = if lo <= 0.0 && hi >= 0.0 {
+            0.0
+        } else {
+            lo.abs().min(hi.abs())
+        };
+        let far = lo.abs().max(hi.abs());
+        (height(far) + 1.0) - (height(near) - 1.0)
+    };
+    // Midpoints, the section's kinks at the ends of the arc's own run of x aside, which a rule
+    // this fine settles far inside the test's tolerance.
+    (0..n)
+        .map(|i| section(x0 + (i as f64 + 0.5) * dx))
+        .sum::<f64>()
+        * dx
+        * 2.0
+}
+
+/// Turned by `a` about the z axis and then by `−a` about the line through `(0, r, 0)` along it, a
+/// body is slid without turning along the arc of [`arc_sweep_volume`].
+fn along_arc(r: f64, a0: f64, a1: f64) -> Motion {
+    Motion::Then(
+        Box::new(Motion::Turn {
+            origin: Vec3::ZERO,
+            axis: Vec3::Z,
+            from: a0,
+            to: a1,
+        }),
+        Box::new(Motion::Turn {
+            origin: Vec3::new(0.0, r, 0.0),
+            axis: Vec3::Z,
+            from: -a0,
+            to: -a1,
+        }),
+    )
+}
+
+// Slid along an arc from where it heads along −x, a cube's faces square to y move within their own
+// planes where the motion starts. For the half arc the section's height is the square's 2 plus the
+// arc's rise, and the volume is 2 (4 + 2r (sin a + 1 − cos a)).
+#[test]
+fn a_cube_slid_along_an_arc_from_where_two_faces_stand_still() {
+    let cube = block(
+        &Frame::WORLD.translated(Vec3::new(-1.0, -1.0, -1.0)),
+        Vec3::new(2.0, 2.0, 2.0),
+        "cube",
+    )
+    .unwrap();
+    let (r, a) = (10.0, PI / 3.0);
+    let b = solid(&cube, &along_arc(r, 0.0, a), "sw").unwrap();
+    assert!(check::check(&b).is_empty());
+    let closed = 2.0 * (4.0 + 2.0 * r * (a.sin() + 1.0 - a.cos()));
+    assert!(rel(arc_sweep_volume(r, 0.0, a), closed) < 1e-9);
+    assert!(
+        rel(measure::volume(&b), closed) < 1e-9,
+        "{}",
+        measure::volume(&b)
+    );
+    // Across that instant the faces square to y turn from moving in to moving out.
+    let b = solid(&cube, &along_arc(r, -a, a), "sw").unwrap();
+    assert!(check::check(&b).is_empty());
+    let want = arc_sweep_volume(r, -a, a);
+    assert!(
+        rel(measure::volume(&b), want) < 1e-7,
+        "{} {want}",
+        measure::volume(&b)
+    );
+}
+
 // A frame riding a circle about the z axis turns about the axis as it goes, so a cube it carries
 // sweeps what the cube turned through the same angle does. The unit cube from (1, ½, 0) casts a
 // square on a half-plane through the axis from radius √(5/4) to radius 5/2: a moment of 5/2.
