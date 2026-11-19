@@ -466,7 +466,7 @@ fn derivative(f: &dyn Fn(f64) -> Point3, t: f64, h: f64, (t0, t1): (f64, f64)) -
 /// the curve itself may lose smoothness, so the offset may too) with each piece between them cut
 /// evenly, and the pieces doubled until the cubic lies within [`OFFSET_FIT`] of `true_at` at every
 /// piece's middle. Each node's knot is double, so the cubic keeps the offset's own continuity there.
-fn fit_offset_curve(
+pub(crate) fn fit_offset_curve(
     true_at: &dyn Fn(f64) -> Point3,
     (t0, t1): (f64, f64),
     period: Option<f64>,

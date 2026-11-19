@@ -22,6 +22,7 @@ use crate::{
 mod affine;
 mod delete;
 mod near;
+mod parallel;
 pub(crate) mod tweak;
 
 pub use affine::{Affine, affine};
@@ -862,5 +863,59 @@ mod tests {
             PI * a * b * h + s * d + m * d * d + 4.0 / 3.0 * PI * d.powi(3),
         );
         close(measure::area(&out), s + 2.0 * m * d + 4.0 * PI * d * d);
+    }
+
+    #[test]
+    fn an_elliptic_cylinder_shrunk_past_its_curvature_keeps_its_parallel_trimmed() {
+        // The ellipse of semi-axes 5 and 3 extruded 10, shrunk by 2.5 as the cylinder less its
+        // complement grown by 2.5. The ellipse's least radius of curvature is 9/5, so its parallel
+        // 2.5 in loops past both ends of the long axis; the section left is bounded by the
+        // parallel's arcs between where they cross that axis, and its area is ½∮(x dy − y dx)
+        // along them, with o′ = e′·(1 − d·κ) and κ = ab/|e′|³.
+        let (a, b, d) = (5.0f64, 3.0f64, 2.5f64);
+        let half = |start: f64| {
+            let arc = Segment::Ellipse {
+                center: Vec2::ZERO,
+                rotation: 0.0,
+                major: a,
+                minor: b,
+                start,
+                sweep: PI,
+            };
+            NamedSegment::new(arc, "side")
+        };
+        let base = Profile::outline(vec![half(0.0), half(PI)]);
+        let body = boolean::unify(&extrude(&base, &Frame::WORLD, 10.0, "p").unwrap()).unwrap();
+        let room = crate::primitive::block(
+            &Frame::WORLD.translated(Vec3::new(-10.0, -10.0, -5.0)),
+            Vec3::new(20.0, 20.0, 20.0),
+            "room",
+        )
+        .unwrap();
+        let outside = boolean::difference(&room, &body).unwrap();
+        let near = offset(&outside, d, "o").unwrap();
+        let out = boolean::difference(&body, &near).unwrap();
+        let o = |t: f64| {
+            let n = Vec2::new(b * t.cos(), a * t.sin());
+            let e1 = Vec2::new(-a * t.sin(), b * t.cos());
+            let k = a * b / e1.norm().powi(3);
+            let p = Vec2::new(a * t.cos(), b * t.sin()) - n * (d / n.norm());
+            (p, e1 * (1.0 - d * k))
+        };
+        let (mut lo, mut hi) = (1e-9, 0.5 * PI);
+        for _ in 0..200 {
+            let m = 0.5 * (lo + hi);
+            if o(m).0.y < 0.0 {
+                lo = m;
+            } else {
+                hi = m;
+            }
+        }
+        let mut green = |t: f64| {
+            let (p, dp) = o(t);
+            p.cross(dp)
+        };
+        let area = crate::numeric::integrate(&mut green, lo, PI - lo, 1e-13);
+        close(measure::volume(&out), area * 5.0);
     }
 }

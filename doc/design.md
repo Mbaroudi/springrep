@@ -1120,6 +1120,13 @@ where the convex edges only run on into each other tangentially needs no ball. E
   strip or an annular sector in the meridian half plane, cut into pieces of at most a half turn and
   clipped at the axis, and turned a whole turn. A point the sweep carries past the axis lies nearer
   the same face on the other side of it, so the clip loses nothing;
+- an extrusion face round a whole closed plane curve, square to its plane, sweeps the region
+  between the curve and its parallel at `d`, extruded. Where `d` passes the curve's radius of
+  curvature the parallel loops back in a swallowtail; it is cut where it crosses itself, and the
+  pieces whose points lie nearer than `d` to the curve are dropped (Farouki and Neff 1990)
+  ([`parallel.rs`](../src/edit/parallel.rs)). A shrink past an ellipse's curvature, built as the
+  solid less its complement grown, keeps the parallel's arcs between their crossings on the long
+  axis, which meet there in a sharp edge;
 - a line edge's tube is a cylinder, and a circle's the disk of radius `d` turned along it, clipped
   at its axis where `d` passes the circle's radius;
 - a corner's ball is a sphere.
@@ -1670,6 +1677,9 @@ The papers this document and the source cite by author and year.
 - **Coons 1967.** S. A. Coons, _Surfaces for Computer-Aided Design of Space Forms_, MIT Project MAC
   report MAC-TR-41, 1967.
 - **de Boor 1978.** C. de Boor, _A Practical Guide to Splines_, Springer, 1978.
+- **Farouki and Neff 1990.** R. T. Farouki and C. A. Neff, "Analytic properties of plane offset
+  curves" and "Algebraic properties of plane offset curves", _Computer Aided Geometric Design_ 7,
+  1990, pp. 83–99 and 101–127.
 - **Farin 2002.** G. Farin, _Curves and Surfaces for CAGD: A Practical Guide_, 5th ed., Morgan
   Kaufmann, 2002.
 - **Gregory 1974.** J. A. Gregory, "Smooth interpolation without twist constraints", in R. E.

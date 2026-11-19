@@ -9,6 +9,7 @@ use std::f64::consts::{PI, TAU};
 
 use crate::{
     boolean,
+    edit::parallel,
     error::{Error, Result},
     geom::{Curve, Surface},
     math::{Frame, Point3, Vec2, Vec3},
@@ -34,6 +35,7 @@ pub(crate) fn slab(s: &Brep, f: FaceId, by: f64, feature: &str) -> Result<Brep> 
         Surface::Cylinder(_) | Surface::Cone(_) | Surface::Sphere(_) | Surface::Torus(_) => {
             turned_slab(s, f, by, feature)?
         }
+        Surface::Extrusion(_) => extruded_slab(s, f, by, feature)?,
         other => {
             return unsupported(&format!(
                 "the points near a {} face: its slab is not built",
@@ -130,6 +132,139 @@ fn plane_slab(s: &Brep, f: FaceId, by: f64, feature: &str) -> Result<Brep> {
     // The outer loop first: it bounds the most area.
     loops.sort_by(|a, b| b.signed_area2().abs().total_cmp(&a.signed_area2().abs()));
     extrude(&Profile { loops }, &fr, by.abs(), feature)
+}
+
+/// An extrusion face's slab, where the face is a whole closed plane curve extruded square to its
+/// plane between two copies of the curve: the region the curve sweeps moving `by` along its
+/// normal, bounded by the curve and its parallel at that distance with the parallel's loops past
+/// the curve's radius of curvature trimmed where it crosses itself (Farouki and Neff 1990),
+/// extruded. The points of those loops lie nearer the curve elsewhere, so the trim loses nothing.
+fn extruded_slab(s: &Brep, f: FaceId, by: f64, feature: &str) -> Result<Brep> {
+    let face = s.face(f);
+    let Surface::Extrusion(ex) = &face.surface else {
+        unreachable!("an extrusion face")
+    };
+    let curve = &ex.curve;
+    let (Some(period), Some(up)) = (curve.period(), ex.dir.unit()) else {
+        return unsupported("the slab of an extrusion of an open curve");
+    };
+    let u0 = curve.domain().0;
+    let base = curve.eval(u0);
+    let height = |p: Point3| (p - base).dot(up);
+    let length = |c: &Curve, (t0, t1): (f64, f64)| {
+        let at = |j: usize| c.eval(t0 + (t1 - t0) * j as f64 / 256.0);
+        (0..256).map(|k| at(k).dist(at(k + 1))).sum::<f64>()
+    };
+    if (0..64).any(|k| height(curve.eval(u0 + period * k as f64 / 64.0)).abs() > tol::LINEAR) {
+        return unsupported("the slab of an extrusion of a curve off the plane square to it");
+    }
+    // The face must run between two copies of the whole curve, joined by its seam.
+    let mut rims: Vec<(f64, f64)> = Vec::new();
+    for &lp in &face.loops {
+        for &c in &s.lp(lp).coedges {
+            let x = s.edge(s.coedge(c).edge);
+            let Some(c) = &x.curve else {
+                return unsupported("the slab of an extrusion face with a pole");
+            };
+            let (t0, t1) = x.range;
+            let hs = [t0, 0.5 * (t0 + t1), t1].map(|t| height(c.eval(t)));
+            if hs.iter().all(|h| (h - hs[0]).abs() <= tol::LINEAR) {
+                rims.push((hs[0], length(c, x.range)));
+            } else if !matches!(c, Curve::Line(l) if l.dir.cross(up).norm() <= tol::ANGULAR) {
+                return unsupported(
+                    "the slab of an extrusion face bounded by other than copies of its curve",
+                );
+            }
+        }
+    }
+    let (Some(lo), Some(hi)) = (
+        rims.iter().map(|r| r.0).min_by(f64::total_cmp),
+        rims.iter().map(|r| r.0).max_by(f64::total_cmp),
+    ) else {
+        return unsupported("the slab of an extrusion face with no rim");
+    };
+    let whole = length(curve, (u0, u0 + period));
+    let rim = |h: f64| {
+        rims.iter()
+            .filter(|r| (r.0 - h).abs() <= tol::LINEAR)
+            .map(|r| r.1)
+            .sum::<f64>()
+    };
+    let off = |h: f64| (h - lo).abs() > tol::LINEAR && (h - hi).abs() > tol::LINEAR;
+    if hi - lo <= tol::LINEAR
+        || rims.iter().any(|r| off(r.0))
+        || (rim(lo) - whole).abs() > 1e-3 * whole
+        || (rim(hi) - whole).abs() > 1e-3 * whole
+    {
+        return unsupported("the slab of an extrusion face round less than its whole curve");
+    }
+    let fr = Frame::from_axis(base + up * lo, up)?;
+    let flat = |v: Vec3| {
+        let l = fr.dir_to_local(v);
+        Vec2::new(l.x, l.y)
+    };
+    let eval = |u: f64| {
+        let (p, d, dd) = curve.d2(u);
+        let l = fr.to_local(p);
+        (Vec2::new(l.x, l.y), flat(d), flat(dd))
+    };
+    let closed = parallel::Closed {
+        eval: &eval,
+        start: u0,
+        period,
+    };
+    // The surface's normal is q′ × up, the right side of the curve's direction in the frame.
+    let side = if face.reversed { 1.0 } else { -1.0 } * by.signum();
+    let d = by.abs();
+    let mut breaks = curve.breakpoints(u0, u0 + period);
+    breaks.extend(breaks.clone().iter().map(|b| b + period));
+    let mut loops = vec![whole_loop(&fr, curve, u0, period)?];
+    for ranges in parallel::trimmed(&closed, side, d)? {
+        let at = |u: f64| {
+            let q = closed.parallel(u, side, d).0;
+            Point3::new(q.x, q.y, 0.0)
+        };
+        let mut segments = Vec::new();
+        for &(a, b) in &ranges {
+            let fit = super::tweak::fit_offset_curve(
+                &at,
+                (a, b),
+                (b - a >= period - 1e-12).then_some(b - a),
+                &breaks,
+            )?;
+            segments.push(NamedSegment::new(
+                Segment::Spline {
+                    curve: fit,
+                    reversed: false,
+                },
+                "slab",
+            ));
+        }
+        loops.push(ProfileLoop { segments });
+    }
+    loops.sort_by(|a, b| b.signed_area2().abs().total_cmp(&a.signed_area2().abs()));
+    extrude(&Profile { loops }, &fr, hi - lo, feature)
+}
+
+/// The loop of the whole closed `curve` drawn in `fr`'s xy plane, in two halves where it is no
+/// closed profile segment on its own.
+fn whole_loop(fr: &Frame, curve: &Curve, u0: f64, period: f64) -> Result<ProfileLoop> {
+    let segments = match curve {
+        Curve::BSpline(b) => vec![Segment::Spline {
+            curve: b.transformed(&fr.to_transform().inverse()),
+            reversed: false,
+        }],
+        _ => vec![
+            segment_on(fr, curve, (u0, u0 + 0.5 * period))?,
+            segment_on(fr, curve, (u0 + 0.5 * period, u0 + period))?,
+        ],
+    };
+    Ok(ProfileLoop {
+        segments: segments
+            .into_iter()
+            .map(|g| NamedSegment::new(g, "slab"))
+            .collect(),
+    })
 }
 
 /// Where a face of revolution lies in its meridian half plane, `(ρ, h)` out from and along its
