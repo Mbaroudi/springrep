@@ -243,6 +243,32 @@ fn a_disc_turned_about_a_line_through_its_rim() {
     );
 }
 
+// A rod of radius r along x from 0 to L, turned through θ about the z axis, which passes through
+// the centre of its near end. Its far rim's axis meets the turn's, so the rim sweeps a sphere about
+// that point. At height z it is the box of the next test with a = 0, b = L and c = w = √(r² − z²),
+// whose swept area 2wL + θ(L² + w²)/2 + atan(w/L)(L² + w²) − Lw is integrated over z.
+#[test]
+fn a_rod_turned_about_a_line_through_its_end_sweeps_its_rim_on_a_sphere() {
+    let (r, l, angle) = (0.5, 5.0, 2.0 * PI / 3.0);
+    let rod = cylinder(
+        &Frame::new(Vec3::ZERO, Vec3::X, Vec3::Y).unwrap(),
+        r,
+        l,
+        "rod",
+    )
+    .unwrap();
+    let swept = solid(&rod, &about_z(angle), "sw").unwrap();
+    assert!(check::check(&swept).is_empty());
+    let area = |w: f64| {
+        let r2 = l * l + w * w;
+        2.0 * w * l + angle * r2 / 2.0 + (w / l).atan() * r2 - l * w
+    };
+    let mut slice = |a: f64| area(r * a.cos()) * r * a.cos();
+    let want = crate::numeric::integrate(&mut slice, -PI / 2.0, PI / 2.0, 1e-13);
+    let got = measure::volume(&swept);
+    assert!(rel(got, want) < 1e-9, "{got} {want}");
+}
+
 // The box a ≤ x ≤ b, |y| ≤ c, 0 ≤ z ≤ h turned through θ about the z axis. Its faces square to x
 // each graze the turn along y = 0 and cross themselves turned, so it is built in parts. At radius ρ
 // it spans one arc out to √(b² + c²), which the turn widens by θ, except past b, where it spans two

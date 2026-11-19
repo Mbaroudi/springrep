@@ -2,7 +2,7 @@
 //! extrusion under a slide, a revolution under a turn, and under a screw the rational B-spline whose
 //! columns follow its control points' helices.
 
-use std::f64::consts::TAU;
+use std::f64::consts::{PI, TAU};
 
 use super::motion::Motion;
 use crate::{
@@ -93,8 +93,16 @@ fn lies_square_to(curve: &Curve, range: (f64, f64), dir: Vec3) -> bool {
 
 /// What `curve` sweeps turning through `span` about the unit `axis` through `o`: a cylinder,
 /// cone or plane where the curve is a line in a plane through the axis, a torus or sphere where it
-/// is a circle in one, else the revolution of the curve. On each, the angle turned is `u`.
-fn turned(curve: &Curve, range: (f64, f64), o: Point3, axis: Vec3, span: f64) -> Result<Sheet> {
+/// is a circle in one, else the revolution of the curve. On each, the angle turned is `u`. The
+/// surface follows from the whole curve's `range`, so the pieces of one edge share it; `piece` is
+/// the part of it this sheet's face is swept from.
+fn turned(
+    curve: &Curve,
+    (range, piece): ((f64, f64), (f64, f64)),
+    o: Point3,
+    axis: Vec3,
+    span: f64,
+) -> Result<Sheet> {
     let revolution = || {
         Sheet::affine(
             Surface::Revolution(Box::new(Revolution {
@@ -191,7 +199,10 @@ fn turned(curve: &Curve, range: (f64, f64), o: Point3, axis: Vec3, span: f64) ->
             let in_plane = c.frame.z.dot(axis).abs() <= tol::ANGULAR
                 && (c.frame.origin - o).dot(c.frame.z).abs() <= tol::LINEAR;
             if !in_plane {
-                return Ok(revolution());
+                return Ok(match spherical(c, (range, piece), o, axis, span)? {
+                    Some(sheet) => sheet,
+                    None => revolution(),
+                });
             }
             let r = radial(c.frame.origin);
             let rho = r.norm();
@@ -219,28 +230,91 @@ fn turned(curve: &Curve, range: (f64, f64), o: Point3, axis: Vec3, span: f64) ->
                     Vec2::new(0.0, phi0),
                 ));
             }
-            // About its own centre a circle sweeps a sphere, whose latitude reads the arc's angle
-            // only while the arc stays on one side of the axis.
-            let (lo, hi) = (phi0 + sign * range.0, phi0 + sign * range.1);
-            let shift = (0.5 * (lo + hi) / TAU).round() * TAU;
+            // About its own centre a circle sweeps a sphere. Where the piece stays on the side of
+            // the axis `x` points to, the latitude reads the circle's angle; on the other side the
+            // longitude is half a turn on and the latitude reads the angle back from a half turn.
+            let (lo, hi) = (phi0 + sign * piece.0, phi0 + sign * piece.1);
             let half = std::f64::consts::FRAC_PI_2;
-            if lo.min(hi) - shift < -half - 1e-12 || lo.max(hi) - shift > half + 1e-12 {
-                return Ok(revolution());
-            }
+            let shift = (0.5 * (lo + hi) / TAU).round() * TAU;
+            let near = lo.min(hi) - shift >= -half - 1e-12 && lo.max(hi) - shift <= half + 1e-12;
+            let back = (0.5 * (lo + hi) / TAU - 0.5).round() * TAU + PI;
+            let far = lo.min(hi) - back >= -half - 1e-12 && lo.max(hi) - back <= half + 1e-12;
             let surface = Surface::Sphere(Sphere {
                 frame,
                 radius: c.radius,
             });
+            let (u0, flip, at) = match (near, far) {
+                (true, _) => (0.0, 1.0, shift),
+                (_, true) => (PI, -1.0, back),
+                _ => return Ok(revolution()),
+            };
             Ok(Sheet::affine(
                 surface,
                 span,
                 Vec2::new(1.0, 0.0),
-                Vec2::new(0.0, sign),
-                Vec2::new(0.0, phi0 - shift),
+                Vec2::new(0.0, flip * sign),
+                Vec2::new(u0, flip * (phi0 - at)),
             ))
         }
         _ => Ok(revolution()),
     }
+}
+
+/// What the circle `c` sweeps turning through `span` about the unit `axis` through `o` where the
+/// circle's own axis meets the turn's at a point `m`: every point of the circle lies at one distance
+/// from `m`, so it sweeps the sphere about `m` through it. Its revolution would draw that sphere
+/// twice, out to the circle's points farthest from the axis and back, and a point of it would have
+/// two parameters. `None` where the axes do not meet, or where the circle over `piece` reaches the
+/// axis or crosses the longitude half a turn from the middle of `range`, where its longitude would
+/// not be one smooth reading.
+fn spherical(
+    c: &Circle,
+    (range, piece): ((f64, f64), (f64, f64)),
+    o: Point3,
+    axis: Vec3,
+    span: f64,
+) -> Result<Option<Sheet>> {
+    let n = c.frame.z;
+    let b = n.dot(axis);
+    let denom = 1.0 - b * b;
+    if n.cross(axis).norm() <= tol::ANGULAR {
+        return Ok(None);
+    }
+    let w = c.frame.origin - o;
+    let (d, e) = (n.dot(w), axis.dot(w));
+    let m = o + axis * ((e - b * d) / denom);
+    if (c.frame.origin + n * ((b * e - d) / denom)).dist(m) > tol::LINEAR {
+        return Ok(None);
+    }
+    let circle = Curve::Circle(c.clone());
+    let mid = circle.eval(0.5 * (range.0 + range.1)) - m;
+    let frame = Frame::new(m, axis, mid - axis * mid.dot(axis))?;
+    let radius = circle.eval(range.0).dist(m);
+    let reading = move |t: f64| {
+        let q = frame.to_local(circle.eval(t));
+        let rho = q.x.hypot(q.y);
+        (q.y.atan2(q.x), q.z.atan2(rho), rho)
+    };
+    let clear = (0..=64).all(|k| {
+        let (lon, _, rho) = reading(piece.0 + (piece.1 - piece.0) * k as f64 / 64.0);
+        rho > tol::LINEAR && lon.abs() < PI - 1e-3
+    });
+    if !clear {
+        return Ok(None);
+    }
+    Ok(Some(Sheet {
+        surface: Surface::Sphere(Sphere { frame, radius }),
+        span,
+        origin: Vec2::ZERO,
+        along: Vec2::new(1.0, 0.0),
+        across: Vec2::ZERO,
+        affine: false,
+        along_affine: true,
+        exact: Some(Box::new(move |s, t| {
+            let (lon, lat, _) = reading(t);
+            Vec2::new(lon + s, lat)
+        })),
+    }))
 }
 
 impl Steady {
@@ -407,7 +481,13 @@ impl Steady {
     }
 
     /// What `curve`, where the motion starts, sweeps over its `range`.
-    pub(super) fn sheet(&self, curve: &Curve, range: (f64, f64)) -> Result<Sheet> {
+    /// `piece` is the part of the range whose face the sheet is for.
+    pub(super) fn sheet(
+        &self,
+        curve: &Curve,
+        range: (f64, f64),
+        piece: (f64, f64),
+    ) -> Result<Sheet> {
         let span = self.span();
         match self {
             Steady::Slide { by } => {
@@ -462,7 +542,9 @@ impl Steady {
                     exact: None,
                 })
             }
-            Steady::Turn { origin, axis, .. } => turned(curve, range, *origin, *axis, span),
+            Steady::Turn { origin, axis, .. } => {
+                turned(curve, (range, piece), *origin, *axis, span)
+            }
             Steady::Screw { screw, angle, .. } => screwed(curve, range, screw, *angle),
         }
     }

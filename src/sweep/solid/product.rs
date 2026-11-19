@@ -196,7 +196,7 @@ pub(super) fn product(
                     .into(),
             ));
         }
-        let sheet = motion.sheet(&placed, cut.whole[k])?;
+        let sheet = motion.sheet(&placed, cut.whole[k], pg.range)?;
         let span = sheet.span;
         let mut path =
             |v: usize, pieces: &mut Vec<PieceGeom>, pool: &mut Vec<Point3>| -> Result<Vec<usize>> {
@@ -279,7 +279,14 @@ pub(super) fn product(
                         pole: pool[pg.v0],
                         t0: s0,
                         t1: s1,
-                        map: if !sheet.along_affine {
+                        // A pole has no curve to project: its row of parameters is the straight
+                        // one between the row's ends, a single point on a plane.
+                        map: if pg.curve.is_none() && !sheet.along_affine {
+                            UvMap::Affine {
+                                origin: sheet.uv(0.0, t),
+                                dir: (sheet.uv(span, t) - sheet.uv(0.0, t)) / span,
+                            }
+                        } else if !sheet.along_affine {
                             UvMap::Projected
                         } else {
                             UvMap::Affine {

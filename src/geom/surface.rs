@@ -386,7 +386,8 @@ impl Surface {
                 let (a, b) = finite_domain(&s.curve);
                 let frame = Frame::from_axis(s.origin, s.axis).unwrap_or(Frame::WORLD);
                 let ang = angle_of(frame.to_local(p));
-                let seeds = curve_seeds(&s.curve, a, b).into_iter().map(|v| {
+                let seeds = meridian_seeds(s, &frame, p, a, b);
+                let seeds = seeds.into_iter().map(|v| {
                     let (q, dq) = s.curve.d1(v);
                     let q = frame.to_local(q);
                     // A point on the axis has no angle of its own: the meridian leaves it along
@@ -576,6 +577,103 @@ fn extrusion_near(e: &Extrusion, p: Point3, mut u: f64) -> Option<Vec2> {
 fn finite_domain(c: &Curve) -> (f64, f64) {
     let (a, b) = c.domain();
     (a.max(-1e4), b.min(1e4))
+}
+
+/// The curve's sample parameters, each local least of the distance in the meridian plane (from the
+/// axis and along it) from `p` refined by Newton's method on that distance alone. The point of a
+/// surface of revolution nearest `p` lies in the half-plane through `p` and the axis, so this is
+/// the whole problem; the two-parameter steps stall where the curve crosses its own meridian
+/// square to it, where the surface folds back on itself and its partials are parallel.
+fn meridian_seeds(s: &Revolution, frame: &Frame, p: Point3, a: f64, b: f64) -> Vec<f64> {
+    let to_meridian = |q: Point3| {
+        let l = frame.to_local(q);
+        Vec2::new(l.x.hypot(l.y), l.z)
+    };
+    let target = to_meridian(p);
+    let gap = |v: f64| to_meridian(s.curve.eval(v)).dist(target);
+    let mut seeds = curve_seeds(&s.curve, a, b);
+    let gaps: Vec<f64> = seeds.iter().map(|&v| gap(v)).collect();
+    let n = seeds.len();
+    for k in 0..n {
+        let below = |j: usize| gaps[k] <= gaps[j];
+        if (k == 0 || below(k - 1)) && (k + 1 == n || below(k + 1)) {
+            // Where the meridian turns back the sample can sit on a stationary point of the
+            // distance with the least either side of it, so each side is started on its own.
+            let (lo, v, hi) = (
+                seeds[k.saturating_sub(1)],
+                seeds[k],
+                seeds[(k + 1).min(n - 1)],
+            );
+            for (start, range) in [
+                (v, (lo, hi)),
+                (0.5 * (lo + v), (lo, v)),
+                (0.5 * (v + hi), (v, hi)),
+            ] {
+                seeds.push(meridian_newton(s, frame, target, start, range));
+            }
+        }
+    }
+    seeds
+}
+
+/// Newton's method on half the squared meridian distance from `target`, from `v` within `range`,
+/// each step taken only where it brings the curve nearer.
+fn meridian_newton(
+    s: &Revolution,
+    frame: &Frame,
+    target: Vec2,
+    mut v: f64,
+    range: (f64, f64),
+) -> f64 {
+    let state = |v: f64| {
+        let (q, d1, d2) = s.curve.d2(v);
+        let (l, l1, l2) = (
+            frame.to_local(q),
+            frame.dir_to_local(d1),
+            frame.dir_to_local(d2),
+        );
+        let rho = l.x.hypot(l.y);
+        (rho, l, l1, l2)
+    };
+    let gap2 = |v: f64| {
+        let (rho, l, ..) = state(v);
+        (rho - target.x).powi(2) + (l.z - target.y).powi(2)
+    };
+    let mut g = gap2(v);
+    for _ in 0..30 {
+        let (rho, l, l1, l2) = state(v);
+        if rho <= 1e-12 {
+            break;
+        }
+        let r1 = (l.x * l1.x + l.y * l1.y) / rho;
+        let r2 = (l1.x * l1.x + l1.y * l1.y + l.x * l2.x + l.y * l2.y) / rho - r1 * r1 / rho;
+        let (dr, dh) = (rho - target.x, l.z - target.y);
+        let grad = dr * r1 + dh * l1.z;
+        let hess = r1 * r1 + dr * r2 + l1.z * l1.z + dh * l2.z;
+        if grad == 0.0 || hess <= 0.0 {
+            break;
+        }
+        let mut step = -grad / hess;
+        let mut taken = false;
+        for _ in 0..8 {
+            let next = (v + step).clamp(range.0, range.1);
+            let gn = gap2(next);
+            if gn < g {
+                taken = true;
+                let done = (next - v).abs() <= 1e-15 * (1.0 + v.abs());
+                (v, g) = (next, gn);
+                if done {
+                    return v;
+                }
+                break;
+            }
+            step *= 0.5;
+        }
+        if !taken {
+            break;
+        }
+    }
+    v
 }
 
 fn curve_seeds(c: &Curve, a: f64, b: f64) -> Vec<f64> {
