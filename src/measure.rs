@@ -1425,7 +1425,7 @@ impl<'a> Outlines<'a> {
                 if s.eval(near.x, near.y).dist(p) > within {
                     return None;
                 }
-                let uv = self.on_face(held, p, within)?;
+                let uv = held.1.holds(b, held.0, near, p, within)?;
                 let n = s.normal(uv.x, uv.y);
                 Some(if face.reversed { -n } else { n })
             })

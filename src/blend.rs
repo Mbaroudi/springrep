@@ -1073,6 +1073,24 @@ fn rolling_forced() -> bool {
 }
 
 #[cfg(test)]
+thread_local! {
+    /// Joins this thread's corner tools to their pieces by a boolean union instead of gluing them,
+    /// so tests can hold the two to one result.
+    static UNITED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn united() -> bool {
+    #[cfg(test)]
+    {
+        UNITED.get()
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
+}
+
+#[cfg(test)]
 #[derive(Clone, Copy, Debug)]
 enum Method {
     Sewn,
@@ -1177,6 +1195,15 @@ fn by_tools(
                 "a fillet's corner lost the piece it joins".into(),
             ));
         };
+        // The corner's trim face is the piece's end cap (the corner continues the piece's section
+        // exactly), and the two lie either side of its plane: they join along it, no boolean
+        // needed to find where a patch tangent to the piece meets it.
+        if !united()
+            && let Some(joined) = glue_with(&pieces[pi].1, corner, true)
+        {
+            pieces[pi].1 = joined;
+            continue;
+        }
         let facts = shared_edges(&pieces[pi].1, corner);
         pieces[pi].1 = boolean::boolean_with(&pieces[pi].1, corner, boolean::Op::Union, &facts)?;
     }
@@ -3129,15 +3156,21 @@ type EdgePair = (EdgeId, EdgeId, bool);
 /// side, with the same straight and circular edges: those faces go, and their edges are shared.
 /// `None` when there is no such face, or the joined solid does not check valid.
 pub(crate) fn glue(a: &Brep, b: &Brep) -> Option<Brep> {
+    glue_with(a, b, false)
+}
+
+/// [`glue`]; where `fitted`, along one cap only, whose edges of `b` may also be splines lying on
+/// `a`'s conics, as a corner tool's are on its piece's end cap.
+fn glue_with(a: &Brep, b: &Brep, fitted: bool) -> Option<Brep> {
     let mut caps: Vec<(FaceId, FaceId, Vec<EdgePair>)> = Vec::new();
     for fa in a.face_ids() {
         for fb in b.face_ids() {
-            if let Some(m) = matching_caps(a, fa, b, fb) {
+            if let Some(m) = matching_caps(a, fa, b, fb, fitted) {
                 caps.push((fa, fb, m));
             }
         }
     }
-    if caps.is_empty() {
+    if caps.is_empty() || (fitted && caps.len() != 1) {
         return None;
     }
     // Only the edges a face keeps go across: where caps of one solid meet each other, their
@@ -3287,8 +3320,14 @@ pub(crate) fn glue(a: &Brep, b: &Brep) -> Option<Brep> {
 
 /// When planar faces `fa` of `a` and `fb` of `b` lie on one plane facing each other, with one loop
 /// each of the same line and circle edges, those edges paired, each with whether it runs the other
-/// way.
-fn matching_caps(a: &Brep, fa: FaceId, b: &Brep, fb: FaceId) -> Option<Vec<EdgePair>> {
+/// way. Where `fitted`, an edge of `a` may also be an ellipse, and `b`'s a spline lying on `a`'s.
+fn matching_caps(
+    a: &Brep,
+    fa: FaceId,
+    b: &Brep,
+    fb: FaceId,
+    fitted: bool,
+) -> Option<Vec<EdgePair>> {
     let (xa, xb) = (a.face(fa), b.face(fb));
     let (Surface::Plane(pa), Surface::Plane(pb)) = (&xa.surface, &xb.surface) else {
         return None;
@@ -3313,10 +3352,16 @@ fn matching_caps(a: &Brep, fa: FaceId, b: &Brep, fb: FaceId) -> Option<Vec<EdgeP
     if la.len() != lb.len() {
         return None;
     }
-    let ends = |s: &Brep, e: EdgeId| -> Option<[Point3; 3]> {
+    let ends = |s: &Brep, e: EdgeId, own: bool| -> Option<[Point3; 3]> {
         let x = s.edge(e);
         let c = x.curve.as_ref()?;
-        if !matches!(c, Curve::Line(_) | Curve::Circle(_)) || x.start == x.end {
+        let kind = match c {
+            Curve::Line(_) | Curve::Circle(_) => true,
+            Curve::Ellipse(_) => fitted && own,
+            Curve::Nurbs(_) => fitted && !own,
+            _ => false,
+        };
+        if !kind || x.start == x.end {
             return None;
         }
         Some([
@@ -3326,12 +3371,24 @@ fn matching_caps(a: &Brep, fa: FaceId, b: &Brep, fb: FaceId) -> Option<Vec<EdgeP
         ])
     };
     let near = |p: Point3, q: Point3| p.dist(q) <= tol::LINEAR;
+    // A spline matched by its ends and middle alone could still leave the conic between them.
+    let along = |ea: EdgeId, eb: EdgeId| {
+        let (xa, xb) = (a.edge(ea), b.edge(eb));
+        let (Some(ca), Some(Curve::Nurbs(cb))) = (&xa.curve, &xb.curve) else {
+            return true;
+        };
+        let (t0, t1) = (xa.range.0.min(xa.range.1), xa.range.0.max(xa.range.1));
+        (1..16).all(|k| {
+            let q = cb.eval(xb.range.0 + (xb.range.1 - xb.range.0) * k as f64 / 16.0);
+            ca.eval(ca.project(q, t0, t1)).dist(q) <= tol::LINEAR
+        })
+    };
     let mut out = Vec::new();
     for &ea in &la {
-        let pa = ends(a, ea)?;
+        let pa = ends(a, ea, true)?;
         let m = lb.iter().find_map(|&eb| {
-            let pb = ends(b, eb)?;
-            if !near(pa[1], pb[1]) {
+            let pb = ends(b, eb, false)?;
+            if !near(pa[1], pb[1]) || !along(ea, eb) {
                 return None;
             }
             if near(pa[0], pb[0]) && near(pa[2], pb[2]) {
@@ -4074,5 +4131,63 @@ mod tests {
             (a - want_a).abs() < 1e-9 * want_a,
             "area {a} against {want_a}"
         );
+    }
+
+    #[test]
+    fn a_top_loop_over_smaller_corner_rounds_glues_each_corner_to_its_piece_as_a_union_would() {
+        // A regular pentagon of apothem a with R0.6 corner rounds, extruded h = 8, its top loop
+        // filleted r = 1.6. Above h − r the section at height h − r + s, k = √(1 − (s/r)²), is the
+        // one at h − r scaled about the corner axes by k: the pentagon inset by r(1 − k) with
+        // corners ρk. A regular n-gon of apothem d has area n·t·d², t = tan(π/n), and rounding
+        // its corners by q takes q²(n·t − π), so with ∫k ds = r·π/4 and ∫k² ds = 2r/3,
+        //   V = (h − r)(n·t·a² − ρ²(n·t − π)) + n·t·(r(a − r)² + (a − r)·r²·π/2 + 2r³/3)
+        //       − ρ²(n·t − π)·2r/3.
+        let (n, rho, r, h) = (5usize, 0.6, 1.6, 8.0);
+        let (half, a) = (PI / n as f64, 10.0 * (PI / n as f64).cos());
+        let centre = (a - rho) / half.cos();
+        let mut segments = Vec::new();
+        for i in 0..n {
+            let (s0, s1) = (TAU * i as f64 / n as f64, TAU * (i + 1) as f64 / n as f64);
+            let at = |angle: f64, d: f64| Vec2::new(d * angle.cos(), d * angle.sin());
+            let round = at(s0 + half, centre);
+            let from = at(s0 - half, centre) + at(s0, rho);
+            segments.push(NamedSegment::line(
+                from,
+                round + at(s0, rho),
+                &format!("s{i}"),
+            ));
+            segments.push(NamedSegment::arc(round, rho, s0, s1 - s0, &format!("c{i}")));
+        }
+        let body = sweep::extrude(&Profile::outline(segments), &up(0.0), h, "p").unwrap();
+        let top = body
+            .edge_ids()
+            .find(|&e| {
+                let x = body.edge(e);
+                matches!(x.curve, Some(Curve::Line(_)))
+                    && [x.start, x.end]
+                        .iter()
+                        .all(|&v| body.vertex(v).point.z == h)
+            })
+            .unwrap();
+        let glued = fillet_edges(&body, &[top], r, "f").unwrap();
+        UNITED.set(true);
+        let united = fillet_edges(&body, &[top], r, "f");
+        UNITED.set(false);
+        assert!(glued == united.unwrap());
+        assert!(check::check(&glued).is_empty());
+        let t = half.tan();
+        let corners = rho * rho * (n as f64 * t - PI);
+        let want = (h - r) * (n as f64 * t * a * a - corners)
+            + n as f64
+                * t
+                * (r * (a - r).powi(2) + (a - r) * r * r * PI / 2.0 + 2.0 * r.powi(3) / 3.0)
+            - corners * 2.0 * r / 3.0;
+        let got = measure::volume(&glued);
+        assert!((got - want).abs() < 1e-9 * want, "volume {got} for {want}");
+        let patches = glued
+            .face_ids()
+            .filter(|&f| matches!(glued.face(f).surface, Surface::Nurbs(_)))
+            .count();
+        assert_eq!((glued.face_count(), patches), (22, n));
     }
 }
