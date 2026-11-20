@@ -269,32 +269,42 @@ fn material(s: &Brep, n: FaceId, bound: &Aabb) -> Result<(Brep, bool)> {
 }
 
 /// Whether `n`'s material lies on the side of its surface toward the axis, the centre or the
-/// tube's centre circle: whether its outward normal points away from them.
+/// tube's centre circle: whether its outward normal points away from them. Judged where the face
+/// lies farthest from them, since at a cone's apex, on its axis, the normal says nothing.
 fn material_inside(s: &Brep, n: FaceId) -> bool {
     let face = s.face(n);
-    let lp = face.loops[0];
-    let p = s.vertex(s.coedge_start(s.lp(lp).coedges[0])).point;
-    let uv = face.surface.project(p);
-    let p = face.surface.eval(uv.x, uv.y);
-    let mut out = face.surface.normal(uv.x, uv.y);
-    if face.reversed {
-        out = -out;
-    }
-    let off_axis = |f: &Frame| {
-        let d = p - f.origin;
-        d - f.z * d.dot(f.z)
-    };
-    let away = match &face.surface {
-        Surface::Cylinder(c) => off_axis(&c.frame),
-        Surface::Cone(c) => off_axis(&c.frame),
-        Surface::Sphere(sp) => p - sp.frame.origin,
-        Surface::Torus(t) => {
-            let ring = t.frame.origin + off_axis(&t.frame).unit_or_zero() * t.major;
-            p - ring
+    let away_at = |p: Point3, out: Vec3| {
+        let off_axis = |f: &Frame| {
+            let d = p - f.origin;
+            d - f.z * d.dot(f.z)
+        };
+        match &face.surface {
+            Surface::Cylinder(c) => off_axis(&c.frame),
+            Surface::Cone(c) => off_axis(&c.frame),
+            Surface::Sphere(sp) => p - sp.frame.origin,
+            Surface::Torus(t) => {
+                let ring = t.frame.origin + off_axis(&t.frame).unit_or_zero() * t.major;
+                p - ring
+            }
+            _ => out,
         }
-        _ => out,
     };
-    away.dot(out) > 0.0
+    // The points spread over the face, and its vertices for a face too narrow to catch any.
+    let mut at = measure::face_samples(s, n, 9);
+    for &lp in &face.loops {
+        for &c in &s.lp(lp).coedges {
+            let uv = face.surface.project(s.vertex(s.coedge_start(c)).point);
+            let mut out = face.surface.normal(uv.x, uv.y);
+            if face.reversed {
+                out = -out;
+            }
+            at.push((face.surface.eval(uv.x, uv.y), out));
+        }
+    }
+    at.into_iter()
+        .map(|(p, out)| (away_at(p, out), out))
+        .max_by(|a, b| a.0.norm().total_cmp(&b.0.norm()))
+        .is_some_and(|(away, out)| away.dot(out) > 0.0)
 }
 
 /// `tool` with its faces on `n`'s surface named as `n` and marked, and its others unnamed.
