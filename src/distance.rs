@@ -32,6 +32,7 @@ use crate::{
 /// What one side of a distance is: faces, edges, vertices and solids of one arena. A face brings
 /// its edges and vertices, an edge its vertices, and a solid its faces, and counts its inside too.
 #[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub struct Selection {
     pub faces: Vec<FaceId>,
     pub edges: Vec<EdgeId>,
@@ -55,9 +56,23 @@ impl Selection {
         }
     }
 
+    pub fn faces(faces: impl IntoIterator<Item = FaceId>) -> Selection {
+        Selection {
+            faces: faces.into_iter().collect(),
+            ..Selection::default()
+        }
+    }
+
     pub fn edge(e: EdgeId) -> Selection {
         Selection {
             edges: vec![e],
+            ..Selection::default()
+        }
+    }
+
+    pub fn edges(edges: impl IntoIterator<Item = EdgeId>) -> Selection {
+        Selection {
+            edges: edges.into_iter().collect(),
             ..Selection::default()
         }
     }
@@ -72,6 +87,7 @@ impl Selection {
 
 /// The closest distance between two selections, and a point of each at that distance.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct Closest {
     pub distance: f64,
     pub on_a: Point3,
