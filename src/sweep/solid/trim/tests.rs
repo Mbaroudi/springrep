@@ -108,3 +108,30 @@ fn a_ring_pushed_past_its_fold_is_trimmed_where_it_folds() {
     let want = slid_torus_volume(&frame, 3.0, 1.0, 8.0, 0.02);
     assert!((volume - want).abs() <= 1e-4 * want, "{volume} {want}");
 }
+
+// The block under the plane z = 0 less the trimmed sweep of the leaning ring: the sweep is symmetric
+// through the origin, where the ring's path is halved, so the block loses half of it. The plane
+// cuts each face of the sheet's self-crossing, and the cut curve passes the vertex there twice.
+#[test]
+fn a_block_less_a_ring_pushed_past_its_fold_loses_half_of_it() {
+    let lean = 65f64.to_radians();
+    let frame = Frame::new(
+        Vec3::new(0.0, 0.0, 4.0),
+        Vec3::new(lean.sin(), 0.0, lean.cos()),
+        Vec3::X,
+    )
+    .unwrap();
+    let ring = torus(&frame, 3.0, 1.0, "ring").unwrap();
+    let b = solid(&ring, &Motion::Slide(Vec3::new(0.0, 0.0, -8.0)), "push").unwrap();
+    let block = crate::primitive::block(
+        &Frame::WORLD.translated(Vec3::new(-8.0, -8.0, -8.0)),
+        Vec3::new(16.0, 16.0, 8.0),
+        "block",
+    )
+    .unwrap();
+    let cut = crate::boolean::difference(&block, &b).unwrap();
+    assert!(check::check(&cut).is_empty());
+    let want = 2048.0 - 0.5 * measure::volume(&b);
+    let got = measure::volume(&cut);
+    assert!((got - want).abs() <= 1e-8 * want, "{got} {want}");
+}

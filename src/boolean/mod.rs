@@ -1991,10 +1991,23 @@ impl<'a> Work<'a> {
             let within = tol::between(base.tol, self.vtol[vi]).max(grazing(vi));
             if d <= within || (d <= GRAZE_REACH && self.branch_point(cut, vi, d)) {
                 out.push((t, vi, d));
+                // A curve that crosses itself, as where a plane cuts a swept sheet trimmed where
+                // it runs into itself, passes such a vertex twice.
+                let gap = 1e-3 * (base.range.1 - base.range.0);
+                for (lo, hi) in [(base.range.0, t - gap), (t + gap, base.range.1)] {
+                    if hi - lo <= gap {
+                        continue;
+                    }
+                    let (d2, t2) = csi::curve_distance(curve, (lo, hi), p);
+                    if d2 <= within && t2 - lo > 0.5 * gap && hi - t2 > 0.5 * gap {
+                        out.push((t2, vi, d2));
+                    }
+                }
             }
         }
         out.sort_by(|a, b| a.0.total_cmp(&b.0));
-        out.dedup_by_key(|x| x.1);
+        let span = base.range.1 - base.range.0;
+        out.dedup_by(|x, y| x.1 == y.1 && (x.0 - y.0).abs() <= 1e-6 * span);
         out
     }
 
