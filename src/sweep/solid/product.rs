@@ -7,6 +7,7 @@ use std::rc::Rc;
 
 use super::cut::Cut;
 use super::sheet::Steady;
+use super::trim::Reach;
 use crate::{
     Error, Result,
     boolean::{
@@ -14,9 +15,9 @@ use crate::{
         sew::{self, OutFace, PieceGeom},
     },
     geom::Curve,
-    math::{Point3, Transform, Vec3},
+    math::{Point3, Transform, Vec2, Vec3},
     tol,
-    topo::{Brep, FaceName},
+    topo::{Brep, FaceName, pcurve::fit_spline},
 };
 
 /// The trims of `loops` moved by `t`, their pieces and vertices renumbered by `piece` and
@@ -80,6 +81,7 @@ pub(super) fn product(
     motion: &Steady,
     feature: &str,
     only: Option<&[usize]>,
+    trim: Option<&Reach>,
 ) -> Result<Brep> {
     let (pose0, pose1) = (motion.pose0(), motion.pose1());
     let n = cut.pool.len();
@@ -189,7 +191,7 @@ pub(super) fn product(
             (pg.range.1, pg.range.0)
         };
         let placed = curve.transformed(&pose0);
-        if folds(motion, &placed, pg.range) {
+        if trim.is_none() && folds(motion, &placed, pg.range) {
             return Err(Error::Unsupported(
                 "a solid sweep whose envelope folds: the motion runs along a curve of the body's \
                  outline"
@@ -239,6 +241,22 @@ pub(super) fn product(
             };
         let pa = path(a, &mut pieces, &mut pool)?;
         let pb = path(b, &mut pieces, &mut pool)?;
+        // Where the faces are trimmed, a curve whose pcurve would be projected gets the spline
+        // through its exact points in the sheet's parameters instead: a sheet that folds nearly
+        // drops rank near the fold, and a projection there lands on the wrong foot.
+        let exact = |pg: &PieceGeom, uv: &dyn Fn(f64) -> Vec2| -> UvMap {
+            let Some(c) = pg.curve.as_ref().filter(|_| trim.is_some()) else {
+                return UvMap::Projected;
+            };
+            let n = 32;
+            let pts: Vec<Vec2> = (0..=n)
+                .map(|i| uv(pg.range.0 + (pg.range.1 - pg.range.0) * i as f64 / n as f64))
+                .collect();
+            match fit_spline(&sheet.surface, c, pg.range, &pts) {
+                Some(sp) => UvMap::Spline(Rc::new(sp)),
+                None => UvMap::Projected,
+            }
+        };
         let cap = |piece: usize, s: f64, from: f64, to: f64, fwd: bool| {
             let pg = &pieces[piece];
             Trim {
@@ -254,7 +272,7 @@ pub(super) fn product(
                         dir: sheet.across,
                     }
                 } else {
-                    UvMap::Projected
+                    exact(pg, &|t| sheet.uv(s, t))
                 },
                 uv0: sheet.uv(s, from),
                 uv1: sheet.uv(s, to),
@@ -287,7 +305,7 @@ pub(super) fn product(
                                 dir: (sheet.uv(span, t) - sheet.uv(0.0, t)) / span,
                             }
                         } else if !sheet.along_affine {
-                            UvMap::Projected
+                            exact(pg, &|x| sheet.uv(x, t))
                         } else {
                             UvMap::Affine {
                                 origin: sheet.uv(0.0, t),
@@ -330,8 +348,39 @@ pub(super) fn product(
             side: None,
         });
     }
+    if let Some(reach) = trim {
+        return super::trim::assemble(faces, pool, pieces, reach);
+    }
     let vtol = vec![tol::LINEAR; pool.len()];
     sew::assemble(faces, &pool, &vtol, &pieces)
+}
+
+/// Whether a face some curve of `cut` sweeps under `motion` folds.
+pub(super) fn folded(cut: &Cut, motion: &Steady) -> bool {
+    let pose0 = motion.pose0();
+    let mut uses: HashMap<usize, Vec<bool>> = HashMap::new();
+    for part in &cut.parts {
+        for tr in part.loops.iter().flatten() {
+            uses.entry(tr.piece).or_default().push(part.front);
+        }
+    }
+    uses.iter().any(|(&k, fronts)| {
+        let pg = &cut.pieces[k];
+        // A piece the motion holds still, on a turn's axis, sweeps nothing.
+        let still = motion.holds(cut.pool[pg.v0])
+            && motion.holds(cut.pool[pg.v1])
+            && pg
+                .curve
+                .as_ref()
+                .is_none_or(|c| motion.holds(c.eval(0.5 * (pg.range.0 + pg.range.1))));
+        fronts.len() == 2
+            && fronts[0] != fronts[1]
+            && !still
+            && pg
+                .curve
+                .as_ref()
+                .is_some_and(|c| folds(motion, &c.transformed(&pose0), pg.range))
+    })
 }
 
 /// The body where the motion starts, its faces cut along their characteristic curves, so each

@@ -5,14 +5,14 @@
 use crate::{Error, Result, math::Vec2};
 
 /// A polyline from node `a` to node `b`, its first and last points theirs.
-pub(super) struct Link {
+pub(in crate::sweep::solid) struct Link {
     pub a: usize,
     pub b: usize,
     pub pts: Vec<Vec2>,
 }
 
 /// A face: its outer loop, then its holes, each as its links and whether each runs from `a` to `b`.
-pub(super) struct Region {
+pub(in crate::sweep::solid) struct Region {
     pub loops: Vec<Vec<(usize, bool)>>,
 }
 
@@ -66,7 +66,11 @@ fn heading(pts: &[Vec2], reach: f64) -> f64 {
 
 /// The faces of the graph of `links` between `nodes`, bounded ones only. `reach` is a length in
 /// the plane small against its features.
-pub(super) fn regions(nodes: &[Vec2], links: &[Link], reach: f64) -> Result<Vec<Region>> {
+pub(in crate::sweep::solid) fn regions(
+    nodes: &[Vec2],
+    links: &[Link],
+    reach: f64,
+) -> Result<Vec<Region>> {
     let half = links.len() * 2;
     let origin = |h: usize| {
         if h.is_multiple_of(2) {
@@ -163,18 +167,18 @@ pub(super) fn regions(nodes: &[Vec2], links: &[Link], reach: f64) -> Result<Vec<
 }
 
 /// The points of `region`'s outer loop in order.
-pub(super) fn outline(links: &[Link], region: &Region) -> Vec<Vec2> {
+pub(in crate::sweep::solid) fn outline(links: &[Link], region: &Region) -> Vec<Vec2> {
     points(links, &region.loops[0])
 }
 
 /// Whether `p` lies inside `region`: inside its outer loop and outside its holes.
-pub(super) fn holds(links: &[Link], region: &Region, p: Vec2) -> bool {
+pub(in crate::sweep::solid) fn holds(links: &[Link], region: &Region, p: Vec2) -> bool {
     let polys: Vec<Vec<Vec2>> = region.loops.iter().map(|l| points(links, l)).collect();
     contains(&polys[0], p) && !polys[1..].iter().any(|h| contains(h, p))
 }
 
 /// A point inside `region`, a hair to the left of one of its links.
-pub(super) fn inside(links: &[Link], region: &Region, reach: f64) -> Option<Vec2> {
+pub(in crate::sweep::solid) fn inside(links: &[Link], region: &Region, reach: f64) -> Option<Vec2> {
     let polys: Vec<Vec<Vec2>> = region.loops.iter().map(|l| points(links, l)).collect();
     let within = |p: Vec2| contains(&polys[0], p) && !polys[1..].iter().any(|h| contains(h, p));
     for lp in &region.loops {

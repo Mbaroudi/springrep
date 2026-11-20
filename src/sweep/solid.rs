@@ -14,6 +14,7 @@ mod product;
 mod sheet;
 #[cfg(test)]
 mod tests;
+mod trim;
 
 pub use motion::Motion;
 
@@ -59,7 +60,13 @@ pub fn solid(body: &Brep, motion: &Motion, feature: &str) -> Result<Brep> {
     };
     let field = move |p| twist.at(p);
     let cut = cut::cut(body, &field, steady.held())?;
-    match product::product(&cut, &steady, feature, None) {
+    // Where the envelope folds, the faces are trimmed to what the moving body never reaches into.
+    if product::folded(&cut, &steady)
+        && let Some(reach) = trim::Reach::new(body, motion, (0.0, 1.0))
+    {
+        return product::product(&cut, &steady, feature, None, Some(&reach));
+    }
+    match product::product(&cut, &steady, feature, None, None) {
         Err(Error::InvalidResult(_)) => in_parts(&cut, &steady, feature),
         other => other,
     }
@@ -73,7 +80,7 @@ fn in_parts(cut: &cut::Cut, steady: &sheet::Steady, feature: &str) -> Result<Bre
     let mut out = product::start(cut, steady)?;
     for (i, part) in cut.parts.iter().enumerate() {
         if part.front {
-            let piece = product::product(cut, steady, feature, Some(&[i]))?;
+            let piece = product::product(cut, steady, feature, Some(&[i]), None)?;
             // The piece's sweep starts on the body's face, and grazes it along the curves that
             // bound the piece there.
             let facts = crate::blend::shared_edges(&out, &piece);

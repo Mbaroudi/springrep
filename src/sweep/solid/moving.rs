@@ -10,7 +10,7 @@ mod charmap;
 mod edges;
 mod faces;
 mod fit;
-mod graph;
+pub(super) mod graph;
 mod region;
 #[cfg(test)]
 mod tests;

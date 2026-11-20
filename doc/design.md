@@ -1437,7 +1437,7 @@ Every piece of one curve (an edge cut at several roots) sweeps a face on the one
 curve sweeps, so faces that two parts of the sweep share are one surface to the booleans that unite
 the parts. A swept face folds where the motion runs along its curve, the velocity crossed with
 the curve's direction turning over; past the fold the envelope lies inside the solid, and such a
-sweep is refused.
+sweep's faces are trimmed (see [Folds](#folds)).
 
 A characteristic curve is fitted only where no closed form exists, so a case whose curves are lines
 and circles under a slide, turn or screw is exact throughout.
@@ -1461,6 +1461,40 @@ sweeps). Each part starts on a face of the body and grazes it along its curves t
 is told so (each such edge lies on the other's face), as a blend tells it of a round's tangent
 edges. A body that is itself a union, as a ball on a stem, may instead be swept a piece at a time,
 since the sweep of a union is the union of the sweeps.
+
+### Folds
+
+Where a swept face folds, the faces built as above bound more than the solid: past the fold, and
+where the folded sheet runs through its neighbours and the caps, they lie inside it. They are
+trimmed to what the moving body never reaches into, each in its own parameter plane
+([`trim`](../src/sweep/solid/trim.rs); Peternell, Pottmann, Steiner and Zhao 2005; Seong, Elber and
+Kim 2006). A point `p` lies inside the swept solid where the body at some `τ` holds it, which is
+read along its inverted trajectory `M(τ)⁻¹·p` through the body's own frame (Ilies and Shapiro 1999;
+Erdim and Ilies 2008): the deepest the body holds it over the motion, `max_τ d(M(τ)⁻¹·p)`, with `d`
+the depth inside the body. A point of a face of the sweep is reached where that is more than a
+hair (`1e-10` of the body's size): on the true boundary the body touches the point and never holds
+it. For a body of revolution (every face a plane square to one axis, or a cylinder, cone, sphere or
+torus about it) `d` is read in its meridian section, the distance from the outline of segments and
+arcs, its sign from the side of the nearest piece or, at a corner, from the outline's winding. The
+depth along the path is sampled finely enough that no point moves more than a fiftieth of the
+body's size between samples, and each peak that could top the others is searched by golden
+section.
+
+- Each edge is cut where the body begins to reach into it, by bisection between samples.
+- Each face's plane is searched on a grid as the edges' planes are (marching squares), each grid
+  line whose ends are reached differently cut by bisection; each curve found is cut where it leaves
+  the face, at the vertex on the face's boundary there, and a closed one gets two vertices.
+- The curves are made exact where the grid is coarse, each point moved across the curve onto it by
+  regula falsi on the depth; each curve is cut at every vertex of the others that lies on it.
+- Each curve is where two faces cross, so it has a partner between the same two vertices on another
+  face, or on the same face where a sheet runs through itself. The two share one piece, fitted
+  through one curve's exact points; each face's pcurve is the spline through its own points in its
+  plane.
+- Each region of each plane between its boundary and its curves that the body does not reach is a
+  face, and the faces are sewn once.
+
+Only the sheets of slides, turns and screws are trimmed so far, and only bodies of revolution have
+a depth.
 
 ### Motions whose `W` moves
 
@@ -1858,6 +1892,8 @@ The papers this document and the source cite by author and year.
 - **Coons 1967.** S. A. Coons, _Surfaces for Computer-Aided Design of Space Forms_, MIT Project MAC
   report MAC-TR-41, 1967.
 - **de Boor 1978.** C. de Boor, _A Practical Guide to Splines_, Springer, 1978.
+- **Erdim and Ilies 2008.** H. Erdim and H. T. Ilieş, "Classifying points for sweeping solids",
+  _Computer-Aided Design_ 40(9), 2008, pp. 987–998.
 - **Farouki and Neff 1990.** R. T. Farouki and C. A. Neff, "Analytic properties of plane offset
   curves" and "Algebraic properties of plane offset curves", _Computer Aided Geometric Design_ 7,
   1990, pp. 83–99 and 101–127.
@@ -1870,6 +1906,8 @@ The papers this document and the source cite by author and year.
 - **Hartmann 2001.** E. Hartmann, "Parametric Gⁿ blending of curves and surfaces", _The Visual
   Computer_ 17, 2001, pp. 1–13. The source of the word "thumbweight" for a blend section's shape
   parameter.
+- **Ilies and Shapiro 1999.** H. T. Ilieş and V. Shapiro, "The dual of sweep", _Computer-Aided
+  Design_ 31(3), 1999, pp. 185–201.
 - **Jackson 1995.** D. J. Jackson, "Boundary representation modelling with local tolerances",
   _Proceedings of the Third Symposium on Solid Modeling and Applications_ (Solid Modeling '95), ACM,
   1995, pp. 247–253.
@@ -1881,6 +1919,8 @@ The papers this document and the source cite by author and year.
   objects", _Computer-Aided Design_ 22(4), 1990, pp. 223–234.
 - **Nocedal and Wright 2006.** J. Nocedal and S. J. Wright, _Numerical Optimization_, 2nd ed.,
   Springer, 2006.
+- **Peternell et al. 2005.** M. Peternell, H. Pottmann, T. Steiner and H. Zhao, "Swept volumes",
+  _Computer-Aided Design and Applications_ 2(5), 2005, pp. 599–608.
 - **Piegl and Tiller 1997.** L. Piegl and W. Tiller, _The NURBS Book_, 2nd ed., Springer, 1997.
 - **Piessens et al. 1983.** R. Piessens, E. de Doncker-Kapenga, C. W. Überhuber and D. K. Kahaner,
   _QUADPACK: A Subroutine Package for Automatic Integration_, Springer, 1983.
@@ -1888,6 +1928,9 @@ The papers this document and the source cite by author and year.
   in solid modelling", _Computers in Mechanical Engineering_ 3(1), 1984, pp. 65–73.
 - **Rossignac and Requicha 1986.** J. R. Rossignac and A. A. G. Requicha, "Offsetting operations
   in solid modelling", _Computer Aided Geometric Design_ 3(2), 1986, pp. 129–148.
+- **Seong, Elber and Kim 2006.** J.-K. Seong, G. Elber and M.-S. Kim, "Trimming local and global
+  self-intersections in offset curves/surfaces using distance maps", _Computer-Aided Design_ 38(3),
+  2006, pp. 183–193.
 - **Shewchuk 1997.** J. R. Shewchuk, "Adaptive precision floating-point arithmetic and fast robust
   geometric predicates", _Discrete & Computational Geometry_ 18, 1997, pp. 305–363.
 - **Sugihara and Iri 1989.** K. Sugihara and M. Iri, "A solid modelling system free from topological
