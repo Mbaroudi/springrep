@@ -348,6 +348,16 @@ pub(super) fn fit_exact(
     ends: (Point3, Point3),
     size: f64,
 ) -> Result<(Curve, (f64, f64))> {
+    // Each round's middles are the next round's points: each point is found once.
+    let seen: std::cell::RefCell<std::collections::HashMap<u64, Point3>> = Default::default();
+    let at = |s: f64| -> Point3 {
+        if let Some(&p) = seen.borrow().get(&s.to_bits()) {
+            return p;
+        }
+        let p = at(s);
+        seen.borrow_mut().insert(s.to_bits(), p);
+        p
+    };
     let n0 = 32;
     let mut ss: Vec<f64> = (0..=n0)
         .map(|k| range.0 + (range.1 - range.0) * k as f64 / n0 as f64)
