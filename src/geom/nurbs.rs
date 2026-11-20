@@ -842,6 +842,8 @@ pub struct NurbsSurface {
     v_period: Option<f64>,
     /// Sample points of the surface that seed global projection, built on first use.
     seeds: OnceLock<(Vec<(Vec2, Point3)>, f64)>,
+    /// A tree over the seeds, built on first global projection; `None` where the scan is used.
+    seed_tree: OnceLock<Option<SeedTree>>,
     /// Small patches whose boxes together hold the surface, built on first use.
     patches: OnceLock<Vec<Patch>>,
     /// Each patch as a Bézier patch, built on first use.
@@ -894,6 +896,7 @@ impl NurbsSurface {
             u_period: None,
             v_period: None,
             seeds: OnceLock::new(),
+            seed_tree: OnceLock::new(),
             patches: OnceLock::new(),
             beziers: OnceLock::new(),
             polys: OnceLock::new(),
@@ -934,6 +937,7 @@ impl NurbsSurface {
             u_period: periods.0,
             v_period: periods.1,
             seeds: OnceLock::new(),
+            seed_tree: OnceLock::new(),
             patches: OnceLock::new(),
             beziers: OnceLock::new(),
             polys: OnceLock::new(),
@@ -1226,6 +1230,8 @@ impl NurbsSurface {
             u_period: self.u_period,
             v_period: self.v_period,
             seeds,
+            // Moved seeds measure apart differently by rounding, so which coincide is found again.
+            seed_tree: OnceLock::new(),
             patches: OnceLock::new(),
             beziers: OnceLock::new(),
             polys,
@@ -1952,26 +1958,7 @@ impl NurbsSurface {
 
     /// The parameters of the surface point nearest `p`, periodic parameters in the knot domain.
     pub fn project(&self, p: Point3) -> Vec2 {
-        // The four nearest seeds at distinct points, nearest first: a pole's row of seeds is one
-        // point, and four of them would be one search. A mapped surface's pole row agrees only to
-        // rounding, so one point is any within a millionth of the seeds' spacing.
-        let same = (1e-6 * self.seed_grid().1).powi(2);
-        let mut near = [(f64::INFINITY, Vec2::ZERO); 4];
-        let mut at = [Point3::ZERO; 4];
-        for &(uv, q) in self.seeds() {
-            let d2 = (q - p).norm2();
-            let taken = |i: usize| near[i].0.is_finite() && (at[i] - q).norm2() <= same;
-            if d2 < near[3].0 && !(0..4).any(taken) {
-                let mut i = 3;
-                while i > 0 && near[i - 1].0 > d2 {
-                    near[i] = near[i - 1];
-                    at[i] = at[i - 1];
-                    i -= 1;
-                }
-                near[i] = (d2, uv);
-                at[i] = q;
-            }
-        }
+        let near = self.nearest_seeds(p);
         let mut best = (f64::INFINITY, Vec2::ZERO);
         for &(d2, seed) in &near {
             if d2.is_infinite() {
@@ -1989,6 +1976,20 @@ impl NurbsSurface {
             }
         }
         best.1
+    }
+
+    /// The seeds [`NurbsSurface::project`] searches from: what [`scan_seeds`] finds over all of
+    /// them, through the seed tree where it can tell that.
+    fn nearest_seeds(&self, p: Point3) -> [(f64, Vec2); 4] {
+        let seeds = self.seeds();
+        let same = (1e-6 * self.seed_grid().1).powi(2);
+        if p.is_finite() {
+            let tree = self.seed_tree.get_or_init(|| SeedTree::new(seeds, same));
+            if let Some(near) = tree.as_ref().and_then(|t| t.nearest(seeds, p, same)) {
+                return near;
+            }
+        }
+        scan_seeds(seeds.iter(), p, same)
     }
 
     /// How near the surface a point must lie for [`NurbsSurface::project_near`] to take the point
@@ -2020,6 +2021,280 @@ impl NurbsSurface {
         } else {
             local
         }
+    }
+}
+
+/// The four nearest seeds at distinct points, nearest first, as one pass over `seeds` in their
+/// order finds them: a pole's row of seeds is one point, and four of them would be one search. A
+/// mapped surface's pole row agrees only to rounding, so one point is any within `same`, a squared
+/// distance. Which seeds are taken depends on the order they come in, through what is in the list
+/// when a seed at the same point arrives.
+fn scan_seeds<'a>(
+    seeds: impl Iterator<Item = &'a (Vec2, Point3)>,
+    p: Point3,
+    same: f64,
+) -> [(f64, Vec2); 4] {
+    let mut near = [(f64::INFINITY, Vec2::ZERO); 4];
+    let mut at = [Point3::ZERO; 4];
+    for &(uv, q) in seeds {
+        let d2 = (q - p).norm2();
+        let taken = |i: usize| near[i].0.is_finite() && (at[i] - q).norm2() <= same;
+        if d2 < near[3].0 && !(0..4).any(taken) {
+            let mut i = 3;
+            while i > 0 && near[i - 1].0 > d2 {
+                near[i] = near[i - 1];
+                at[i] = at[i - 1];
+                i -= 1;
+            }
+            near[i] = (d2, uv);
+            at[i] = q;
+        }
+    }
+    near
+}
+
+/// A k-d tree over a surface's seeds (Bentley, "Multidimensional binary search trees used for
+/// associative searching", CACM 18(9), 1975), with the seeds that lie at one point grouped. It
+/// finds what [`scan_seeds`] finds over all the seeds without measuring them all. Call near the
+/// seeds whose squared distance, as the scan computes it, is at most some `x`. A far seed sorts
+/// after every near one, so it never displaces a near seed from the list nor keeps one out by
+/// distance; it can keep one out only by being at the same point. Where no near seed is at the
+/// same point as a far one, the scan over all seeds therefore ends with the near seeds the scan
+/// over the near seeds alone ends with, and when those are four, with them alone.
+#[derive(Clone, Debug)]
+struct SeedTree {
+    nodes: Vec<SeedNode>,
+    /// Seed numbers, each node's a range of them.
+    order: Vec<usize>,
+    /// Each seed's group of seeds linked by being at one point, `usize::MAX` for a seed alone.
+    group: Vec<usize>,
+    groups: Vec<Vec<usize>>,
+}
+
+#[derive(Clone, Debug)]
+struct SeedNode {
+    lo: Point3,
+    hi: Point3,
+    start: usize,
+    end: usize,
+    /// The two halves, `None` for a leaf.
+    kids: Option<(usize, usize)>,
+}
+
+impl SeedTree {
+    /// Below this many seeds, measuring them all costs about what a search would.
+    const MIN_SEEDS: usize = 64;
+    const LEAF: usize = 8;
+
+    fn new(seeds: &[(Vec2, Point3)], same: f64) -> Option<SeedTree> {
+        if seeds.len() < Self::MIN_SEEDS
+            || !same.is_finite()
+            || !seeds.iter().all(|s| s.1.is_finite())
+        {
+            return None;
+        }
+        let mut t = SeedTree {
+            nodes: Vec::new(),
+            order: (0..seeds.len()).collect(),
+            group: vec![usize::MAX; seeds.len()],
+            groups: Vec::new(),
+        };
+        t.split(seeds, 0, seeds.len());
+        // Seeds within `same` of each other, linked in chains, measured as the scan measures them.
+        let mut root: Vec<usize> = (0..seeds.len()).collect();
+        fn find(root: &mut [usize], mut i: usize) -> usize {
+            while root[i] != i {
+                root[i] = root[root[i]];
+                i = root[i];
+            }
+            i
+        }
+        let mut found = Vec::new();
+        for (i, s) in seeds.iter().enumerate() {
+            found.clear();
+            t.within(seeds, s.1, same, &mut found);
+            for &(j, _) in &found {
+                let (a, b) = (find(&mut root, i), find(&mut root, j));
+                root[a.max(b)] = a.min(b);
+            }
+        }
+        for i in 0..seeds.len() {
+            let r = find(&mut root, i);
+            if r != i {
+                if t.group[r] == usize::MAX {
+                    t.group[r] = t.groups.len();
+                    t.groups.push(vec![r]);
+                }
+                t.group[i] = t.group[r];
+                t.groups[t.group[r]].push(i);
+            }
+        }
+        Some(t)
+    }
+
+    fn split(&mut self, seeds: &[(Vec2, Point3)], start: usize, end: usize) -> usize {
+        let mut lo = Point3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+        let mut hi = -lo;
+        for &i in &self.order[start..end] {
+            let q = seeds[i].1;
+            lo = Point3::new(lo.x.min(q.x), lo.y.min(q.y), lo.z.min(q.z));
+            hi = Point3::new(hi.x.max(q.x), hi.y.max(q.y), hi.z.max(q.z));
+        }
+        let n = self.nodes.len();
+        self.nodes.push(SeedNode {
+            lo,
+            hi,
+            start,
+            end,
+            kids: None,
+        });
+        if end - start > Self::LEAF {
+            let size = hi - lo;
+            let axis = if size.x >= size.y.max(size.z) {
+                0
+            } else if size.y >= size.z {
+                1
+            } else {
+                2
+            };
+            let mid = (start + end) / 2;
+            self.order[start..end].select_nth_unstable_by(mid - start, |&a, &b| {
+                seeds[a].1[axis].total_cmp(&seeds[b].1[axis])
+            });
+            let a = self.split(seeds, start, mid);
+            let b = self.split(seeds, mid, end);
+            self.nodes[n].kids = Some((a, b));
+        }
+        n
+    }
+
+    /// A squared distance from `p` to the node's box no larger than `(q - p).norm2()` for any seed
+    /// `q` in it: each gap rounds no larger than the difference it bounds, and the sum is formed
+    /// in the same order.
+    fn below(&self, n: usize, p: Point3) -> f64 {
+        let (lo, hi) = (self.nodes[n].lo, self.nodes[n].hi);
+        let gap = |p: f64, lo: f64, hi: f64| {
+            if p < lo {
+                lo - p
+            } else if p > hi {
+                p - hi
+            } else {
+                0.0
+            }
+        };
+        Vec3::new(
+            gap(p.x, lo.x, hi.x),
+            gap(p.y, lo.y, hi.y),
+            gap(p.z, lo.z, hi.z),
+        )
+        .norm2()
+    }
+
+    /// Every seed whose squared distance from `p` is at most `x`, with that distance.
+    fn within(&self, seeds: &[(Vec2, Point3)], p: Point3, x: f64, out: &mut Vec<(usize, f64)>) {
+        let mut stack = vec![0];
+        while let Some(n) = stack.pop() {
+            if self.below(n, p) > x {
+                continue;
+            }
+            let node = &self.nodes[n];
+            match node.kids {
+                Some((a, b)) => stack.extend([a, b]),
+                None => {
+                    for &i in &self.order[node.start..node.end] {
+                        let d2 = (seeds[i].1 - p).norm2();
+                        if d2 <= x {
+                            out.push((i, d2));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The `k`th smallest squared distance from `p` to a seed, infinite where there are fewer.
+    fn kth(&self, seeds: &[(Vec2, Point3)], p: Point3, k: usize) -> f64 {
+        let mut best: Vec<f64> = Vec::with_capacity(k + 1);
+        let worst = |best: &Vec<f64>| {
+            if best.len() < k {
+                f64::INFINITY
+            } else {
+                best[k - 1]
+            }
+        };
+        let mut stack = vec![(0, self.below(0, p))];
+        while let Some((n, b)) = stack.pop() {
+            if b >= worst(&best) {
+                continue;
+            }
+            let node = &self.nodes[n];
+            match node.kids {
+                Some((x, y)) => {
+                    let (bx, by) = (self.below(x, p), self.below(y, p));
+                    if bx <= by {
+                        stack.extend([(y, by), (x, bx)]);
+                    } else {
+                        stack.extend([(x, bx), (y, by)]);
+                    }
+                }
+                None => {
+                    for &i in &self.order[node.start..node.end] {
+                        let d2 = (seeds[i].1 - p).norm2();
+                        if d2 < worst(&best) {
+                            let at = best.partition_point(|&e| e <= d2);
+                            best.insert(at, d2);
+                            best.truncate(k);
+                        }
+                    }
+                }
+            }
+        }
+        worst(&best)
+    }
+
+    /// What [`scan_seeds`] finds over all the seeds, or `None` where the near seeds it needs grow
+    /// past a few dozen.
+    fn nearest(&self, seeds: &[(Vec2, Point3)], p: Point3, same: f64) -> Option<[(f64, Vec2); 4]> {
+        let mut x = self.kth(seeds, p, 4);
+        let mut near = Vec::new();
+        let mut groups = Vec::new();
+        for _ in 0..8 {
+            if !x.is_finite() {
+                return None;
+            }
+            near.clear();
+            self.within(seeds, p, x, &mut near);
+            if near.len() > 64 {
+                return None;
+            }
+            // Every seed at one point with a near seed must be near too: widen to take them in.
+            groups.clear();
+            groups.extend(
+                near.iter()
+                    .map(|&(i, _)| self.group[i])
+                    .filter(|&g| g != usize::MAX),
+            );
+            groups.sort_unstable();
+            groups.dedup();
+            let mut wide = x;
+            for &g in &groups {
+                for &j in &self.groups[g] {
+                    wide = wide.max((seeds[j].1 - p).norm2());
+                }
+            }
+            if wide > x {
+                x = wide;
+                continue;
+            }
+            near.sort_unstable_by_key(|&(i, _)| i);
+            let found = scan_seeds(near.iter().map(|&(i, _)| &seeds[i]), p, same);
+            if found[3].0.is_finite() {
+                return Some(found);
+            }
+            // Seeds at one point took fewer than four places: take in more.
+            x = self.kth(seeds, p, near.len() + 4);
+        }
+        None
     }
 }
 
@@ -2590,6 +2865,98 @@ pub(crate) mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// A surface of revolution about z through the profile's `(radius, z)` points: the full
+    /// circle in `u`, so the seam's seeds come twice, and the profile in `v`.
+    fn revolved(profile: &[(f64, f64, f64)], kv: Vec<f64>, dv: usize) -> NurbsSurface {
+        let w = FRAC_1_SQRT_2;
+        let circle = [
+            (1.0, 0.0, 1.0),
+            (1.0, 1.0, w),
+            (0.0, 1.0, 1.0),
+            (-1.0, 1.0, w),
+            (-1.0, 0.0, 1.0),
+            (-1.0, -1.0, w),
+            (0.0, -1.0, 1.0),
+            (1.0, -1.0, w),
+            (1.0, 0.0, 1.0),
+        ];
+        let mut ctrl = Vec::new();
+        let mut weights = Vec::new();
+        for &(x, y, wu) in &circle {
+            for &(r, z, wv) in profile {
+                ctrl.push(Vec3::new(x * r, y * r, z));
+                weights.push(wu * wv);
+            }
+        }
+        let ku = vec![0.0, 0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0, 4.0];
+        NurbsSurface::new((2, dv), (ku, kv), (9, profile.len()), ctrl, Some(weights)).unwrap()
+    }
+
+    #[test]
+    fn the_seed_tree_finds_the_seeds_the_scan_does() {
+        let w = FRAC_1_SQRT_2;
+        let sphere = [
+            (0.0, -1.0, 1.0),
+            (1.0, -1.0, w),
+            (1.0, 0.0, 1.0),
+            (1.0, 1.0, w),
+            (0.0, 1.0, 1.0),
+        ];
+        let surfaces = [
+            warped(),
+            revolved(
+                &[(1.0, 0.0, 1.0), (1.0, 3.0, 1.0)],
+                vec![0.0, 0.0, 1.0, 1.0],
+                1,
+            ),
+            revolved(&sphere, vec![0.0, 0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 2.0], 2),
+            // Turned off its axis, the poles' seeds agree only to rounding.
+            revolved(&sphere, vec![0.0, 0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 2.0], 2).transformed(
+                &Transform::rotation(Vec3::new(0.3, -0.2, 0.1), Vec3::new(1.0, 2.0, 3.0), 0.7),
+            ),
+        ];
+        for s in &surfaces {
+            let seeds = s.seeds();
+            let same = (1e-6 * s.seed_grid().1).powi(2);
+            let tree = SeedTree::new(seeds, same).unwrap();
+            let mut points = Vec::new();
+            for i in 0..=12 {
+                for j in 0..=12 {
+                    let (u, v) = (i as f64 / 12.0, j as f64 / 12.0);
+                    let ((u0, u1), (v0, v1)) = (s.bu.domain(), s.bv.domain());
+                    let (p, su, sv) = s.d1(u0 + (u1 - u0) * u, v0 + (v1 - v0) * v);
+                    let n = su.cross(sv).unit().unwrap_or(Vec3::Z);
+                    for off in [0.0, 1e-3, -0.02, 0.3, -0.7, 20.0] {
+                        points.push(p + n * off);
+                    }
+                }
+            }
+            // On a seed, and halfway between two, where the scan breaks ties by order.
+            for k in 0..seeds.len() {
+                let (q, r) = (seeds[k].1, seeds[(k * 7 + 1) % seeds.len()].1);
+                points.extend([q, (q + r) * 0.5, q + Vec3::new(0.0, 0.0, 0.1)]);
+            }
+            // On the axis, the same distance from every seed of a row.
+            points.extend((-8..=8).map(|z| Vec3::new(0.0, 0.0, z as f64 * 0.25)));
+            let mut by_tree = 0;
+            for &p in &points {
+                let scan = scan_seeds(seeds.iter(), p, same);
+                let got = s.nearest_seeds(p);
+                let bits = |n: [(f64, Vec2); 4]| n.map(|(d, uv)| [d, uv.x, uv.y].map(f64::to_bits));
+                assert_eq!(bits(got), bits(scan), "{p:?}");
+                if let Some(t) = tree.nearest(seeds, p, same) {
+                    assert_eq!(bits(t), bits(scan), "{p:?}");
+                    by_tree += 1;
+                }
+            }
+            assert!(
+                by_tree * 10 >= points.len() * 9,
+                "{by_tree} of {}",
+                points.len()
+            );
         }
     }
 }
