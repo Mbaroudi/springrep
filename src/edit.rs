@@ -667,6 +667,14 @@ mod tests {
         let (v, a) = deleted(&rounded, "round");
         close(v, 126.0 * PI);
         close(a, 45.0 * PI + 9.0 * PI * 45f64.sqrt());
+        // A cone of radius 6 up to its apex 8 above, its foot rounded 1: the cone again, its first
+        // vertex the apex, where the side's normal says nothing of which side its material is.
+        // Volume π·6²·8/3; area the base 36π and the side π·6·10.
+        let point = cone(&Frame::WORLD, 6.0, 0.0, 8.0, "c").unwrap();
+        let rounded = blend::fillet(&point, &[("c.bottom", "c.side")], 1.0, "round").unwrap();
+        let (v, a) = deleted(&rounded, "round");
+        close(v, 96.0 * PI);
+        close(a, 96.0 * PI);
     }
 
     #[test]
