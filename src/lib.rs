@@ -26,6 +26,7 @@ pub mod sew;
 pub mod sheet;
 pub mod step;
 pub mod sweep;
+mod threads;
 pub mod tol;
 pub mod topo;
 
