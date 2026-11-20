@@ -20,8 +20,8 @@ use crate::{
     tol,
 };
 
-/// How far a column may stray from its track, a tenth of the linear tolerance.
-const FIT: f64 = tol::LINEAR / 10.0;
+/// How far a column may stray from its track.
+const FIT: f64 = tol::LINEAR;
 
 /// Reflection steps between neighbouring stations.
 const STEPS: usize = 32;
