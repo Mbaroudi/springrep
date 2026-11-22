@@ -701,6 +701,13 @@ built by many features works each face out once, not once a feature. Adding a lo
 change to a face and `transform` drop memos; `append` and `clone` share them. Since the vector areas
 of a closed shell sum to zero, the volume sign is the sum of the memoed shares moved to one centre.
 
+An arena also keeps what queries derive from the whole of it: the mesh that seeds
+[`distance`](../src/distance.rs) and [`rays`](../src/rays.rs), that mesh's triangles under a box
+tree, and the mesh pieces and box tree of every solid and of every face. A `clone` shares them. Any
+method that adds an entity, or changes one's geometry, tolerance or place in the topology, drops
+them (`transform` and `transform_similar` among them), so nothing kept outlives the geometry it was
+made from.
+
 [`unify`](../src/boolean/unify.rs) runs step 4's merge and sewing on any valid solid, so faces no
 boolean made (an imported file's coplanar triangles) merge as a boolean's do. A solid with nothing
 to merge comes back unchanged. A solid kept with local tolerances merges too: faces merge on exact
@@ -1787,7 +1794,9 @@ damped to keep each step downhill, and a result counts only where both points li
 edge. The true minimum lies in one of those basins, so the least result is exact, even where a whole
 ring of points is equally near. A surface whose nearest point lies off its face is covered by the
 face's edges, and a solid wholly inside another, by its winding number in the other's mesh, is at
-zero.
+zero. Before either side is meshed, a vertex of one side or the middle of one of its edges that a
+solid of the other holds, farther than the tolerance from the surface of every face whose box
+reaches it, is a point of both: the distance is zero, and no mesh is made.
 
 [`rays`](../src/rays.rs) meshes an arena once, at the same scale, and casts rays at it. The mesh
 says where to look and no more: a ray's candidate faces are those with a mesh triangle within twice
@@ -1849,7 +1858,9 @@ rim drawn as a square past its bolt holes). A loop of only two chords gets a poi
 Deflections must be positive and finite. Where a face's loops pass one vertex twice (a crescent
 pinched where two circles touch), images of it that only rounding parts, far closer than a period or
 a pole's span, become one point, so the face is meshed through that point once rather than twice a
-hair apart.
+hair apart. Edges and faces are meshed on as many threads as the machine offers, each result in its
+place, so the mesh is the same on any number; a solid of flat faces and at most 128 straight edges
+is meshed on the calling thread alone, being less work than starting the others.
 
 [`display`](../src/mesh/display.rs) makes what a viewer draws from that mesh: each face's triangles
 with nodes of its own, so shading creases where faces meet, each node's normal the exact surface's
