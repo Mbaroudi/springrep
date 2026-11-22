@@ -3,13 +3,36 @@ use std::f64::consts::PI;
 use super::*;
 use crate::{
     check,
-    math::{Frame, Vec3},
+    math::{Frame, Point3, Vec3},
     measure,
     primitive::{block, cylinder, sphere},
 };
 
 fn rel(a: f64, b: f64) -> f64 {
     (a - b).abs() / b.abs()
+}
+
+/// Fails unless `a` and `b` are one solid built twice: as many faces under each name, each face
+/// of one matched by a face of the other on the same kind of surface with the same area, and the
+/// same volume, all within `tol` of their size.
+pub(super) fn assert_same_solid(a: &Brep, b: &Brep, tol: f64) {
+    assert_eq!(a.name_counts(), b.name_counts());
+    let faces = |s: &Brep| {
+        let mut out: Vec<(&'static str, f64)> = s
+            .face_ids()
+            .map(|f| (s.face(f).surface.kind(), measure::face_area(s, f)))
+            .collect();
+        out.sort_by(|x, y| x.0.cmp(y.0).then(x.1.total_cmp(&y.1)));
+        out
+    };
+    let (fa, fb) = (faces(a), faces(b));
+    assert_eq!(fa.len(), fb.len());
+    let size = measure::area(a);
+    for (x, y) in fa.iter().zip(&fb) {
+        assert!(x.0 == y.0 && (x.1 - y.1).abs() <= tol * size, "{x:?} {y:?}");
+    }
+    assert!(rel(measure::area(a), measure::area(b)) <= tol);
+    assert!(rel(measure::volume(a), measure::volume(b)) <= tol);
 }
 
 // A ball slid along a line sweeps a capsule: a cylinder of its radius along the slide, with half a
@@ -273,6 +296,45 @@ fn a_cube_turned_a_whole_turn_is_a_ring() {
     );
 }
 
+// A whole turn's second half is the first turned half a turn: the same solid as when the second
+// half is swept as the first is, for a turn either way, started at any angle.
+#[test]
+fn a_whole_turn_built_from_one_half_is_the_one_built_from_both() {
+    let cube = block(
+        &Frame::WORLD.translated(Vec3::X),
+        Vec3::new(1.0, 1.0, 1.0),
+        "cube",
+    )
+    .unwrap();
+    let ball = sphere(&Frame::WORLD.translated(Vec3::new(3.0, 0.0, 1.0)), 1.0, "b").unwrap();
+    let drum = cylinder(
+        &Frame::new(Vec3::new(0.0, 5.0, 0.0), Vec3::Y, Vec3::X).unwrap(),
+        1.0,
+        0.5,
+        "drum",
+    )
+    .unwrap();
+    let turn = |from: f64, to: f64| Motion::Turn {
+        origin: Point3::new(0.0, 0.0, 0.5),
+        axis: Vec3::Z,
+        from,
+        to,
+    };
+    for (body, motion) in [
+        (&cube, turn(0.0, 2.0 * PI)),
+        (&cube, turn(0.7, 0.7 - 2.0 * PI)),
+        (&ball, turn(-1.0, 2.0 * PI - 1.0)),
+        (&drum, turn(0.3, 0.3 + 2.0 * PI)),
+    ] {
+        let copied = solid(body, &motion, "sw").unwrap();
+        SWEEP_BOTH_HALVES.set(true);
+        let swept = solid(body, &motion, "sw");
+        SWEEP_BOTH_HALVES.set(false);
+        assert!(check::check(&copied).is_empty());
+        assert_same_solid(&copied, &swept.unwrap(), 1e-10);
+    }
+}
+
 // A drum of radius 1 and length ½ along y, its axis 5 from the z axis, turned about it: at height z
 // its shadow runs from 5 − s to √((5 + s)² + ¼), s = √(1 − z²), a moment of ∫(20s + ¼)/2 dz =
 // 5π + ¼. Its side grazes the turn along curves that are neither lines nor circles.
@@ -353,6 +415,25 @@ fn a_box_turned_about_a_line_beside_it_is_built_in_parts() {
     let want = h * (2.0 * c * (b - a) + angle * (r2 - a * a) / 2.0 + phi * r2 - b * c);
     let got = measure::volume(&swept);
     assert!(rel(got, want) < 1e-9, "{got} {want}");
+}
+
+// The same box's whole product passes through itself at more than one pair of faces. It is
+// refused at the first pair found, which is all the sweep in parts needs of it.
+#[test]
+fn a_product_that_passes_through_itself_is_refused_at_the_first_pair_found() {
+    let (a, b, c, h, angle) = (10.0, 13.0, 2.0, 3.0, PI / 3.0);
+    let corner = Frame::WORLD.translated(Vec3::new(a, -c, 0.0));
+    let cube = block(&corner, Vec3::new(b - a, 2.0 * c, h), "box").unwrap();
+    let motion = about_z(angle);
+    let (steady, twist) = (
+        sheet::Steady::of(&motion).unwrap(),
+        motion.steady().unwrap(),
+    );
+    let cut = cut::cut(&cube, &move |p| twist.at(p), steady.held()).unwrap();
+    match product::product(&cut, &steady, "sw", None, None) {
+        Err(Error::InvalidResult(issues)) => assert_eq!(issues.len(), 1, "{issues:?}"),
+        other => panic!("{:?}", other.map(|b| b.face_count())),
+    }
 }
 
 /// The right-hand screw about the z axis that rises `lead` a turn.
