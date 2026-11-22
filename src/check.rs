@@ -158,7 +158,7 @@ pub(crate) fn check_structure(b: &Brep) -> Vec<Issue> {
 /// Where two faces of one solid of `b` that share no edge meet, and how far they pass through each
 /// other there: an imported mesh stitched with small folds passes through itself by microns.
 pub fn self_crossings(b: &Brep) -> Vec<SelfCrossing> {
-    crossings(b, None, true)
+    crossings(b, None, true, &|_| false)
         .into_iter()
         .map(|x| SelfCrossing {
             a: x.a,
@@ -219,6 +219,13 @@ pub(crate) fn check_cut(b: &Brep, sides: &[Option<usize>]) -> Vec<Issue> {
     check_with(b, false, Some(sides), true)
 }
 
+/// As [`check_cut`], for a caller that asks only whether the result is valid: the search for
+/// faces passing through each other stops at the first pair found, so an invalid result may list
+/// fewer issues, and a valid one lists none either way.
+pub(crate) fn check_cut_to_first(b: &Brep, sides: &[Option<usize>]) -> Vec<Issue> {
+    checked(b, false, Some(sides), true, false, true)
+}
+
 /// The shell each vertex belongs to, by the faces whose edges end there.
 fn vertex_shells(b: &Brep) -> HashMap<VertexId, ShellId> {
     let mut out = HashMap::new();
@@ -239,11 +246,11 @@ fn vertex_shells(b: &Brep) -> HashMap<VertexId, ShellId> {
 /// once, on the sheet's boundary, or twice, by coedges that run opposite ways in faces of one shell;
 /// everything else [`check`] finds of faces, loops, edges and vertices holds as for a solid.
 pub fn check_sheet(b: &Brep) -> Vec<Issue> {
-    checked(b, false, None, true, true)
+    checked(b, false, None, true, true, false)
 }
 
 fn check_with(b: &Brep, each: bool, sides: Option<&[Option<usize>]>, crossing: bool) -> Vec<Issue> {
-    checked(b, each, sides, crossing, false)
+    checked(b, each, sides, crossing, false, false)
 }
 
 fn checked(
@@ -252,6 +259,7 @@ fn checked(
     sides: Option<&[Option<usize>]>,
     crossing: bool,
     sheet: bool,
+    first: bool,
 ) -> Vec<Issue> {
     let mut out = Vec::new();
     let domains = Domains::new(b);
@@ -586,7 +594,7 @@ fn checked(
                         || overlaps(x.a, x.b)
                         || overlaps(x.b, x.a)))
         };
-        for x in crossings(b, sides, each)
+        for x in crossings(b, sides, each, &|x| first && !touching(x))
             .into_iter()
             .filter(|x| !touching(x))
         {
@@ -928,8 +936,13 @@ impl PairCache {
 /// memos were found apart before is not tested again, and neither is a pair `sides` gives one
 /// input of a boolean. With `each`, only faces of one solid are paired, as an import's parts may
 /// rest on one another. Two curved faces that meet only along a closed curve inside both are not
-/// found: no edge reaches it.
-fn crossings(b: &Brep, sides: Option<&[Option<usize>]>, each: bool) -> Vec<Crossing> {
+/// found: no edge reaches it. The search ends at the first pair that is `enough`.
+fn crossings(
+    b: &Brep,
+    sides: Option<&[Option<usize>]>,
+    each: bool,
+    enough: &dyn Fn(&Crossing) -> bool,
+) -> Vec<Crossing> {
     let faces: Vec<FaceId> = b.face_ids().collect();
     let solid_of = |f: FaceId| b.face(f).shell.and_then(|s| b.shell(s).solid);
     let mut cache = PairCache::default();
@@ -1025,7 +1038,14 @@ fn crossings(b: &Brep, sides: Option<&[Option<usize>]>, each: bool) -> Vec<Cross
                 );
             }
             match hit {
-                Some(at) => out.push(Crossing { a: fa, b: fb, at }),
+                Some(at) => {
+                    let x = Crossing { a: fa, b: fb, at };
+                    let done = enough(&x);
+                    out.push(x);
+                    if done {
+                        return out;
+                    }
+                }
                 None => apart(ma, mb),
             }
         }
