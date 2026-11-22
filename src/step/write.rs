@@ -69,9 +69,9 @@ struct Spline {
 #[non_exhaustive]
 pub struct WriteOptions {
     /// Write each edge as a `SURFACE_CURVE` (a seam as a `SEAM_CURVE`) with its pcurves, its
-    /// course in each face's parameters. Without them every edge is its curve in space alone,
-    /// which the standard allows: a smaller file, written faster, whose reader works out each
-    /// edge's course on its faces itself.
+    /// course in each face's parameters. On by default. Off, every edge is its curve in space
+    /// alone, which the standard allows: a smaller file, written faster, whose reader works out
+    /// each edge's course on its faces itself.
     pub pcurves: bool,
 }
 
