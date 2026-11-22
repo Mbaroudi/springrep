@@ -1235,7 +1235,11 @@ followed there ([`through.rs`](../src/edit/tweak/through.rs)). Each moved face r
 from its old surface to its new one: a plane through the pencil of planes the two span (so a draft
 keeps its hinge and an offset stays parallel), an offset surface by its distance, a cylinder drafted
 into a cone by its half angle. The furthest the solid gets with its topology kept is found by
-bisection. There vertices closer than ten times the tolerance are made one, edges that then run
+bisection, to a bracket of 1e-15 of the move: a share the move reaches beside one it does not. Where
+edges shrink between the last two shares reached, the bracket is cut not at its middle but where the
+first of them, run on in a straight line, comes down to the shortest length the checker passes, and
+then just to that guess's other side, by a few times what the guesses are still moving by; a guess
+only chooses where the bracket is cut, so what it closes on is the same. There vertices closer than ten times the tolerance are made one, edges that then run
 together one, and edges shorter than that dropped; a face left a strip along a single edge (or an
 annulus whose two rims have run together), or lying on another face to face, is taken out, and a
 face left running along an edge and back loses it: the edge goes where nothing else uses it, and is
@@ -1344,6 +1348,52 @@ out at a concave one) or tangentially. The slab's side lies on the face that sta
 that face reaches: where the edge carried along the moved face's normal leaves it (a step raised
 past the top its riser ends at), the face has passed the face it meets, and the move is refused
 as invalid input.
+
+### Faces taken out
+
+`delete_faces` takes faces out and closes the gap with the faces round it, each run on along its own
+surface ([`delete.rs`](../src/edit/delete.rs)). Each neighbour either holds the deleted faces in its
+material or has them standing out of it. The general way builds each neighbour's material as a
+solid, keeps what is in every neighbour of the first kind and in any of the second, and adds to the
+solid, or cuts from it, the pieces of the difference that touch the deleted faces, where those are
+bounded by the deleted faces and the neighbours' surfaces alone.
+
+Most gaps close in a way that needs none of that ([`delete/direct.rs`](../src/edit/delete/direct.rs)).
+The deleted faces fall into pieces joined edge to edge, and round a piece each neighbour's loop is
+cut where it ran along it. Where at most one edge that stays reaches each vertex of the piece's
+rim, the loops close by one of:
+
+- whole inner loops of planar faces dropped: a bore's two ends, a boss's foot;
+- two rings, each a whole loop or the rim of a face with a seam: on one surface the two faces become
+  one (a groove round a shaft), and on two surfaces that meet in a circle each runs on to it (a
+  bevelled or rounded rim);
+- one chain of two, three or four runs along planar neighbours: two straight edges that face each
+  other across the piece become one (a notch, a nick in an edge), three planes meet in a new corner
+  (a cut corner), and four either pair off into such edges or meet in two corners joined by a new
+  edge (a chamfer, a round between two walls). Where both pairings of four give corners, both are
+  tried.
+
+The solid is rebuilt by a splice ([`local.rs`](../src/edit/local.rs)): edges run on along their own
+curves to the new vertices, new edges fill what is left, loops are traced through the cuts, faces a
+loop passes through become one, and every face whose loops are untouched is copied with its memo.
+
+The result is taken only where it is shown to be the general way's. The region between a piece and
+the faces run on is bounded by the piece and by parts of the neighbours' surfaces, so it is a whole
+piece of what the general way adds or cuts exactly when it lies on the right side of every
+neighbour's surface: in every surface some piece lies within, and, for a piece that stands out of a
+neighbour, out of every surface some piece stands out of (a gap filled must lie in one of those,
+where there are any). Each side is decided in closed form from the region's rims: its edges, the
+stretches edges ran on by, and the new edges. Against a plane the distance is linear, so over a
+planar, cylindrical or conical face it is greatest and least on the face's edges, and over a sphere
+or torus turned about the plane's normal on its meridian; against a cylinder, cone, sphere or torus
+every face of the region must be turned about that surface's axis, and the distance is then a
+function on the half plane through the axis, where each face is a curve the rims hold. A rim that
+touches a surface it does not lie on, away from its ends, fails the test. The region must also lie
+in the box the general way works in. Last, the checker does not pair faces that share an edge, nor
+find a shell inside the region: a face that keeps its loops and whose box meets the region must
+belong to a changed face's shell and have the region strictly to one side of its surface. A result
+that fails any of this, or the checker, or a gap of any other shape, goes the general way, and so
+does a choice between two closings that both pass.
 
 ## Sheets
 
