@@ -346,9 +346,17 @@ impl<'g, 'a> Reader<'g, 'a> {
         let (_, a) = self.params(id, &["EDGE_CURVE"])?;
         let vs = self.vertex(self.geo.reference(id, a.get(1))?)?;
         let ve = self.vertex(self.geo.reference(id, a.get(2))?)?;
-        let curve = self.geo.curve(self.geo.reference(id, a.get(3))?)?;
         let flip = a.get(4).and_then(Param::as_bool) == Some(false);
         let (start, end) = if flip { (ve, vs) } else { (vs, ve) };
+        let curve_id = self.geo.reference(id, a.get(3))?;
+        let curve =
+            match self
+                .geo
+                .conic_arc(curve_id, self.raw.points[start], self.raw.points[end])?
+            {
+                Some(c) => c,
+                None => self.geo.curve(curve_id)?,
+            };
         self.raw.edges.push(RawEdge {
             id,
             curve,

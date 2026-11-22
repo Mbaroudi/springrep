@@ -2402,3 +2402,182 @@ fn a_face_of_thousands_of_edges_reads_back_on_a_small_stack() {
     let got = measure::volume(&read_back.brep);
     assert!((got - want).abs() <= 1e-9 * want, "{got} vs {want}");
 }
+
+/// The piece a plane cuts from the cone of base radius 2 at z = 0 and apex at z = 2, as three
+/// faces: the base, the cut, and the cone between them. `#30` is the cut's plane, `#33` its curve
+/// across the cone from `#11` to `#13`, the two ends of the chord x = `x` of the base circle, and
+/// `arc` the ends and sense of the base circle's edge. `uses` are the senses of the arc and the
+/// chord round the base, of the chord and the curve round the cut, and of the arc and the curve
+/// round the cone, whose seam is at `seam` along x.
+fn cone_cut(x: f64, cut: &str, arc: &str, seam: f64, uses: [&str; 6]) -> String {
+    let y = (4.0 - x * x).sqrt();
+    let [ba, bl, cl, ch, ka, kh] = uses;
+    step_file(&format!(
+        "#1=CARTESIAN_POINT('',(0.,0.,0.));
+#2=DIRECTION('',(0.,0.,1.));
+#3=DIRECTION('',(1.,0.,0.));
+#4=AXIS2_PLACEMENT_3D('',#1,#2,#3);
+#5=DIRECTION('',(0.,0.,-1.));
+#6=DIRECTION('',({seam:?},0.,0.));
+#7=AXIS2_PLACEMENT_3D('',#1,#5,#6);
+#8=DIRECTION('',(0.,1.,0.));
+#10=CARTESIAN_POINT('',({x:?},{:?},0.));
+#11=VERTEX_POINT('',#10);
+#12=CARTESIAN_POINT('',({x:?},{y:?},0.));
+#13=VERTEX_POINT('',#12);
+#20=CIRCLE('',#4,2.);
+#21=EDGE_CURVE('',{arc},#20,.T.);
+#22=VECTOR('',#8,1.);
+#23=LINE('',#10,#22);
+#24=EDGE_CURVE('',#11,#13,#23,.T.);
+{cut}
+#34=EDGE_CURVE('',#11,#13,#33,.T.);
+#40=PLANE('',#7);
+#41=CONICAL_SURFACE('',#7,2.,{:?});
+#50=ORIENTED_EDGE('',*,*,#21,{ba});
+#51=ORIENTED_EDGE('',*,*,#24,{bl});
+#52=EDGE_LOOP('',(#50,#51));
+#53=FACE_OUTER_BOUND('',#52,.T.);
+#54=ADVANCED_FACE('',(#53),#40,.T.);
+#60=ORIENTED_EDGE('',*,*,#24,{cl});
+#61=ORIENTED_EDGE('',*,*,#34,{ch});
+#62=EDGE_LOOP('',(#60,#61));
+#63=FACE_OUTER_BOUND('',#62,.T.);
+#64=ADVANCED_FACE('',(#63),#30,.T.);
+#70=ORIENTED_EDGE('',*,*,#21,{ka});
+#71=ORIENTED_EDGE('',*,*,#34,{kh});
+#72=EDGE_LOOP('',(#70,#71));
+#73=FACE_OUTER_BOUND('',#72,.T.);
+#74=ADVANCED_FACE('',(#73),#41,.T.);
+#80=CLOSED_SHELL('',(#54,#64,#74));
+#81=MANIFOLD_SOLID_BREP('',#80);",
+        -y,
+        PI / 4.0,
+    ))
+}
+
+/// Reads `text` as one sound solid whose volume and area are `volume` and `area`, and reads it
+/// again from what the writer makes of it.
+fn assert_reads_as(text: &str, volume: f64, area: f64, what: &str) {
+    let imp = read(text.as_bytes(), "imp").unwrap();
+    assert!(imp.rejected.is_empty(), "{what}: {:?}", imp.rejected);
+    assert!(check::check(&imp.brep).is_empty(), "{what}");
+    let (a, v) = measure::area_and_volume(&imp.brep);
+    assert!(
+        (v - volume).abs() < 1e-9 * volume,
+        "{what}: {v} vs {volume}"
+    );
+    assert!((a - area).abs() < 1e-9 * area, "{what}: {a} vs {area}");
+    let back = read(write(&imp.brep, "p").unwrap().as_bytes(), "back").unwrap();
+    assert!(check::check(&back.brep).is_empty(), "{what}");
+    let v = measure::volume(&back.brep);
+    assert!(
+        (v - volume).abs() < 1e-9 * volume,
+        "{what}: {v} vs {volume}"
+    );
+}
+
+#[test]
+fn a_hyperbola_edge_is_read_as_its_exact_arc() {
+    // The plane x = d cuts the cone r = 2 − z in the hyperbola (2 − z)² − y² = d², and the piece
+    // beyond it stands on the base's segment of half angle t = acos(d/2). In polar coordinates the
+    // column over (r, θ) is 2 − r high from r = d·sec θ to 2, so the volume is
+    // ∫(4/3 − d²sec²θ + d³sec³θ/3)dθ over ±t. The cone's face is √2 times the segment under it,
+    // and the cut is ∫z dy = ∫(2 − d·cosh u)·d·cosh u du over ±acosh(2/d).
+    // At d = 0.1 the arc spans 7.4 in u and is read in four pieces; at d = 1, in two.
+    for d in [1.0_f64, 0.1] {
+        let t = (d / 2.0).acos();
+        let (sec, tan) = (1.0 / t.cos(), t.tan());
+        let volume =
+            8.0 / 3.0 * t - 2.0 * d * d * tan + d.powi(3) / 3.0 * (sec * tan + (sec + tan).ln());
+        let segment = 2.0 * (2.0 * t - (2.0 * t).sin());
+        let u = (2.0 / d).acosh();
+        let cut = 4.0 * d * u.sinh() - d * d * (u + (2.0 * u).sinh() / 2.0);
+        let area = segment * (1.0 + 2.0_f64.sqrt()) + cut;
+        let text = cone_cut(
+            d,
+            &format!(
+                "#25=CARTESIAN_POINT('',({d:?},0.,0.));
+#26=DIRECTION('',(-1.,0.,0.));
+#27=AXIS2_PLACEMENT_3D('',#25,#26,#8);
+#30=PLANE('',#27);
+#31=CARTESIAN_POINT('',({d:?},0.,2.));
+#32=AXIS2_PLACEMENT_3D('',#31,#3,#5);
+#33=HYPERBOLA('',#32,{d:?},{d:?});"
+            ),
+            "#11,#13",
+            -1.0,
+            [".F.", ".T.", ".F.", ".T.", ".T.", ".F."],
+        );
+        assert_reads_as(&text, volume, area, &format!("hyperbola at {d}"));
+    }
+    // At d = 1 the volume is 8π/9 − 4√3/3 + ln(2 + √3)/3.
+    let want = 8.0 * PI / 9.0 - 4.0 * 3.0_f64.sqrt() / 3.0 + (2.0 + 3.0_f64.sqrt()).ln() / 3.0;
+    let t = 0.5_f64.acos();
+    let got =
+        8.0 / 3.0 * t - 2.0 * t.tan() + (t.tan() / t.cos() + (1.0 / t.cos() + t.tan()).ln()) / 3.0;
+    assert!((got - want).abs() < 1e-14, "{got} vs {want}");
+}
+
+#[test]
+fn a_parabola_edge_is_read_as_its_exact_arc() {
+    // The plane x + z = 1 is parallel to the cone's side at y = 0 and cuts it in the parabola
+    // y² = 1 + 2x, whose focus is on the axis: in polar coordinates r = 1/(1 − cos θ). The piece
+    // on the apex's side has volume 8π/9 (the columns are 4/3 − sec²θ/6 for |θ| < π/3 and
+    // 1/(6(1 − cos θ)²) beyond, whose integrals are 8π/9 − √3/3 and √3/3), so the piece read here,
+    // the rest of the cone's 8π/3, has 16π/9.
+    // Its base is the disc less the segment beyond x = 1, 8π/3 + √3. Its cone face stands over
+    // the disc less the parabola's inside, 8π/3 − √3, and is √2 times that. Its cut is the
+    // parabola's segment of chord 2√3 and height 3/√2: by Archimedes two thirds of their product.
+    let r3 = 3.0_f64.sqrt();
+    let r2 = 2.0_f64.sqrt();
+    let volume = 16.0 * PI / 9.0;
+    let area = 8.0 * PI / 3.0 + r3 + r2 * (8.0 * PI / 3.0 - r3) + 2.0 * 6.0_f64.sqrt();
+    let h = r2 / 2.0;
+    let text = cone_cut(
+        1.0,
+        &format!(
+            "#25=CARTESIAN_POINT('',(1.,0.,0.));
+#26=DIRECTION('',({h:?},0.,{h:?}));
+#27=AXIS2_PLACEMENT_3D('',#25,#26,#8);
+#30=PLANE('',#27);
+#31=CARTESIAN_POINT('',(-0.5,0.,1.5));
+#28=DIRECTION('',({h:?},0.,{:?}));
+#32=AXIS2_PLACEMENT_3D('',#31,#26,#28);
+#33=PARABOLA('',#32,{:?});",
+            -h,
+            r2 / 4.0,
+        ),
+        "#13,#11",
+        1.0,
+        [".F.", ".F.", ".T.", ".F.", ".T.", ".T."],
+    );
+    assert_reads_as(&text, volume, area, "parabola");
+}
+
+#[test]
+fn an_open_conic_that_closes_on_itself_is_refused() {
+    let text = step_file(
+        "#1=CARTESIAN_POINT('',(0.,0.,0.));
+#2=DIRECTION('',(0.,0.,1.));
+#3=DIRECTION('',(1.,0.,0.));
+#4=AXIS2_PLACEMENT_3D('',#1,#2,#3);
+#5=PARABOLA('',#4,1.);
+#6=CARTESIAN_POINT('',(1.,2.,0.));
+#7=VERTEX_POINT('',#6);
+#8=EDGE_CURVE('',#7,#7,#5,.T.);
+#9=ORIENTED_EDGE('',*,*,#8,.T.);
+#10=EDGE_LOOP('',(#9));
+#11=FACE_OUTER_BOUND('',#10,.T.);
+#12=PLANE('',#4);
+#13=ADVANCED_FACE('',(#11),#12,.T.);
+#14=CLOSED_SHELL('',(#13));
+#15=MANIFOLD_SOLID_BREP('',#14);",
+    );
+    let imp = read(text.as_bytes(), "imp").unwrap();
+    assert!(
+        imp.rejected[0].contains("an open conic cannot close on itself"),
+        "{:?}",
+        imp.rejected
+    );
+}
