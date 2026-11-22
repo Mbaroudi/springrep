@@ -1696,7 +1696,11 @@ solid never pinches.
   the edge at any of seven points a span, which keeps it within half the tolerance between them (a
   part's file grows by up to 7%). A reader given no pcurves must project each traced edge onto its
   face itself. A ruled surface between conics, whose rational rails do not run at the angle's rate,
-  gets no pcurves.
+  gets no pcurves. [`WriteOptions`](../src/step/write.rs) with `pcurves` off
+  ([`write_with`](../src/step/write.rs), [`write_assembly_with`](../src/step/write.rs)) writes no
+  pcurve at all: every edge, a seam's too, is its curve in space alone, which the standard allows,
+  and the file is smaller and written faster for a reader that works out each edge's course on its
+  faces itself. The reader here reads either form as the same solid.
 - **Writing an assembly** ([`write_assembly`](../src/step/write.rs)) puts several parts in one file.
   Each part is a product with its own advanced B-rep, written once however often it is used, and
   each instance is a use of its part's product under the assembly's, placed by its motion. A part

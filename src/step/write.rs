@@ -63,8 +63,37 @@ struct Spline {
     weights: Option<Vec<f64>>,
 }
 
+/// How a STEP file is written. The default writes each edge with its pcurve on every face that uses
+/// it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct WriteOptions {
+    /// Write each edge as a `SURFACE_CURVE` (a seam as a `SEAM_CURVE`) with its pcurves, its
+    /// course in each face's parameters. On by default. Off, every edge is its curve in space
+    /// alone, which the standard allows: a smaller file, written faster, whose reader works out
+    /// each edge's course on its faces itself.
+    pub pcurves: bool,
+}
+
+impl WriteOptions {
+    /// These options with [`pcurves`](WriteOptions::pcurves) set to `on`.
+    pub const fn pcurves(self, on: bool) -> WriteOptions {
+        WriteOptions {
+            pcurves: on,
+            ..self
+        }
+    }
+}
+
+impl Default for WriteOptions {
+    fn default() -> WriteOptions {
+        WriteOptions { pcurves: true }
+    }
+}
+
 pub(super) struct Writer {
     pub(super) out: String,
+    pcurves: bool,
     next: usize,
     points: HashMap<[u64; 3], usize>,
     directions: HashMap<[u64; 3], usize>,
@@ -88,9 +117,15 @@ fn key(p: Vec3) -> [u64; 3] {
 }
 
 impl Writer {
+    #[cfg(test)]
     pub(super) fn new() -> Writer {
+        Writer::with(&WriteOptions::default())
+    }
+
+    fn with(options: &WriteOptions) -> Writer {
         Writer {
             out: String::new(),
+            pcurves: options.pcurves,
             next: 1,
             points: HashMap::new(),
             directions: HashMap::new(),
@@ -468,7 +503,8 @@ impl Writer {
             vec![first, co.max(mate)]
         };
         let mut pcurves = Vec::new();
-        for &co in &uses {
+        let written = if self.pcurves { &uses[..] } else { &[] };
+        for &co in written {
             if let Some(pc) = self.pcurve(b, co)? {
                 pcurves.push(pc);
             }
@@ -1161,13 +1197,22 @@ impl Writer {
 /// The whole arena as one part's advanced B-rep, in millimetres and radians. `name` names the
 /// product.
 pub fn write(b: &Brep, name: &str) -> Result<String> {
-    write_faces(b, name).map(|(text, _)| text)
+    write_with(b, name, &WriteOptions::default())
+}
+
+/// [`write()`] as `options` say.
+pub fn write_with(b: &Brep, name: &str, options: &WriteOptions) -> Result<String> {
+    faces_with(b, name, options).map(|(text, _)| text)
 }
 
 /// [`write()`], and the faces in the order the file holds them: the n-th `ADVANCED_FACE` of the
 /// file is the n-th face here. A reader that keeps the file's order can tell its faces by it.
 pub fn write_faces(b: &Brep, name: &str) -> Result<(String, Vec<FaceId>)> {
-    let mut w = Writer::new();
+    faces_with(b, name, &WriteOptions::default())
+}
+
+fn faces_with(b: &Brep, name: &str, options: &WriteOptions) -> Result<(String, Vec<FaceId>)> {
+    let mut w = Writer::with(options);
     let n = encode_string(name);
     let shared = w.shared();
     let (_, pds) = w.product(&shared, &n);
@@ -1211,6 +1256,16 @@ impl<'a> Instance<'a> {
 /// [`read`](super::read) gives every instance's solids where it places them, with the part's and
 /// the instance's names.
 pub fn write_assembly(name: &str, parts: &[Part], instances: &[Instance]) -> Result<String> {
+    write_assembly_with(name, parts, instances, &WriteOptions::default())
+}
+
+/// [`write_assembly`] as `options` say.
+pub fn write_assembly_with(
+    name: &str,
+    parts: &[Part],
+    instances: &[Instance],
+    options: &WriteOptions,
+) -> Result<String> {
     if let Some(i) = instances.iter().find(|i| i.part >= parts.len()) {
         return Err(Error::InvalidInput(format!(
             "STEP: instance {:?} uses part {} of {}",
@@ -1219,7 +1274,7 @@ pub fn write_assembly(name: &str, parts: &[Part], instances: &[Instance]) -> Res
             parts.len()
         )));
     }
-    let mut w = Writer::new();
+    let mut w = Writer::with(options);
     let n = encode_string(name);
     let shared = w.shared();
     let (root, root_shape) = w.product(&shared, &n);

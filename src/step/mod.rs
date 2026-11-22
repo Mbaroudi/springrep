@@ -17,7 +17,10 @@ pub use read::{
     read_with,
 };
 pub(crate) use topology::{PartFace, Parts, parts_of, rebuilt, sewn, solid_of};
-pub use write::{Instance, Part, write, write_assembly, write_faces};
+pub use write::{
+    Instance, Part, WriteOptions, write, write_assembly, write_assembly_with, write_faces,
+    write_with,
+};
 
 /// The faces of a STEP file, each its own with its own vertices and edges, sewn into one solid
 /// where their edges lie within `tolerance` of each other, then healed onto their surfaces.

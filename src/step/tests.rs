@@ -1,6 +1,6 @@
 use std::f64::consts::{PI, TAU};
 
-use super::{ReadOptions, read, read_part_with, read_with, write};
+use super::{ReadOptions, WriteOptions, read, read_part_with, read_with, write, write_with};
 use crate::{
     boolean, check,
     geom::{Circle, Cone, Curve, Line, Ruled, Surface},
@@ -53,9 +53,28 @@ fn ball(r: f64) -> Brep {
 }
 
 /// Writes `b`, reads it back, and checks the copy is valid with the same measures and names.
+/// `b` written as STEP, with pcurves and without, and read back as the same solid each way.
 fn round_trip(b: &Brep) -> Brep {
-    assert!(check::check(b).is_empty());
+    let bare = write_with(b, "part", &WriteOptions::default().pcurves(false)).unwrap();
+    for kind in [
+        "PCURVE",
+        "SURFACE_CURVE",
+        "SEAM_CURVE",
+        "DEFINITIONAL_REPRESENTATION",
+    ] {
+        assert_eq!(instances(&bare, kind), 0, "{kind} without pcurves");
+    }
+    read_back(b, &bare);
     let text = write(b, "part").unwrap();
+    assert_eq!(
+        write_with(b, "part", &WriteOptions::default()).unwrap(),
+        text
+    );
+    read_back(b, &text)
+}
+
+fn read_back(b: &Brep, text: &str) -> Brep {
+    assert!(check::check(b).is_empty());
     let back = read(text.as_bytes(), "imp").unwrap();
     assert!(back.rejected.is_empty(), "{:?}", back.rejected);
     let c = back.brep;
@@ -2255,6 +2274,17 @@ fn a_band_of_a_spline_surface_closed_round_one_parameter_is_read() {
 }
 
 const STRICT: ReadOptions = ReadOptions { strict: true };
+
+#[test]
+fn options_are_set_one_by_name() {
+    assert_eq!(ReadOptions::default().strict(true), STRICT);
+    assert_eq!(
+        ReadOptions::default().strict(true).strict(false),
+        ReadOptions::default()
+    );
+    assert!(WriteOptions::default().pcurves);
+    assert!(!WriteOptions::default().pcurves(false).pcurves);
+}
 
 /// What a strict read of `text` rejects: its one solid, with the reason.
 fn strictly_rejected(text: &str) -> String {
