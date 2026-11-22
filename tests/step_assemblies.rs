@@ -24,6 +24,11 @@ const RED: [f64; 3] = [0.8, 0.1, 0.1];
 /// A block, and a post used twice: once stood 40 mm up, clear of the block, once laid along −y
 /// at x = 50.
 fn written() -> String {
+    written_with(None)
+}
+
+/// [`written`], through `write_assembly_with` where `options` are given.
+fn written_with(options: Option<&step::WriteOptions>) -> String {
     let (block, post) = (block(), post());
     let parts = [
         Part::new("block", &block, Some(RED)),
@@ -43,12 +48,27 @@ fn written() -> String {
                 .then(&Transform::translation(Vec3::new(50.0, 0.0, 0.0))),
         ),
     ];
-    step::write_assembly("stand", &parts, &instances).unwrap()
+    match options {
+        Some(o) => step::write_assembly_with("stand", &parts, &instances, o),
+        None => step::write_assembly("stand", &parts, &instances),
+    }
+    .unwrap()
 }
 
 #[test]
 fn an_assembly_reads_back_with_each_instance_where_it_was_placed() {
-    let text = written();
+    assert_eq!(
+        written(),
+        written_with(Some(&step::WriteOptions::default()))
+    );
+    for pcurves in [true, false] {
+        let text = written_with(Some(&step::WriteOptions::new(pcurves)));
+        assert_eq!(text.contains("=PCURVE("), pcurves);
+        reads_back_where_placed(&text);
+    }
+}
+
+fn reads_back_where_placed(text: &str) {
     // The post's geometry is in the file once, however often it is used.
     assert_eq!(text.matches("MANIFOLD_SOLID_BREP").count(), 2);
     let import = step::read(text.as_bytes(), "in").unwrap();
