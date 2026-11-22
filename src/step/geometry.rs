@@ -10,7 +10,11 @@ use crate::{
         Revolution, Sphere, Surface, Torus,
     },
     math::{Frame, Point3, Transform, Vec3},
+    tol,
 };
+
+/// The largest shape factor w₁²/(w₀w₂) of one piece of a hyperbola's arc read from a file.
+const CONIC_SHAPE: f64 = 2.5;
 
 fn bad<T>(id: u64, what: &str) -> Result<T> {
     Err(Error::InvalidInput(format!("STEP #{id}: {what}")))
@@ -421,6 +425,72 @@ impl<'a> Geometry<'a> {
         let c = self.enter(id, |s| s.make_curve(id))?;
         self.curves.insert(id, c.clone());
         Ok(c)
+    }
+
+    /// The arc of a `HYPERBOLA` or a `PARABOLA` from `start` to `end`, as the rational curve of
+    /// degree 2 that is exactly that arc; `None` for any other curve. Such a conic has no end of
+    /// its own, so the edge that names it gives the two points.
+    ///
+    /// A conic's arc is a rational quadratic Bézier piece whose middle control point is where the
+    /// end tangents meet (Piegl and Tiller, *The NURBS Book*, 1997, ch. 7). For the hyperbola
+    /// a·cosh u, b·sinh u over a half range d the middle weight is cosh d, and for the parabola it
+    /// is 1. A hyperbola's arc is cut into equal ranges of u so that no piece's shape factor cosh² d
+    /// passes [`CONIC_SHAPE`]; the pieces meet at double knots, tangent to each other.
+    pub(super) fn conic_arc(
+        &mut self,
+        id: u64,
+        start: Point3,
+        end: Point3,
+    ) -> Result<Option<Curve>> {
+        let mut at = id;
+        let (kind, a) = loop {
+            let (kind, a) = &self.entity(at)?.parts[0];
+            match kind.as_str() {
+                "SURFACE_CURVE" | "SEAM_CURVE" | "INTERSECTION_CURVE" | "TRIMMED_CURVE" => {
+                    at = self.reference(at, a.get(1))?;
+                }
+                _ => break (kind.as_str(), a),
+            }
+        };
+        if kind != "HYPERBOLA" && kind != "PARABOLA" {
+            return Ok(None);
+        }
+        if start.dist(end) <= tol::LINEAR {
+            return bad(at, "an open conic cannot close on itself");
+        }
+        let f = self.placement(self.reference(at, a.get(1))?)?;
+        let (ps, pe) = (f.to_local(start), f.to_local(end));
+        let place = |x: f64, y: f64| f.origin + f.x * x + f.y * y;
+        let (mut ctrl, mut weights, mut knots) = (vec![start], vec![1.0], vec![0.0; 3]);
+        if kind == "HYPERBOLA" {
+            let (sa, sb) = (self.length(at, a.get(2))?, self.length(at, a.get(3))?);
+            let (u0, u1) = ((ps.y / sb).asinh(), (pe.y / sb).asinh());
+            let pieces = ((u1 - u0).abs() / (2.0 * CONIC_SHAPE.sqrt().acosh())).ceil() as usize;
+            let pieces = pieces.max(1);
+            let d = 0.5 * (u1 - u0) / pieces as f64;
+            for k in 0..pieces {
+                let m = u0 + (2 * k + 1) as f64 * d;
+                ctrl.push(place(sa * m.cosh() / d.cosh(), sb * m.sinh() / d.cosh()));
+                weights.push(d.cosh());
+                let u = m + d;
+                ctrl.push(if k + 1 == pieces {
+                    end
+                } else {
+                    place(sa * u.cosh(), sb * u.sinh())
+                });
+                weights.push(1.0);
+                knots.extend([(k + 1) as f64; 2]);
+            }
+            knots.push(pieces as f64);
+        } else {
+            let focal = self.length(at, a.get(2))?;
+            let (u0, u1) = (ps.y / (2.0 * focal), pe.y / (2.0 * focal));
+            ctrl.extend([place(focal * u0 * u1, focal * (u0 + u1)), end]);
+            weights.extend([1.0, 1.0]);
+            knots.extend([1.0; 3]);
+        }
+        let c = NurbsCurve::new(2, knots, ctrl, Some(weights))?;
+        Ok(Some(Curve::Nurbs(Box::new(c))))
     }
 
     fn make_curve(&mut self, id: u64) -> Result<Curve> {
