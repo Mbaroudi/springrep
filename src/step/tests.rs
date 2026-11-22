@@ -1477,6 +1477,12 @@ fn touching_placed_solids_check_valid_each_but_not_as_one() {
 fn on_step_surface(s: &Surface, c2: &super::write::Curve2, t: f64) -> Vec3 {
     let uv = match c2 {
         super::write::Curve2::Line { origin, dir } => *origin + *dir * t,
+        super::write::Curve2::Conic {
+            center,
+            x,
+            major,
+            minor,
+        } => *center + *x * (major * t.cos()) + x.perp() * (minor * t.sin()),
         super::write::Curve2::Spline {
             degree,
             knots,
@@ -1568,6 +1574,333 @@ fn pcurves_follow_their_edges_on_every_surface() {
     )
     .unwrap();
     assert_pcurves_follow(&boolean::difference(&loft, &rod).unwrap());
+}
+
+/// A written 2D line, circle or ellipse as a function of its parameter; `None` for any other curve.
+fn flat_curve(file: &super::part21::File, id: u64) -> Option<Box<dyn Fn(f64) -> Vec2>> {
+    let args = |id: u64, kind: &str| file.get(id).unwrap().part(kind).unwrap().to_vec();
+    let pair = |id: u64, kind: &str| {
+        let xs = args(id, kind)[1].as_list().unwrap().to_vec();
+        assert_eq!(xs.len(), 2);
+        Vec2::new(xs[0].as_f64().unwrap(), xs[1].as_f64().unwrap())
+    };
+    let placed = |id: u64| {
+        let a = args(id, "AXIS2_PLACEMENT_2D");
+        let x = pair(a[2].as_ref().unwrap(), "DIRECTION");
+        assert!((x.norm() - 1.0).abs() < 1e-12);
+        (pair(a[1].as_ref().unwrap(), "CARTESIAN_POINT"), x)
+    };
+    let e = file.get(id).unwrap();
+    match e.kind() {
+        "LINE" => {
+            let a = args(id, "LINE");
+            let o = pair(a[1].as_ref().unwrap(), "CARTESIAN_POINT");
+            let v = args(a[2].as_ref().unwrap(), "VECTOR");
+            let d = pair(v[1].as_ref().unwrap(), "DIRECTION") * v[2].as_f64().unwrap();
+            Some(Box::new(move |t| o + d * t))
+        }
+        "CIRCLE" | "ELLIPSE" => {
+            let a = args(id, e.kind());
+            let (c, x) = placed(a[1].as_ref().unwrap());
+            let r1 = a[2].as_f64().unwrap();
+            let r2 = a.get(3).map_or(r1, |p| p.as_f64().unwrap());
+            Some(Box::new(move |t| {
+                c + x * (r1 * t.cos()) + x.perp() * (r2 * t.sin())
+            }))
+        }
+        _ => None,
+    }
+}
+
+/// How many pcurves of each kind `text` holds, a spline under a conic that turns against its
+/// plane's parameters counted as `against`. Each that is a line or a conic on an elementary
+/// surface, under a line or a conic in space, is read back from the text and lifted onto its
+/// surface as STEP parameterizes it, where it must lie on the curve in space at equal parameters.
+fn written_pcurves(text: &str) -> std::collections::BTreeMap<String, usize> {
+    let file = super::part21::parse(text.as_bytes()).unwrap();
+    let mut g = super::geometry::Geometry::new(&file);
+    let mut kinds = std::collections::BTreeMap::new();
+    for (&id, e) in file.ids.iter().zip(&file.entities) {
+        if !matches!(e.kind(), "SURFACE_CURVE" | "SEAM_CURVE") {
+            continue;
+        }
+        let a = e.part(e.kind()).unwrap();
+        let space = g.curve(id).unwrap();
+        for pc in a[2].as_list().unwrap() {
+            let pc = file.get(pc.as_ref().unwrap()).unwrap();
+            let pc = pc.part("PCURVE").unwrap();
+            let surface = g.surface(pc[1].as_ref().unwrap()).unwrap();
+            let rep = file.get(pc[2].as_ref().unwrap()).unwrap();
+            let rep = rep.part("DEFINITIONAL_REPRESENTATION").unwrap();
+            let c2 = rep[1].as_list().unwrap()[0].as_ref().unwrap();
+            let against = match (&space, &surface) {
+                (Curve::Circle(c), Surface::Plane(p)) => c.frame.z.dot(p.frame.z) < 0.0,
+                (Curve::Ellipse(c), Surface::Plane(p)) => c.frame.z.dot(p.frame.z) < 0.0,
+                _ => false,
+            };
+            let kind = match file.get(c2).unwrap().kind() {
+                "" => "rational",
+                "B_SPLINE_CURVE_WITH_KNOTS" if against => "against",
+                k => k,
+            };
+            *kinds.entry(kind.to_string()).or_insert(0) += 1;
+            let lift: Box<dyn Fn(Vec2) -> Vec3> = match &surface {
+                Surface::Cone(c) => {
+                    let c = c.clone();
+                    Box::new(move |uv| {
+                        let fr = c.frame;
+                        let r = c.radius + uv.y * c.half_angle.tan();
+                        fr.origin + (fr.x * uv.x.cos() + fr.y * uv.x.sin()) * r + fr.z * uv.y
+                    })
+                }
+                Surface::Plane(_)
+                | Surface::Cylinder(_)
+                | Surface::Sphere(_)
+                | Surface::Torus(_) => {
+                    let s = surface.clone();
+                    Box::new(move |uv| s.eval(uv.x, uv.y))
+                }
+                _ => continue,
+            };
+            if !matches!(space, Curve::Line(_) | Curve::Circle(_) | Curve::Ellipse(_)) {
+                continue;
+            }
+            let Some(flat) = flat_curve(&file, c2) else {
+                continue;
+            };
+            for i in -4..=12 {
+                let t = 0.7 * i as f64;
+                let d = lift(flat(t)).dist(space.eval(t));
+                assert!(
+                    d <= crate::tol::LINEAR,
+                    "{kind} on {} {d:e}",
+                    surface.kind()
+                );
+            }
+        }
+    }
+    kinds
+}
+
+/// `b`'s pcurves by kind as written, after checking that each follows its edge and that the
+/// solid reads back.
+fn pcurve_kinds(b: &Brep) -> Vec<(String, usize)> {
+    assert_pcurves_follow(b);
+    round_trip(b);
+    written_pcurves(&write(b, "part").unwrap())
+        .into_iter()
+        .collect()
+}
+
+fn kinds(want: &[(&str, usize)]) -> Vec<(String, usize)> {
+    want.iter().map(|&(k, n)| (k.to_string(), n)).collect()
+}
+
+/// Every pcurve of `b` is written as a line or a circle, but a circle's that turns against its
+/// plane's parameters, which has no circle there with the edge's own parameter.
+fn lines_and_circles_only(b: &Brep) {
+    let got = pcurve_kinds(b);
+    let exact = |k: &str| matches!(k, "CIRCLE" | "LINE" | "against");
+    assert!(got.iter().all(|(k, _)| exact(k)), "{got:?}");
+    assert!(got.iter().any(|(k, _)| k == "LINE"), "{got:?}");
+}
+
+fn frustum(pts: [(f64, f64); 4]) -> Brep {
+    let pts: Vec<Vec2> = pts.iter().map(|&(x, y)| Vec2::new(x, y)).collect();
+    let p = Profile::polygon(&pts, &["a", "b", "c", "d"]);
+    revolve(&p, &xz(), Vec3::ZERO, Vec3::Z, TAU, "t").unwrap()
+}
+
+#[test]
+fn circles_and_rulings_of_swept_solids_are_written_as_exact_pcurves() {
+    // Two rims, each a circle on its cap and a line on the side, and the seam, a line twice.
+    let rod = extrude(
+        &Profile::circle(Vec2::new(1.0, 2.0), 10.0),
+        &Frame::WORLD,
+        7.0,
+        "rod",
+    );
+    let rims_and_seam = kinds(&[("CIRCLE", 2), ("LINE", 4)]);
+    assert_eq!(pcurve_kinds(&rod.unwrap()), rims_and_seam);
+    for pts in [
+        [(0.0, 0.0), (6.0, 0.0), (3.0, 5.0), (0.0, 5.0)],
+        [(0.0, 0.0), (3.0, 0.0), (6.0, 5.0), (0.0, 5.0)],
+    ] {
+        assert_eq!(pcurve_kinds(&frustum(pts)), rims_and_seam);
+    }
+}
+
+#[test]
+fn circles_and_lines_a_boolean_leaves_on_surfaces_of_revolution_are_exact_pcurves() {
+    // Two balls on one axis meet in a circle of latitude of each.
+    let mut small = ball(4.0);
+    small.transform(&crate::math::Transform::translation(Vec3::new(
+        0.0, 0.0, 6.0,
+    )));
+    lines_and_circles_only(&boolean::union(&ball(5.0), &small).unwrap());
+    // A ring halved across its axis, leaving circles of latitude that are circles on the cut too,
+    // and one halved through its axis, leaving circles of its tube.
+    let ring = Profile::circle(Vec2::new(8.0, 0.0), 4.0);
+    let ring = revolve(&ring, &xz(), Vec3::ZERO, Vec3::Z, TAU, "ring").unwrap();
+    let (above, _) = boolean::split(&ring, Vec3::new(0.0, 0.0, 0.5), Vec3::Z).unwrap();
+    lines_and_circles_only(&above);
+    let (half, _) = boolean::split(&ring, Vec3::ZERO, Vec3::Y).unwrap();
+    lines_and_circles_only(&half);
+    // A block bored through, the bore's rims circles on the block's faces.
+    let bore = extrude(
+        &Profile::circle(Vec2::new(1.0, 0.5), 3.0),
+        &Frame::new(Vec3::new(0.0, 0.0, -1.0), Vec3::Z, Vec3::X).unwrap(),
+        6.0,
+        "bore",
+    )
+    .unwrap();
+    let plate = block("b", [-5.0, -5.0, 0.0], [5.0, 5.0, 4.0]);
+    lines_and_circles_only(&boolean::difference(&plate, &bore).unwrap());
+    // A cone and a rod, each cut square across its axis and along it.
+    let rod = extrude(&Profile::circle(Vec2::ZERO, 4.0), &Frame::WORLD, 5.0, "rod").unwrap();
+    for b in [
+        &frustum([(0.0, 0.0), (6.0, 0.0), (3.0, 5.0), (0.0, 5.0)]),
+        &rod,
+    ] {
+        let (_, below) = boolean::split(b, Vec3::new(0.0, 0.0, 2.0), Vec3::Z).unwrap();
+        lines_and_circles_only(&below);
+        let (_, side) = boolean::split(b, Vec3::ZERO, Vec3::new(0.6, 0.8, 0.0)).unwrap();
+        lines_and_circles_only(&side);
+    }
+}
+
+/// The rate [`super::write::steady_rate`] reads for `curve` on `s` from its point at `t = 0.3`, to
+/// which the surface's own projection gives the parameters.
+fn rate_on(s: &Surface, curve: &Curve) -> Option<Vec2> {
+    let uv = s.project(curve.eval(0.3));
+    super::write::steady_rate(s, curve, (0.3, uv), 0.9)
+}
+
+// Each curve refused lies close to a parameter line of its surface but strays from it by more
+// than the 0.45 of the tolerance a pcurve keeps to, by its tilt across its size or by its centre.
+#[test]
+fn a_curve_close_to_a_parameter_line_but_not_one_is_not_written_as_a_line() {
+    let (lin, ang) = (crate::tol::LINEAR, crate::tol::ANGULAR);
+    let circle = |origin: Vec3, z: Vec3, radius: f64| {
+        let frame = Frame::from_axis(origin, z.unit().unwrap()).unwrap();
+        Curve::Circle(Circle { frame, radius })
+    };
+    let line = |origin: Vec3, dir: Vec3| {
+        Curve::Line(Line {
+            origin,
+            dir: dir.unit().unwrap(),
+        })
+    };
+    let up = Vec3::new(0.0, 0.0, 2.0);
+    // In radians: 5e-7 mm across a radius of 5 mm, and 6e-8 mm along the 0.6 mm of a line read.
+    let lean = 1e-7;
+    let tilt = Vec3::new(lean, 0.0, 1.0);
+    let aside = Vec3::new(4.0 * lin, 0.0, 2.0);
+
+    let rod = Surface::Cylinder(crate::geom::Cylinder {
+        frame: Frame::WORLD,
+        radius: 5.0,
+    });
+    let along = Some(Vec2::new(1.0, 0.0));
+    assert_eq!(rate_on(&rod, &circle(up, Vec3::Z, 5.0)), along);
+    assert_eq!(rate_on(&rod, &circle(up, -Vec3::Z, 5.0)), along.map(|d| -d));
+    assert_eq!(rate_on(&rod, &circle(up, tilt, 5.0)), None);
+    // A tilt of the angular tolerance strays 5e-10 mm across this radius and 1e-6 mm across 10 m.
+    let slight = Vec3::new(ang, 0.0, 1.0);
+    assert_eq!(rate_on(&rod, &circle(up, slight, 5.0)), along);
+    let mast = Surface::Cylinder(crate::geom::Cylinder {
+        frame: Frame::WORLD,
+        radius: 1e4,
+    });
+    assert_eq!(rate_on(&mast, &circle(up, Vec3::Z, 1e4)), along);
+    assert_eq!(rate_on(&mast, &circle(up, slight, 1e4)), None);
+    assert_eq!(rate_on(&rod, &circle(aside, Vec3::Z, 5.0)), None);
+    let foot = Vec3::new(5.0, 0.0, 0.0);
+    assert_eq!(
+        rate_on(&rod, &line(foot, Vec3::Z)),
+        Some(Vec2::new(0.0, 1.0))
+    );
+    assert_eq!(
+        rate_on(&rod, &line(foot, -Vec3::Z)),
+        Some(Vec2::new(0.0, -1.0))
+    );
+    assert_eq!(rate_on(&rod, &line(foot, Vec3::new(0.0, lean, 1.0))), None);
+
+    let cone = Surface::Cone(Cone {
+        frame: Frame::WORLD,
+        radius: 5.0,
+        half_angle: 0.5,
+    });
+    let slant = Vec3::new(0.5f64.sin(), 0.0, 0.5f64.cos());
+    let rim = 5.0 + 2.0 * 0.5f64.tan();
+    assert_eq!(rate_on(&cone, &circle(up, Vec3::Z, rim)), along);
+    assert_eq!(rate_on(&cone, &circle(up, tilt, rim)), None);
+    assert_eq!(
+        rate_on(&cone, &line(foot, slant)),
+        Some(Vec2::new(0.0, 1.0))
+    );
+    let off_slant = slant + Vec3::new(0.0, lean, 0.0);
+    assert_eq!(rate_on(&cone, &line(foot, off_slant)), None);
+
+    let globe = Surface::Sphere(crate::geom::Sphere {
+        frame: Frame::WORLD,
+        radius: 5.0,
+    });
+    assert_eq!(rate_on(&globe, &circle(up, Vec3::Z, 21f64.sqrt())), along);
+    assert_eq!(rate_on(&globe, &circle(up, tilt, 21f64.sqrt())), None);
+    assert_eq!(rate_on(&globe, &circle(aside, Vec3::Z, 21f64.sqrt())), None);
+    let meridian = Frame::new(Vec3::ZERO, -Vec3::Y, Vec3::X).unwrap();
+    let great = |frame: Frame| Curve::Circle(Circle { frame, radius: 5.0 });
+    assert_eq!(rate_on(&globe, &great(meridian)), Some(Vec2::new(0.0, 1.0)));
+    let leaning = Frame::from_axis(Vec3::ZERO, Vec3::new(0.0, -1.0, lean).unit().unwrap());
+    assert_eq!(rate_on(&globe, &great(leaning.unwrap())), None);
+    // The meridian itself, on an edge that runs on over the pole.
+    let uv = globe.project(great(meridian).eval(0.3));
+    let over = super::write::steady_rate(&globe, &great(meridian), (0.3, uv), 2.0);
+    assert_eq!(over, None);
+
+    let ring = Surface::Torus(crate::geom::Torus {
+        frame: Frame::WORLD,
+        major: 8.0,
+        minor: 3.0,
+    });
+    assert_eq!(
+        rate_on(&ring, &circle(up, Vec3::Z, 8.0 + 5f64.sqrt())),
+        along
+    );
+    assert_eq!(rate_on(&ring, &circle(up, tilt, 8.0 + 5f64.sqrt())), None);
+    let tube = |origin: Vec3, z: Vec3| {
+        let frame = Frame::new(origin, z.unit().unwrap(), Vec3::X).unwrap();
+        Curve::Circle(Circle { frame, radius: 3.0 })
+    };
+    let hub = Vec3::new(8.0, 0.0, 0.0);
+    assert_eq!(
+        rate_on(&ring, &tube(hub, -Vec3::Y)),
+        Some(Vec2::new(0.0, 1.0))
+    );
+    assert_eq!(rate_on(&ring, &tube(hub, Vec3::new(lean, -1.0, 0.0))), None);
+    assert_eq!(
+        rate_on(&ring, &tube(hub + Vec3::X * (4.0 * lin), -Vec3::Y)),
+        None
+    );
+
+    // Two balls whose centres lie two tolerances off one axis meet in a circle that strays from a
+    // latitude of each by about that much.
+    let mut small = ball(4.0);
+    small.transform(&crate::math::Transform::translation(Vec3::new(
+        2e-7, 0.0, 6.0,
+    )));
+    let got = pcurve_kinds(&boolean::union(&ball(5.0), &small).unwrap());
+    assert_eq!(got, kinds(&[("B_SPLINE_CURVE_WITH_KNOTS", 2), ("LINE", 4)]));
+}
+
+#[test]
+fn an_ellipse_on_a_plane_is_written_as_an_ellipse_pcurve() {
+    let rod = extrude(&Profile::circle(Vec2::ZERO, 4.0), &Frame::WORLD, 9.0, "rod").unwrap();
+    let up = Vec3::new(0.3, 0.1, 1.0).unit().unwrap();
+    let (_, below) = boolean::split(&rod, Vec3::new(0.0, 0.0, 5.0), up).unwrap();
+    let got = pcurve_kinds(&below);
+    assert!(got.contains(&("ELLIPSE".to_string(), 1)), "{got:?}");
 }
 
 // Fitted pcurves on a ball and on a rod, each crossed obliquely by another rod: read at three
