@@ -2,14 +2,20 @@
 //! vectors, as STEP files carry them. A curve or surface whose two ends meet is periodic in that
 //! parameter: evaluation wraps into the knot domain, so an edge or loop may run across the join.
 
-use std::{cell::RefCell, sync::OnceLock};
+use std::{
+    cell::RefCell,
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicU32, Ordering},
+    },
+};
 
 use crate::{
     Result,
     error::invalid,
     math::{Aabb, Point3, Transform, Vec2, Vec3},
     mesh::bvh::Bvh,
-    numeric::solve2,
+    numeric::{self, solve2},
     tol,
 };
 
@@ -563,6 +569,23 @@ pub struct NurbsCurve {
     ctrl: Vec<Point3>,
     weights: Option<Vec<f64>>,
     period: Option<f64>,
+    stationary: StationaryCache,
+}
+
+/// Along each of x, y and z, the parameters where that coordinate of a curve is stationary, each
+/// with its point.
+type Stationary = [Vec<(f64, Point3)>; 3];
+
+/// Each knot span's [`Stationary`] over the whole span, by span number, worked out when a box
+/// first reaches the span and shared with the curve's copies. It depends only on the curve, so it
+/// never takes part in equality.
+#[derive(Clone, Debug, Default)]
+struct StationaryCache(Arc<OnceLock<Vec<OnceLock<Stationary>>>>);
+
+impl PartialEq for StationaryCache {
+    fn eq(&self, _: &StationaryCache) -> bool {
+        true
+    }
 }
 
 impl NurbsCurve {
@@ -582,6 +605,7 @@ impl NurbsCurve {
             ctrl,
             weights,
             period: None,
+            stationary: StationaryCache::default(),
         };
         let (a, b) = c.domain();
         if c.eval(a).dist(c.eval(b)) <= tol::LINEAR {
@@ -605,6 +629,7 @@ impl NurbsCurve {
             ctrl,
             weights,
             period,
+            stationary: StationaryCache::default(),
         })
     }
 
@@ -651,33 +676,52 @@ impl NurbsCurve {
 
     /// The point and its first two derivatives at `t`.
     pub fn d2(&self, t: f64) -> (Point3, Vec3, Vec3) {
+        self.ders(t, 2)
+    }
+
+    /// The point and its derivatives up to `nd` (at most 2) at `t`, the rest zero: each is what
+    /// [`NurbsCurve::d2`] gives, without the sums the higher ones take.
+    fn ders(&self, t: f64, nd: usize) -> (Point3, Vec3, Vec3) {
         let t = self.basis.wrap(t, self.period);
         let p = self.basis.degree;
         let i = self.basis.span(t);
-        self.basis.ders_then(i, t, 2, |n| self.d2_from(n, p, i))
+        self.basis
+            .ders_then(i, t, nd, |n| self.ders_from(n, p, i, nd))
     }
 
     #[allow(clippy::needless_range_loop)]
-    fn d2_from(&self, n: [&[f64]; 3], p: usize, i: usize) -> (Point3, Vec3, Vec3) {
+    fn ders_from(&self, n: [&[f64]; 3], p: usize, i: usize, nd: usize) -> (Point3, Vec3, Vec3) {
         let mut a = [Vec3::ZERO; 3];
         let mut w = [0.0; 3];
         for j in 0..=p {
             let idx = i - p + j;
             let wt = self.weights.as_ref().map_or(1.0, |w| w[idx]);
             let pw = self.ctrl[idx] * wt;
-            for k in 0..3 {
+            for k in 0..=nd {
                 a[k] += pw * n[k][j];
                 w[k] += wt * n[k][j];
             }
         }
         let c = a[0] / w[0];
+        if nd == 0 {
+            return (c, Vec3::ZERO, Vec3::ZERO);
+        }
         let d1 = (a[1] - c * w[1]) / w[0];
+        if nd == 1 {
+            return (c, d1, Vec3::ZERO);
+        }
         let d2 = (a[2] - d1 * (2.0 * w[1]) - c * w[2]) / w[0];
         (c, d1, d2)
     }
 
     pub fn eval(&self, t: f64) -> Point3 {
-        self.d2(t).0
+        self.ders(t, 0).0
+    }
+
+    /// The point and its first derivative at `t`.
+    pub(crate) fn d1(&self, t: f64) -> (Point3, Vec3) {
+        let (c, d1, _) = self.ders(t, 1);
+        (c, d1)
     }
 
     /// The curve's denominator at `t`, the blend of its weights there: 1 on a polynomial curve.
@@ -697,8 +741,85 @@ impl NurbsCurve {
     pub fn transformed(&self, t: &Transform) -> NurbsCurve {
         NurbsCurve {
             ctrl: self.ctrl.iter().map(|&p| t.point(p)).collect(),
+            stationary: StationaryCache::default(),
             ..self.clone()
         }
+    }
+
+    /// Where each of x, y and z is stationary on [a, b], a stretch of one knot span: the roots of
+    /// the derivative's coordinates, the three found from one pass of samples.
+    fn stationary_on(&self, a: f64, b: f64) -> Stationary {
+        let mut rates = |t: f64| {
+            let d = self.d1(t).1;
+            [d.dot(Vec3::X), d.dot(Vec3::Y), d.dot(Vec3::Z)]
+        };
+        numeric::roots_each(&mut rates, a, b, 12)
+            .map(|ts| ts.into_iter().map(|t| (t, self.eval(t))).collect())
+    }
+
+    /// [`NurbsCurve::stationary_on`] over [a, b] when that is one whole knot span, bit for bit,
+    /// kept from the first call: a periodic curve's span a period on is not one.
+    fn stationary_on_span(&self, a: f64, b: f64) -> Option<&Stationary> {
+        let i = self.basis.span(a);
+        let u = &self.basis.knots;
+        if a.to_bits() != u[i].to_bits() || b.to_bits() != u[i + 1].to_bits() {
+            return None;
+        }
+        let spans = self
+            .stationary
+            .0
+            .get_or_init(|| (0..self.basis.n).map(|_| OnceLock::new()).collect());
+        Some(spans[i].get_or_init(|| self.stationary_on(a, b)))
+    }
+
+    /// Parameters strictly inside (t0, t1) where the curve's coordinate along `dir` is stationary.
+    pub(crate) fn extremes(&self, dir: Vec3, t0: f64, t1: f64) -> Vec<f64> {
+        let axis = [Vec3::X, Vec3::Y, Vec3::Z].iter().position(|&a| a == dir);
+        let mut cuts = vec![t0];
+        cuts.extend(self.breakpoints(t0, t1));
+        cuts.push(t1);
+        let mut out = Vec::new();
+        let inside = |r: &f64| *r > t0 && *r < t1;
+        for w in cuts.windows(2) {
+            match axis.and_then(|k| Some(&self.stationary_on_span(w[0], w[1])?[k])) {
+                Some(kept) => out.extend(kept.iter().map(|&(t, _)| t).filter(inside)),
+                None => {
+                    let mut f = |t: f64| self.d1(t).1.dot(dir);
+                    out.extend(
+                        numeric::roots(&mut f, w[0], w[1], 12)
+                            .into_iter()
+                            .filter(inside),
+                    );
+                }
+            }
+        }
+        out
+    }
+
+    /// The tight box of the curve over [t0, t1]: its ends and every coordinate's extremes.
+    pub(crate) fn bbox(&self, t0: f64, t1: f64) -> Aabb {
+        let mut bb = Aabb::EMPTY;
+        bb.add(self.eval(t0));
+        bb.add(self.eval(t1));
+        let mut cuts = vec![t0];
+        cuts.extend(self.breakpoints(t0, t1));
+        cuts.push(t1);
+        for w in cuts.windows(2) {
+            let fresh;
+            let found = match self.stationary_on_span(w[0], w[1]) {
+                Some(kept) => kept,
+                None => {
+                    fresh = self.stationary_on(w[0], w[1]);
+                    &fresh
+                }
+            };
+            for &(t, p) in found.iter().flatten() {
+                if t > t0 && t < t1 {
+                    bb.add(p);
+                }
+            }
+        }
+        bb
     }
 }
 
@@ -841,16 +962,65 @@ pub struct NurbsSurface {
     weights: Option<Vec<f64>>,
     u_period: Option<f64>,
     v_period: Option<f64>,
-    /// Sample points of the surface that seed global projection, built on first use.
-    seeds: OnceLock<(Vec<(Vec2, Point3)>, f64)>,
-    /// Small patches whose boxes together hold the surface, built on first use.
+    /// What is worked out from the fields above on first use, shared with the surface's copies.
+    kept: Arc<Kept>,
+}
+
+/// What a surface works out of itself on first use. It depends only on the surface, so copies of
+/// the surface share it, whichever of them first asks.
+#[derive(Debug, Default)]
+struct Kept {
+    /// Sample points of the surface that seed global projection.
+    seeds: OnceLock<SeedGrid>,
+    /// Boxes over runs of the seeds, built once global projections have scanned them a few times.
+    seed_blocks: OnceLock<SeedBlocks>,
+    seed_scans: AtomicU32,
+    /// Small patches whose boxes together hold the surface.
     patches: OnceLock<Vec<Patch>>,
-    /// A hierarchy over the patches' boxes, built on first use.
+    /// A hierarchy over the patches' boxes.
     patch_tree: OnceLock<Bvh>,
-    /// Each patch as a Bézier patch, built on first use.
+    /// Each patch as a Bézier patch.
     beziers: OnceLock<Vec<Bezier>>,
-    /// The surface over each pair of spans as a polynomial, built on first use.
+    /// The surface over each pair of spans as a polynomial.
     polys: OnceLock<SpanPolys>,
+}
+
+/// The seeds of global projection: points of the surface with their parameters, row by row along
+/// `u`, `row` to a row, and the spacing they were laid out at along the surface.
+#[derive(Clone, Debug)]
+struct SeedGrid {
+    seeds: Vec<(Vec2, Point3)>,
+    spacing: f64,
+    row: usize,
+}
+
+/// How many seeds one box of [`SeedBlocks`] holds.
+const SEED_RUN: usize = 8;
+/// How many scans of every seed a surface takes before its [`SeedBlocks`] are built: building
+/// them costs about as much.
+const SCANS_BEFORE_BLOCKS: u32 = 16;
+
+/// A box round each row of the seeds and round each run of [`SEED_RUN`] seeds of a row, which
+/// say where no seed can be among the nearest, and the seeds that have another within the
+/// distance global projection takes as one point.
+#[derive(Clone, Debug)]
+struct SeedBlocks {
+    rows: Vec<Aabb>,
+    runs: Vec<Aabb>,
+    runs_per_row: usize,
+    crowded: Vec<bool>,
+}
+
+/// The square of the distance from `p` to box `b`, never more than the squared distance, as
+/// `(q − p).norm2()` works it out, to any point `q` in the box: each coordinate's gap is no
+/// longer than that of `q − p`, and squaring and summing keep the order.
+fn box_gap2(b: &Aabb, p: Point3) -> f64 {
+    Vec3::new(
+        (b.min.x - p.x).max(p.x - b.max.x).max(0.0),
+        (b.min.y - p.y).max(p.y - b.max.y).max(0.0),
+        (b.min.z - p.z).max(p.z - b.max.z).max(0.0),
+    )
+    .norm2()
 }
 
 /// The surface over each pair of nonempty spans as a polynomial in the spans' local parameters,
@@ -896,11 +1066,7 @@ impl NurbsSurface {
             weights,
             u_period: None,
             v_period: None,
-            seeds: OnceLock::new(),
-            patches: OnceLock::new(),
-            patch_tree: OnceLock::new(),
-            beziers: OnceLock::new(),
-            polys: OnceLock::new(),
+            kept: Arc::default(),
         };
         let ((u0, u1), (v0, v1)) = (s.bu.domain(), s.bv.domain());
         let n = 12;
@@ -937,11 +1103,7 @@ impl NurbsSurface {
             weights,
             u_period: periods.0,
             v_period: periods.1,
-            seeds: OnceLock::new(),
-            patches: OnceLock::new(),
-            patch_tree: OnceLock::new(),
-            beziers: OnceLock::new(),
-            polys: OnceLock::new(),
+            kept: Arc::default(),
         })
     }
 
@@ -1036,8 +1198,62 @@ impl NurbsSurface {
         (s, (a[1] - s * w[1]) / w[0], (a[2] - s * w[2]) / w[0])
     }
 
+    /// The point alone: what [`NurbsSurface::d1`] gives, without the derivatives' sums.
     pub fn eval(&self, u: f64, v: f64) -> Point3 {
-        self.d1(u, v).0
+        let u = self.bu.wrap(u, self.u_period);
+        let v = self.bv.wrap(v, self.v_period);
+        let (iu, iv) = (self.bu.span(u), self.bv.span(v));
+        self.bu.ders_then(iu, u, 0, |nu| {
+            self.bv
+                .ders_then(iv, v, 0, |nv| self.point_from(iu, iv, nu[0], nv[0]))
+        })
+    }
+
+    /// The point over spans `iu` and `iv` from the basis values there, summed as
+    /// [`NurbsSurface::d1`] sums its point.
+    fn point_from(&self, iu: usize, iv: usize, nu: &[f64], nv: &[f64]) -> Point3 {
+        let (pu, pv) = (self.bu.degree, self.bv.degree);
+        let (mut a, mut w) = (Vec3::ZERO, 0.0);
+        for (k, fu) in nu.iter().enumerate().take(pu + 1) {
+            let row = (iu - pu + k) * self.bv.n + iv - pv;
+            let (mut r0, mut w0) = (Vec3::ZERO, 0.0);
+            for (l, fv) in nv.iter().enumerate().take(pv + 1) {
+                let wt = self.weights.as_ref().map_or(1.0, |w| w[row + l]);
+                r0 += self.ctrl[row + l] * wt * *fv;
+                w0 += wt * *fv;
+            }
+            a += r0 * *fu;
+            w += w0 * *fu;
+        }
+        a / w
+    }
+
+    /// [`NurbsSurface::eval`] at every pair of `us` and `vs`, row by row along `u`, each
+    /// parameter's basis worked out once.
+    fn grid(&self, us: &[f64], vs: &[f64]) -> Vec<Point3> {
+        let basis = |b: &Basis, period: Option<f64>, ts: &[f64]| -> Vec<(usize, [f64; M])> {
+            ts.iter()
+                .map(|&t| {
+                    let t = b.wrap(t, period);
+                    let i = b.span(t);
+                    (
+                        i,
+                        b.ders_then(i, t, 0, |n| {
+                            std::array::from_fn(|j| n[0].get(j).map_or(0.0, |x| *x))
+                        }),
+                    )
+                })
+                .collect()
+        };
+        let nu = basis(&self.bu, self.u_period, us);
+        let nv = basis(&self.bv, self.v_period, vs);
+        let mut out = Vec::with_capacity(us.len() * vs.len());
+        for (iu, fu) in &nu {
+            for (iv, fv) in &nv {
+                out.push(self.point_from(*iu, *iv, fu, fv));
+            }
+        }
+        out
     }
 
     /// [`NurbsSurface::d1`] from the span polynomials where they evaluate the surface: a Horner
@@ -1191,12 +1407,14 @@ impl NurbsSurface {
         // surface, and each span polynomial's homogeneous coefficients map as the control points
         // do, `(R·c + t·w, w)`.
         let seeds = OnceLock::new();
-        if let Some((pts, h)) = self.seeds.get() {
-            let moved = pts.iter().map(|&(uv, p)| (uv, t.point(p))).collect();
-            let _ = seeds.set((moved, *h));
+        if let Some(grid) = self.kept.seeds.get() {
+            let _ = seeds.set(SeedGrid {
+                seeds: grid.seeds.iter().map(|&(uv, p)| (uv, t.point(p))).collect(),
+                ..*grid
+            });
         }
         let polys = OnceLock::new();
-        if let Some(sp) = self.polys.get() {
+        if let Some(sp) = self.kept.polys.get() {
             let cells = sp
                 .cells
                 .iter()
@@ -1230,11 +1448,11 @@ impl NurbsSurface {
             weights: self.weights.clone(),
             u_period: self.u_period,
             v_period: self.v_period,
-            seeds,
-            patches: OnceLock::new(),
-            patch_tree: OnceLock::new(),
-            beziers: OnceLock::new(),
-            polys,
+            kept: Arc::new(Kept {
+                seeds,
+                polys,
+                ..Kept::default()
+            }),
         }
     }
 
@@ -1269,7 +1487,7 @@ impl NurbsSurface {
     /// pieces about a sixteenth of the surface's longer side, and each piece's box the hull of its
     /// own control points after knot insertion (weights are positive, so the hull holds it).
     pub fn patches(&self) -> &[Patch] {
-        self.patches.get_or_init(|| {
+        self.kept.patches.get_or_init(|| {
             let lengths = |along_u: bool| -> f64 {
                 let (a0, a1) = if along_u {
                     self.bu.domain()
@@ -1414,7 +1632,8 @@ impl NurbsSurface {
 
     /// A hierarchy over the boxes of [`NurbsSurface::patches`], whose indices its queries return.
     pub(crate) fn patch_tree(&self) -> &Bvh {
-        self.patch_tree
+        self.kept
+            .patch_tree
             .get_or_init(|| Bvh::of_boxes(self.patches().iter().map(|q| q.bbox).collect()))
     }
 
@@ -1422,7 +1641,7 @@ impl NurbsSurface {
     /// parameter, where the surface is a polynomial in homogeneous coordinates, so its values at a
     /// grid of points fix its Bézier control points.
     pub(crate) fn beziers(&self) -> &[Bezier] {
-        self.beziers.get_or_init(|| {
+        self.kept.beziers.get_or_init(|| {
             let (pu, pv) = (self.bu.degree, self.bv.degree);
             let (mu, mv) = (bernstein_from_values(pu), bernstein_from_values(pv));
             self.patches()
@@ -1478,12 +1697,12 @@ impl NurbsSurface {
     }
 
     fn seeds(&self) -> &[(Vec2, Point3)] {
-        &self.seed_grid().0
+        &self.seed_grid().seeds
     }
 
     /// The seeds, and the spacing they were laid out at along the surface.
-    fn seed_grid(&self) -> &(Vec<(Vec2, Point3)>, f64) {
-        self.seeds.get_or_init(|| {
+    fn seed_grid(&self) -> &SeedGrid {
+        self.kept.seeds.get_or_init(|| {
             let samples = |b: &Basis, total: usize| -> Vec<f64> {
                 let spans = b.spans();
                 let per = (24 / (spans.len() - 1)).clamp(2, 6);
@@ -1498,40 +1717,184 @@ impl NurbsSurface {
                 out
             };
             let (us, vs) = (samples(&self.bu, 0), samples(&self.bv, 0));
+            let pts = self.grid(&us, &vs);
             // A long narrow patch (a twisted loft's side between close corners) needs seeds about
             // as close along its length as across it, or the nearest seed can lie in the basin of
             // a farther point.
-            let length = |a: &[f64], b: &[f64], swap: bool| -> f64 {
-                b.iter()
-                    .map(|&y| {
-                        let at = |x: f64| {
-                            if swap {
-                                self.eval(y, x)
-                            } else {
-                                self.eval(x, y)
-                            }
-                        };
-                        a.windows(2).map(|w| at(w[0]).dist(at(w[1]))).sum::<f64>()
-                    })
-                    .fold(0.0, f64::max)
-            };
-            let (lu, lv) = (length(&us, &vs, false), length(&vs, &us, true));
-            // At most about 2048 seeds, since every global projection measures them all.
+            let (nu, nv) = (us.len(), vs.len());
+            let at = |i: usize, j: usize| pts[i * nv + j];
+            let lu = (0..nv)
+                .map(|j| (1..nu).map(|i| at(i - 1, j).dist(at(i, j))).sum::<f64>())
+                .fold(0.0, f64::max);
+            let lv = (0..nu)
+                .map(|i| (1..nv).map(|j| at(i, j - 1).dist(at(i, j))).sum::<f64>())
+                .fold(0.0, f64::max);
+            // At most about 2048 seeds, since a global projection measures many of them.
             let h = (lu.min(lv) / 4.0).max((lu * lv / 2048.0).sqrt());
-            let (us, vs) = if h > 0.0 {
+            let (us, vs, pts) = if h > 0.0 {
                 let n = |l: f64| ((l / h).ceil() as usize).min(256);
-                (samples(&self.bu, n(lu)), samples(&self.bv, n(lv)))
+                let (us, vs) = (samples(&self.bu, n(lu)), samples(&self.bv, n(lv)));
+                let pts = self.grid(&us, &vs);
+                (us, vs, pts)
             } else {
-                (us, vs)
+                (us, vs, pts)
             };
-            let mut out = Vec::with_capacity(us.len() * vs.len());
-            for &u in &us {
-                for &v in &vs {
-                    out.push((Vec2::new(u, v), self.eval(u, v)));
+            let params = us
+                .iter()
+                .flat_map(|&u| vs.iter().map(move |&v| Vec2::new(u, v)));
+            SeedGrid {
+                seeds: params.zip(pts).collect(),
+                spacing: h,
+                row: vs.len(),
+            }
+        })
+    }
+
+    fn seed_blocks(&self) -> &SeedBlocks {
+        self.kept.seed_blocks.get_or_init(|| {
+            let grid = self.seed_grid();
+            let hull = |pts: &[(Vec2, Point3)]| {
+                let mut bb = Aabb::EMPTY;
+                pts.iter().for_each(|&(_, q)| bb.add(q));
+                bb
+            };
+            let rows = grid.seeds.chunks(grid.row).map(hull).collect();
+            let runs = grid
+                .seeds
+                .chunks(grid.row)
+                .flat_map(|row| row.chunks(SEED_RUN).map(hull))
+                .collect();
+            // Seeds in order along the axis they spread widest on: one within `same` of another
+            // is within its root of it along that axis, and so a neighbour or nearly one.
+            let same = self.same_seed();
+            let all = hull(&grid.seeds);
+            let size = all.max - all.min;
+            let axis = (0..3)
+                .max_by(|&a, &b| size[a].total_cmp(&size[b]))
+                .unwrap_or(0);
+            let mut order: Vec<usize> = (0..grid.seeds.len()).collect();
+            order.sort_by(|&a, &b| grid.seeds[a].1[axis].total_cmp(&grid.seeds[b].1[axis]));
+            let reach = 2.0 * same.sqrt();
+            let mut crowded = vec![false; grid.seeds.len()];
+            for (k, &i) in order.iter().enumerate() {
+                let q = grid.seeds[i].1;
+                for &j in &order[k + 1..] {
+                    let r = grid.seeds[j].1;
+                    if r[axis] - q[axis] > reach {
+                        break;
+                    }
+                    if (r - q).norm2() <= same {
+                        crowded[i] = true;
+                        crowded[j] = true;
+                    }
                 }
             }
-            (out, h)
+            SeedBlocks {
+                rows,
+                runs,
+                runs_per_row: grid.row.div_ceil(SEED_RUN),
+                crowded,
+            }
         })
+    }
+
+    /// The squared distance within which two seeds are one point: a pole's row of seeds is one
+    /// point, and a mapped surface's pole row agrees only to rounding.
+    fn same_seed(&self) -> f64 {
+        (1e-6 * self.seed_grid().spacing).powi(2)
+    }
+
+    /// The four nearest seeds at distinct points, nearest first, each with its squared distance
+    /// from `p`, found by measuring every seed in turn; fewer are left at infinity.
+    fn nearest_seeds_in_turn(&self, p: Point3) -> [(f64, Vec2); 4] {
+        let same = self.same_seed();
+        let mut near = [(f64::INFINITY, Vec2::ZERO); 4];
+        let mut at = [Point3::ZERO; 4];
+        for &(uv, q) in self.seeds() {
+            let d2 = (q - p).norm2();
+            let taken = |i: usize| near[i].0.is_finite() && (at[i] - q).norm2() <= same;
+            if d2 < near[3].0 && !(0..4).any(taken) {
+                let mut i = 3;
+                while i > 0 && near[i - 1].0 > d2 {
+                    near[i] = near[i - 1];
+                    at[i] = at[i - 1];
+                    i -= 1;
+                }
+                near[i] = (d2, uv);
+                at[i] = q;
+            }
+        }
+        near
+    }
+
+    /// [`NurbsSurface::nearest_seeds_in_turn`] measuring only the seeds whose boxes come as near
+    /// as the fourth nearest so far. Where no seed that near has another at its own point, the
+    /// scan in turn keeps the four seeds least in distance, the earlier of two equally far, in
+    /// that order, since it never passes one over for being at a kept seed's point: those four
+    /// are found here in any order. `None` where a seed that near does have another at its
+    /// point, and the scan in turn must choose between them.
+    fn nearest_seeds_by_blocks(&self, p: Point3) -> Option<[(f64, Vec2); 4]> {
+        let grid = self.seed_grid();
+        let blocks = self.seed_blocks();
+        // Squared distance and seed number, least first; an unfilled place loses to every seed.
+        let mut near = [(f64::INFINITY, 0usize); 4];
+        let mut crowded = f64::INFINITY;
+        let mut row = |r: usize, near: &mut [(f64, usize); 4]| {
+            let runs = &blocks.runs[r * blocks.runs_per_row..(r + 1) * blocks.runs_per_row];
+            for (k, run) in runs.iter().enumerate() {
+                if box_gap2(run, p) > near[3].0 {
+                    continue;
+                }
+                let first = r * grid.row + k * SEED_RUN;
+                let last = (first + SEED_RUN).min((r + 1) * grid.row);
+                for n in first..last {
+                    let d2 = (grid.seeds[n].1 - p).norm2();
+                    if blocks.crowded[n] {
+                        crowded = crowded.min(d2);
+                    }
+                    if d2 < near[3].0 || (d2 == near[3].0 && n < near[3].1) {
+                        let mut i = 3;
+                        while i > 0 && (near[i - 1].0, near[i - 1].1) > (d2, n) {
+                            near[i] = near[i - 1];
+                            i -= 1;
+                        }
+                        near[i] = (d2, n);
+                    }
+                }
+            }
+        };
+        // The row whose box is nearest first, so the rest are measured against a near fourth.
+        let gaps: Vec<f64> = blocks.rows.iter().map(|b| box_gap2(b, p)).collect();
+        let first = (0..gaps.len()).min_by(|&a, &b| gaps[a].total_cmp(&gaps[b]))?;
+        row(first, &mut near);
+        for (r, &gap) in gaps.iter().enumerate() {
+            if r != first && gap <= near[3].0 {
+                row(r, &mut near);
+            }
+        }
+        if crowded <= near[3].0 {
+            return None;
+        }
+        let uv = |d2: f64, n: usize| {
+            if d2.is_finite() {
+                grid.seeds[n].0
+            } else {
+                Vec2::ZERO
+            }
+        };
+        Some(near.map(|(d2, n)| (d2, uv(d2, n))))
+    }
+
+    /// The four nearest seeds at distinct points, nearest first, each with its squared distance
+    /// from `p`; fewer are left at infinity.
+    fn nearest_seeds(&self, p: Point3) -> [(f64, Vec2); 4] {
+        if self.kept.seed_blocks.get().is_none()
+            && self.kept.seed_scans.fetch_add(1, Ordering::Relaxed) < SCANS_BEFORE_BLOCKS
+        {
+            return self.nearest_seeds_in_turn(p);
+        }
+        self.nearest_seeds_by_blocks(p)
+            .unwrap_or_else(|| self.nearest_seeds_in_turn(p))
     }
 
     /// The point, its first partial derivatives and its second, `(S, Su, Sv, Suu, Suv, Svv)`.
@@ -1555,7 +1918,7 @@ impl NurbsSurface {
     }
 
     fn polys(&self) -> &SpanPolys {
-        self.polys.get_or_init(|| {
+        self.kept.polys.get_or_init(|| {
             let slots = |b: &Basis| {
                 let mut slot = vec![usize::MAX; b.n];
                 let mut basis = Vec::new();
@@ -1965,25 +2328,8 @@ impl NurbsSurface {
     /// The parameters of the surface point nearest `p`, periodic parameters in the knot domain.
     pub fn project(&self, p: Point3) -> Vec2 {
         // The four nearest seeds at distinct points, nearest first: a pole's row of seeds is one
-        // point, and four of them would be one search. A mapped surface's pole row agrees only to
-        // rounding, so one point is any within a millionth of the seeds' spacing.
-        let same = (1e-6 * self.seed_grid().1).powi(2);
-        let mut near = [(f64::INFINITY, Vec2::ZERO); 4];
-        let mut at = [Point3::ZERO; 4];
-        for &(uv, q) in self.seeds() {
-            let d2 = (q - p).norm2();
-            let taken = |i: usize| near[i].0.is_finite() && (at[i] - q).norm2() <= same;
-            if d2 < near[3].0 && !(0..4).any(taken) {
-                let mut i = 3;
-                while i > 0 && near[i - 1].0 > d2 {
-                    near[i] = near[i - 1];
-                    at[i] = at[i - 1];
-                    i -= 1;
-                }
-                near[i] = (d2, uv);
-                at[i] = q;
-            }
-        }
+        // point, and four of them would be one search.
+        let near = self.nearest_seeds(p);
         let mut best = (f64::INFINITY, Vec2::ZERO);
         for &(d2, seed) in &near {
             if d2.is_infinite() {
@@ -2006,7 +2352,7 @@ impl NurbsSurface {
     /// How near the surface a point must lie for [`NurbsSurface::project_near`] to take the point
     /// Newton finds from its hint as the nearest.
     pub fn near_radius(&self) -> f64 {
-        tol::LINEAR.max(NEAR_SHARE * self.seed_grid().1)
+        tol::LINEAR.max(NEAR_SHARE * self.seed_grid().spacing)
     }
 
     /// The parameters of the surface point nearest `p`, found from `hint` when the surface passes
@@ -2565,6 +2911,300 @@ pub(crate) mod tests {
         let k = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
         let n = NurbsSurface::new((2, 2), (k.clone(), k), (3, 3), ctrl, Some(weights)).unwrap();
         crate::geom::Surface::Nurbs(Box::new(n))
+    }
+
+    /// The unit cylinder round z, from z = 0 to 3: [`circle`] along `u`, closed, by a line.
+    fn tube() -> NurbsSurface {
+        let c = circle();
+        let mut ctrl = Vec::new();
+        let mut weights = Vec::new();
+        for (p, w) in c.control_points().iter().zip(c.weights().unwrap()) {
+            ctrl.extend([*p, *p + Vec3::Z * 3.0]);
+            weights.extend([*w, *w]);
+        }
+        let knots = (c.knots().to_vec(), vec![0.0, 0.0, 1.0, 1.0]);
+        NurbsSurface::new((2, 1), knots, (9, 2), ctrl, Some(weights)).unwrap()
+    }
+
+    fn bits(p: Point3) -> [u64; 3] {
+        p.to_array().map(f64::to_bits)
+    }
+
+    #[test]
+    fn a_point_alone_is_the_point_its_derivatives_come_with() {
+        let crate::geom::Surface::Nurbs(pole) = octant(2.0) else {
+            unreachable!()
+        };
+        let surfaces = uneven().into_iter().chain([warped(), tube(), *pole]);
+        for s in surfaces {
+            let ((u0, u1), (v0, v1)) = s.domain();
+            // Past the ends too, where a closed parameter wraps and an open one runs on.
+            let along = |a: f64, b: f64| -> Vec<f64> {
+                (0..=23)
+                    .map(|i| a - 0.2 * (b - a) + 1.4 * (b - a) * i as f64 / 23.0)
+                    .chain([a, b])
+                    .collect()
+            };
+            let (us, vs) = (along(u0, u1), along(v0, v1));
+            let grid = s.grid(&us, &vs);
+            for (i, &u) in us.iter().enumerate() {
+                for (j, &v) in vs.iter().enumerate() {
+                    let want = bits(s.d1(u, v).0);
+                    assert_eq!(bits(s.eval(u, v)), want);
+                    assert_eq!(bits(grid[i * vs.len() + j]), want);
+                }
+            }
+        }
+        let c = circle();
+        for i in 0..=200 {
+            let t = -2.0 + 8.0 * i as f64 / 200.0;
+            let (p, d1, _) = c.d2(t);
+            assert_eq!(bits(c.eval(t)), bits(p));
+            assert_eq!(bits(c.d1(t).0), bits(p));
+            assert_eq!(bits(c.d1(t).1), bits(d1));
+        }
+    }
+
+    #[test]
+    fn the_seeds_are_the_surface_at_an_even_spacing() {
+        // The spacing is from the longest lines of a first, coarser grid along each parameter,
+        // measured here from the surface point by point.
+        for s in uneven().into_iter().chain([warped(), tube()]) {
+            let grid = s.seed_grid();
+            assert_eq!(grid.seeds.len() % grid.row, 0);
+            for &(uv, q) in &grid.seeds {
+                assert_eq!(bits(q), bits(s.d1(uv.x, uv.y).0));
+            }
+            let coarse = |b: &Basis| -> Vec<f64> {
+                let spans = b.spans();
+                let per = (24 / (spans.len() - 1)).clamp(2, 6);
+                let mut out = Vec::new();
+                for w in spans.windows(2) {
+                    out.extend((0..per).map(|k| w[0] + (w[1] - w[0]) * k as f64 / per as f64));
+                }
+                out.push(spans[spans.len() - 1]);
+                out
+            };
+            let (us, vs) = (coarse(&s.bu), coarse(&s.bv));
+            let line = |pts: Vec<Point3>| pts.windows(2).map(|w| w[0].dist(w[1])).sum::<f64>();
+            let lu = vs
+                .iter()
+                .map(|&v| line(us.iter().map(|&u| s.d1(u, v).0).collect()))
+                .fold(0.0, f64::max);
+            let lv = us
+                .iter()
+                .map(|&u| line(vs.iter().map(|&v| s.d1(u, v).0).collect()))
+                .fold(0.0, f64::max);
+            let h = (lu.min(lv) / 4.0).max((lu * lv / 2048.0).sqrt());
+            assert_eq!(grid.spacing.to_bits(), h.to_bits());
+        }
+    }
+
+    /// A sheet folded back over itself: out from near z = 0 to the fold at x = 2.25 and back near
+    /// z = 1, the two sheets about 1 apart, 2 long in y. `u` runs round the fold and `v` along y.
+    fn hairpin() -> NurbsSurface {
+        let rows = [(0.0, 0.0), (3.0, 0.0), (3.0, 1.0), (0.0, 1.0)];
+        let ctrl = rows
+            .iter()
+            .flat_map(|&(x, z)| [Vec3::new(x, 0.0, z), Vec3::new(x, 2.0, z)])
+            .collect();
+        let knots = (
+            vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+        );
+        NurbsSurface::new((3, 1), knots, (4, 2), ctrl, None).unwrap()
+    }
+
+    #[test]
+    fn a_hint_is_kept_only_for_a_foot_beside_the_surface() {
+        let s = hairpin();
+        let near = s.near_radius();
+        assert!(near < 0.05, "{near}");
+        let dist = |uv: Vec2, p: Point3| s.eval(uv.x, uv.y).dist(p);
+        let (low, high) = (Vec2::new(0.1, 0.5), Vec2::new(0.9, 0.5));
+        let (below, above) = (s.eval(low.x, low.y), s.eval(high.x, high.y));
+        assert!(below.z < 0.1 && above.z > 0.9 && (below.x - above.x).abs() < 1e-9);
+        // The foot Newton finds from a hint alone, and whether it settled there.
+        let local = |p: Point3, hint: Vec2| s.search(p, hint, None);
+
+        // Beside the surface, from a hint beside the foot: the hint's foot is kept, and it is
+        // the global search's.
+        let p = above + Vec3::new(0.02, 0.1, -0.5 * near);
+        let (kept, d, settled) = local(p, high);
+        assert!(settled && d <= near);
+        let got = s.project_near(p, high);
+        assert_eq!(
+            (got.x.to_bits(), got.y.to_bits()),
+            (kept.x.to_bits(), kept.y.to_bits())
+        );
+        assert!((dist(got, p) - dist(s.project(p), p)).abs() < 1e-12);
+
+        // The same point from a hint on the other sheet: Newton settles on that sheet's foot, a
+        // whole gap away, which is no foot beside the surface, and the global search answers.
+        let (wrong, d, settled) = local(p, low);
+        assert!(settled && d > 0.9 && s.eval(wrong.x, wrong.y).z < 0.1);
+        let got = s.project_near(p, low);
+        assert!(dist(got, p) <= near && s.eval(got.x, got.y).z > 0.9);
+
+        // Between the sheets the nearest point jumps from one to the other as the point crosses
+        // the middle: whichever sheet the hint is on, the answer is the nearer sheet's.
+        for (z, hint) in [(0.4, high), (0.6, low), (0.4, low), (0.6, high)] {
+            let p = Vec3::new(below.x, 1.0, z);
+            let got = s.project_near(p, hint);
+            assert_eq!(s.eval(got.x, got.y).z > 0.5, z > 0.5);
+            let sampled = nearest_sampled(&s, p, 400);
+            assert!(dist(got, p) <= sampled + 1e-9 && dist(got, p) > sampled - 1e-3);
+        }
+
+        // Beyond the sheet's edge a step from the hint leaves the domain: the search is held to
+        // the edge, and the foot there, beside the surface or not, is the nearest point.
+        for out in [0.5 * near, 0.3] {
+            let p = s.eval(low.x, 1.0) + Vec3::Y * out;
+            let got = s.project_near(p, low);
+            assert!(
+                got.y == 1.0 && (dist(got, p) - out).abs() < 1e-12,
+                "{got:?}"
+            );
+            assert!((dist(got, p) - dist(s.project(p), p)).abs() < 1e-12);
+        }
+
+        // A hint outside the domain is brought into it before the search starts.
+        let got = s.project_near(below, Vec2::new(-3.0, 7.0));
+        assert!(dist(got, below) < 1e-12);
+
+        // A search that stops short of a foot is not kept, however near it stopped: at the fold
+        // a point on the mid-plane inside the bend has the fold's line as a farthest point, not
+        // a nearest, and the answer is the nearer of what the hint and the global search find.
+        let fold = s.eval(0.5, 0.5);
+        let p = Vec3::new(fold.x - 0.3, 1.0, 0.5);
+        let got = s.project_near(p, Vec2::new(0.5, 0.5));
+        assert!(
+            dist(got, p) <= nearest_sampled(&s, p, 800) + 1e-9,
+            "{}",
+            dist(got, p)
+        );
+        assert!(dist(got, p) <= dist(s.project(p), p));
+    }
+
+    #[test]
+    fn a_copy_shares_what_its_surface_keeps_and_a_changed_surface_starts_afresh() {
+        let s = warped();
+        let copy = s.clone();
+        // Seeds built through the copy are the original's too.
+        copy.project(Vec3::new(1.0, 1.0, 3.0));
+        assert!(s.kept.seeds.get().is_some());
+        assert!(std::ptr::eq(s.seeds().as_ptr(), copy.seeds().as_ptr()));
+        // Other control points: nothing is carried, and projection is onto the new surface.
+        let mut ctrl = s.control_points().to_vec();
+        ctrl[9] += Vec3::Z * 0.5;
+        let bent = s.with_control_points(ctrl).unwrap();
+        assert!(bent.kept.seeds.get().is_none());
+        let q = bent.eval(0.5, 0.4);
+        let on = |x: &NurbsSurface| {
+            let uv = x.project(q);
+            x.eval(uv.x, uv.y).dist(q)
+        };
+        assert!(
+            on(&bent) < 1e-12 && on(&s) > 1e-3,
+            "{} {}",
+            on(&bent),
+            on(&s)
+        );
+        assert!(
+            bent.seeds()
+                .iter()
+                .all(|&(uv, p)| p == bent.eval(uv.x, uv.y))
+        );
+        // Moved: its seeds are the original's moved with it, on the moved surface, and what it
+        // builds from them is its own.
+        let turn = Transform::rotation(Vec3::new(0.3, 1.0, -2.0), Vec3::new(2.0, -1.0, 2.0), 1.1);
+        let moved = s.transformed(&turn);
+        assert!(!Arc::ptr_eq(&moved.kept, &s.kept));
+        assert!(moved.kept.seed_blocks.get().is_none() && moved.kept.patches.get().is_none());
+        for (&(uv, p), &(uv0, p0)) in moved.seeds().iter().zip(s.seeds()) {
+            assert!(uv == uv0 && p == turn.point(p0));
+            assert!(moved.eval(uv.x, uv.y).dist(p) < 1e-12);
+        }
+        let far = turn.point(q);
+        let uv = moved.project(far);
+        assert!((moved.eval(uv.x, uv.y).dist(far) - on(&s)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn the_nearest_seeds_by_their_boxes_are_the_ones_found_in_turn() {
+        let crate::geom::Surface::Nurbs(pole) = octant(2.0) else {
+            unreachable!()
+        };
+        // Open patches, a tube whose seam's seeds lie on each other, and a patch with a pole;
+        // each as built and moved, its seeds carried with it.
+        let turn = Transform::rotation(Vec3::new(0.3, 1.0, -2.0), Vec3::new(2.0, -1.0, 2.0), 1.1);
+        let mut surfaces: Vec<NurbsSurface> = uneven().into_iter().collect();
+        surfaces.extend([warped(), tube(), (*pole).clone()]);
+        let moved: Vec<NurbsSurface> = surfaces
+            .iter()
+            .map(|s| {
+                s.seed_grid();
+                s.transformed(&turn)
+            })
+            .collect();
+        surfaces.extend(moved);
+        let (mut by_blocks, mut in_turn) = (0, 0);
+        for s in &surfaces {
+            let bb = s.hull_box();
+            let (c, d) = (bb.center(), bb.diagonal());
+            let n = 14usize;
+            let mut points: Vec<Point3> = Vec::new();
+            for i in 0..n * n * n {
+                let f = |k: usize| 1.6 * ((i / n.pow(k as u32)) % n) as f64 / (n - 1) as f64 - 0.8;
+                points.push(c + Vec3::new(f(0), f(1), f(2)) * d);
+            }
+            // On the surface, on its seeds, and just off them.
+            let seeds = s.seeds();
+            points.extend(seeds.iter().step_by(7).map(|x| x.1));
+            points.extend(
+                seeds
+                    .iter()
+                    .step_by(11)
+                    .map(|x| x.1 + Vec3::new(1e-9, -2e-9, 1e-9)),
+            );
+            points.push(Vec3::new(f64::NAN, 0.0, 0.0));
+            for &p in &points {
+                let want = s.nearest_seeds_in_turn(p);
+                match s.nearest_seeds_by_blocks(p) {
+                    Some(got) => {
+                        by_blocks += 1;
+                        for (g, w) in got.iter().zip(&want) {
+                            assert_eq!(g.0.to_bits(), w.0.to_bits(), "{p:?}");
+                            assert_eq!(
+                                (g.1.x.to_bits(), g.1.y.to_bits()),
+                                (w.1.x.to_bits(), w.1.y.to_bits())
+                            );
+                        }
+                    }
+                    None => in_turn += 1,
+                }
+                // Whichever way the seeds are found, the projection is the same.
+                let uv = s.project(p);
+                let again = s.project(p);
+                assert_eq!(
+                    (uv.x.to_bits(), uv.y.to_bits()),
+                    (again.x.to_bits(), again.y.to_bits())
+                );
+            }
+        }
+        // Most points are settled by the boxes; those near a seam or a pole are not.
+        assert!(
+            by_blocks > 20 * in_turn && in_turn > 0,
+            "{by_blocks} {in_turn}"
+        );
+        // Beside the tube's seam and the patch's pole the scan in turn decides.
+        let seam = Vec3::new(1.05, 0.0, 1.5);
+        assert!(tube().nearest_seeds_by_blocks(seam).is_none());
+        assert!(
+            pole.nearest_seeds_by_blocks(Vec3::new(0.0, 0.0, 2.1))
+                .is_none()
+        );
+        assert!(warped().nearest_seeds_by_blocks(seam).is_some());
     }
 
     #[test]

@@ -78,22 +78,34 @@ and its periods; curves also have second derivatives, breakpoints and coordinate
 Projection onto a B-spline searches only the knot spans whose control points' bounding ball could
 hold a nearer point, so its cost does not grow with the span count; an extrusion of one projects
 along its direction onto the curve. A B-spline's coordinate extremes are each span's quadratic
-roots. Projection onto a rational surface runs damped Newton steps from the nearest few of a grid of
-seed points, spaced about as closely along a long narrow patch (a twisted loft's side between close
-corners) as across it, so the nearest seed lies in the nearest point's basin. Newton takes the full
-second-order step where the squared distance's Hessian is positive definite, so it converges
-quadratically off the surface too. A parameter at an end of its range, with the nearer point beyond
-it, is held there, and the search goes on along that boundary alone: a step solved in both
-parameters and cut back to the range stalls short of the boundary's nearest point. At a pole, where
-a whole row of the surface is one point and one parameter moves nothing, the line out of the pole
-that heads for the point most directly is found first, and the search starts down it. A search that
-stops where no fraction of its step comes nearer has found a point and not a foot, and is not taken
-for one. Projection from a hint keeps the foot Newton finds when it lies within a twentieth of the
-seed spacing of the surface: the global search already assumes no two sheets come that close. A
-rational surface also carries small patches, each knot span cut to about a sixteenth of the
-surface's longer side, whose control points after knot insertion bound it; rays and curves are
-sampled against the surface only where they pass through a patch's box, and a face's box only
-searches the patches that poke out of it.
+roots. A rational curve's are roots found by sampling each span; those of a whole span along x, y
+and z are kept with the curve from the first box that reaches the span, so a box over a range works
+out only the stretches that end inside a span, and is the box it would be with nothing kept. A moved
+curve keeps nothing of its source's. Projection onto a rational surface runs damped Newton steps
+from the nearest few of a grid of seed points, spaced about as closely along a long narrow patch (a
+twisted loft's side between close corners) as across it, so the nearest seed lies in the nearest
+point's basin. The four nearest seeds are the scan's: least in distance, the earlier of two equally
+far, one for each point where seeds lie on each other (a seam, a pole). Boxes round rows and runs of
+the seeds, built once a surface has been scanned sixteen times, leave out the seeds no nearer than
+the fourth so far, which gives the same four in any order wherever none of the seeds that near lies
+on another; where one does, the seeds are scanned in turn. Newton takes the full second-order step
+where the squared distance's Hessian is positive definite, so it converges quadratically off the
+surface too. A parameter at an end of its range, with the nearer point beyond it, is held there, and
+the search goes on along that boundary alone: a step solved in both parameters and cut back to the
+range stalls short of the boundary's nearest point. At a pole, where a whole row of the surface is
+one point and one parameter moves nothing, the line out of the pole that heads for the point most
+directly is found first, and the search starts down it. A search that stops where no fraction of its
+step comes nearer has found a point and not a foot, and is not taken for one. Projection from a hint
+keeps the foot Newton finds when it lies within a twentieth of the seed spacing of the surface: the
+global search already assumes no two sheets come that close. A foot farther off than that, a search
+that stopped short of a foot, and a hint on a pole all go to the global search, and the nearer of
+its point and the hint's is kept. What a rational surface works out of itself on first use (the
+seeds, the patches, the span polynomials) is shared by its copies, whichever first asks, and a
+surface with other control points starts afresh; a surface moved rigidly takes its source's seeds
+and polynomials moved with it. A rational surface also carries small patches, each knot span cut to
+about a sixteenth of the surface's longer side, whose control points after knot insertion bound it;
+rays and curves are sampled against the surface only where they pass through a patch's box, and a
+face's box only searches the patches that poke out of it.
 
 Sweeps choose the analytic surface whenever one exists: an extruded line is a plane and an extruded
 circle a cylinder; a revolved line is a cylinder, plane or cone, and a revolved circle a sphere
@@ -787,7 +799,23 @@ surfaces lie within `LINEAR` of each other is a contact, not a sliver to trace. 
 | plane–cone, axis not square to the plane                                                | exact ellipse; hyperbola or parabola along the generators; through the apex two generators, one tangent generator or the apex | the plane's distance from the apex and its angle to the nearest generator |
 | plane–torus holding the axis                                                            | the two meridian circles                                                                                                      | the plane's distance from the axis                                        |
 | cylinder–cylinder (axes not parallel), cylinder–sphere, plane–torus, sphere–torus       | branches evaluated along a sweeping family, fitted; touching points; nodes                                                    | the family's margins (below)                                              |
+| plane–rational spline, its control points on the plane or to one side of it             | nothing; a one-span patch's side, tangent or crossing, or its corners; otherwise traced by `march.rs`                         | the control points' heights over the plane (below)                        |
 | cylinder–cone, cone–cone, cylinder–torus, cone–torus, torus–torus, sphere–cone off axis | traced by `march.rs`                                                                                                          | Newton steps where the normals are parallel: sensitive near tangency      |
+
+A rational spline's weights are positive, so each of its points is a mean of its control points and
+its height over a plane the same mean of theirs. With every control point clear of the plane on one
+side by more than `LINEAR`, the surface does not meet it, whatever its spans. On a patch of one span
+with its knots at its ends, a point inside the domain has a positive share of every control point,
+and a point of a side between its corners of that side's row alone: where one side's whole row lies
+on the plane and every control point off the plane lies to one side, the patch meets the plane in
+that side and nowhere else. The contact is the side's own iso-curve, tangent where the row beside
+it lies wholly on the plane too and a crossing where none of that row does. Where no side's row
+lies on the plane, or only that of a side drawn to a point, the patch meets the plane at its corners
+whose control points are on it, and those come back as touching points: a blend's corner patch
+touches the face it runs out on at the point one of its sides is drawn to. Control points either
+side of the plane, one off it by less than ten times `LINEAR`, a row partly on it beside a side
+that is on it, a further corner or side on it, a side between two touching corners whose middle is
+within `LINEAR` of the plane and a patch lying in the plane are traced.
 
 The swept pairs ([`ssi/sweep.rs`](../src/boolean/ssi/sweep.rs)) take one surface as a family of
 lines or circles (a cylinder's generators, a torus's meridians), each meeting the other surface in
