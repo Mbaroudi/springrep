@@ -55,7 +55,7 @@ fn ball(r: f64) -> Brep {
 /// Writes `b`, reads it back, and checks the copy is valid with the same measures and names.
 /// `b` written as STEP, with pcurves and without, and read back as the same solid each way.
 fn round_trip(b: &Brep) -> Brep {
-    let bare = write_with(b, "part", &WriteOptions::new(false)).unwrap();
+    let bare = write_with(b, "part", &WriteOptions::default().pcurves(false)).unwrap();
     for kind in [
         "PCURVE",
         "SURFACE_CURVE",
@@ -2274,6 +2274,17 @@ fn a_band_of_a_spline_surface_closed_round_one_parameter_is_read() {
 }
 
 const STRICT: ReadOptions = ReadOptions { strict: true };
+
+#[test]
+fn options_are_set_one_by_name() {
+    assert_eq!(ReadOptions::default().strict(true), STRICT);
+    assert_eq!(
+        ReadOptions::default().strict(true).strict(false),
+        ReadOptions::default()
+    );
+    assert!(WriteOptions::default().pcurves);
+    assert!(!WriteOptions::default().pcurves(false).pcurves);
+}
 
 /// What a strict read of `text` rejects: its one solid, with the reason.
 fn strictly_rejected(text: &str) -> String {

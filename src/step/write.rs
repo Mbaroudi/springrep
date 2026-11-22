@@ -76,14 +76,18 @@ pub struct WriteOptions {
 }
 
 impl WriteOptions {
-    pub const fn new(pcurves: bool) -> WriteOptions {
-        WriteOptions { pcurves }
+    /// These options with [`pcurves`](WriteOptions::pcurves) set to `on`.
+    pub const fn pcurves(self, on: bool) -> WriteOptions {
+        WriteOptions {
+            pcurves: on,
+            ..self
+        }
     }
 }
 
 impl Default for WriteOptions {
     fn default() -> WriteOptions {
-        WriteOptions::new(true)
+        WriteOptions { pcurves: true }
     }
 }
 

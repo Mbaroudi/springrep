@@ -62,7 +62,7 @@ fn an_assembly_reads_back_with_each_instance_where_it_was_placed() {
         written_with(Some(&step::WriteOptions::default()))
     );
     for pcurves in [true, false] {
-        let text = written_with(Some(&step::WriteOptions::new(pcurves)));
+        let text = written_with(Some(&step::WriteOptions::default().pcurves(pcurves)));
         assert_eq!(text.contains("=PCURVE("), pcurves);
         reads_back_where_placed(&text);
     }

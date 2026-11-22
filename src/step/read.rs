@@ -37,6 +37,11 @@ impl ReadOptions {
     pub const fn new(strict: bool) -> ReadOptions {
         ReadOptions { strict }
     }
+
+    /// These options with [`strict`](ReadOptions::strict) set to `on`.
+    pub const fn strict(self, on: bool) -> ReadOptions {
+        ReadOptions { strict: on, ..self }
+    }
 }
 
 /// What a read produced: every solid that became a valid kernel solid, how far healing moved
