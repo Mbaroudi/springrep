@@ -1744,6 +1744,39 @@ fn sampled_curve_curve(
     out
 }
 
+/// Whether [`ray_surface`] finds every crossing of a line with `s` from a closed form.
+pub(crate) fn ray_surface_is_closed_form(s: &Surface) -> bool {
+    match s {
+        Surface::Plane(_) | Surface::Cylinder(_) | Surface::Sphere(_) => true,
+        Surface::Cone(cone) => cone.half_angle.cos().abs() > 1e-9,
+        _ => false,
+    }
+}
+
+/// Whether [`line_crossings`] can give the crossings of a line with `s`.
+pub(crate) fn line_crossings_known(s: &Surface) -> bool {
+    ray_surface_is_closed_form(s) || matches!(s, Surface::Torus(_) | Surface::Nurbs(_))
+}
+
+/// Where the line `p + t·d` (`d` unit) crosses `s` for `t` in `range`, and for a surface with a
+/// closed form anywhere along the line: from the closed form, a torus's quartic, or the search of
+/// [`line_spline`], none of which steps over a crossing. `None` for any other surface, and where
+/// the line lies in the surface or the search gives up.
+pub(crate) fn line_crossings(
+    s: &Surface,
+    p: Point3,
+    d: Vec3,
+    range: (f64, f64),
+) -> Option<Vec<f64>> {
+    let hits = match s {
+        _ if ray_surface_is_closed_form(s) => return Some(ray_surface(s, p, d, range.1)),
+        Surface::Torus(t) => line_torus(p, d, t, range),
+        Surface::Nurbs(ns) => line_spline(p, d, ns, range)?,
+        _ => return None,
+    };
+    (!hits.on_surface).then_some(hits.ts)
+}
+
 /// The parameters `t > 0` where the ray `p + t·d` (`d` unit) crosses the surface, up to `t_max`.
 pub(crate) fn ray_surface(s: &Surface, p: Point3, d: Vec3, t_max: f64) -> Vec<f64> {
     let quad = |a: f64, b: f64, c: f64| -> Vec<f64> {
