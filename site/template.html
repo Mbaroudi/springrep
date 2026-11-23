@@ -114,11 +114,11 @@ header.chrome { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 9
 .hbench { display: grid; gap: 12px; max-width: 520px; padding-top: 4px; container-type: inline-size; }
 .hbench .hd { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding-bottom: 6px; border-bottom: 1px solid var(--rule-soft); }
 .hrow { display: grid; grid-template-columns: 92px 112px minmax(0, 1fr) 54px 62px; gap: 12px; align-items: center; }
-.hrow .lic { font: 400 11px/1 var(--font-machine); color: var(--ink-3); white-space: nowrap; }
+.hrow .lic { font: 400 11px/1 var(--font-machine); color: var(--ink-3); white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .hrow.us .lic { color: var(--accent); }
 .hrow[data-tip] { cursor: default; }
 .hrow[data-tip] .t i { transition: width 700ms var(--ease-mech), filter var(--dur) linear; }
-.hrow[data-tip]:hover .n, .hrow[data-tip]:hover b { color: var(--ink-1); }
+.hrow[data-tip]:not(.us):hover .n, .hrow[data-tip]:not(.us):hover b { color: var(--ink-1); }
 .hrow[data-tip]:hover .t i { filter: brightness(1.4); }
 #hbench:hover .hrow[data-tip]:not(:hover) { opacity: .5; }
 .hrow { transition: opacity var(--dur) linear; }
@@ -136,6 +136,11 @@ header.chrome { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 9
 .hrow.us .t i { background: var(--accent); }
 .hbench a.more { justify-self: start; font-size: 12px; color: var(--ink-2); border-bottom: 1px solid var(--ink-3); transition: color var(--dur) linear; }
 .hbench a.more:hover { color: var(--ink-1); }
+#hbench { display: grid; gap: 10px; align-content: start; }
+/* Until the board loads its link keeps its place unseen, so its words never change in view. */
+.hbench.wait a.more { visibility: hidden; }
+.lb-off { font: 400 12px/1.5 var(--font-voice); color: var(--fg-2); white-space: normal; }
+.lb-off a { color: var(--fg); border-bottom: 1px solid var(--fg-3); }
 @media (prefers-reduced-motion: reduce) { .hrow .t i { transition: none; } }
 @container (max-width: 440px) {
   .hrow { grid-template-columns: 84px minmax(0, 1fr) 54px 64px; gap: 8px; }
@@ -351,6 +356,7 @@ tr.us .tbar [data-g="1e-7"] { --c: var(--accent); }
 .board th .lower { display: block; margin-top: 6px; color: var(--fg-3); }
 .board .mt { cursor: default; }
 .board .mt b { border-bottom: 1px dotted var(--fg-3); }
+.board .mt b.none { border-bottom: 0; }
 .tip {
   position: fixed; z-index: 10; pointer-events: none; min-width: min-content; max-width: 280px;
   padding: 8px 10px;
@@ -358,7 +364,7 @@ tr.us .tbar [data-g="1e-7"] { --c: var(--accent); }
   font: 400 12px/1.45 var(--font-machine); opacity: 0; transition: opacity 120ms linear;
 }
 .tip.on { opacity: 1; }
-.tip small { display: block; color: var(--fg-2); font-size: 11px; }
+.tip small { display: block; color: var(--fg-2); font-size: 11px; white-space: pre-line; }
 .ruler { display: flex; justify-content: space-between; margin-top: 4px; font: 400 9px/1 var(--font-machine); color: var(--fg-2); }
 .ruler span { padding-left: 3px; border-left: 1px solid var(--fg-3); }
 .board .p7, .board .px, .board .mt b { font: 400 18px/1 var(--font-machine); letter-spacing: 0; }
@@ -420,6 +426,7 @@ footer { border-top: 1px solid var(--rule-soft); padding-block: 28px; }
   .figure { height: min(420px, max(240px, env(viewport-segment-height 0 1, 50vh) - 120px)); }
 }
 </style>
+<noscript><style>.hbench.wait a.more { visibility: visible; }</style></noscript>
 </head>
 <body>
 
@@ -441,11 +448,16 @@ footer { border-top: 1px solid var(--rule-soft); padding-block: 28px; }
         <p class="display sub"><b>Exact CAD geometry</b><br>in pure Rust.</p>
         <div class="creds" aria-label="License"><span class="badge"><b>MIT</b><span>open source license</span></span></div>
         <p class="lede">A boundary-representation (B-rep) kernel. Booleans, fillets, sweeps and STEP on exact geometry, accurate to 1e-7&nbsp;mm, with every result validated.</p>
-        <div class="hbench" aria-label="brep-conformance pass rate">
-          <div class="hd"><span class="annot">brep-conformance leaderboard</span><span class="annot" id="hrun"></span></div>
+        <div class="hbench wait" aria-label="brep-conformance pass rate">
+          <div class="hd"><span class="annot" id="hsuite">brep-conformance</span><span class="annot" id="hrun"></span></div>
           <div class="hrow hcols" aria-hidden="true"><span>kernel</span><span>license</span><span>pass at <span class="num">1e-7</span> mm</span><span>speed</span></div>
-          <div id="hbench"></div>
-          <a class="more" href="#bench">see the benchmark ↓</a>
+          <div id="hbench" aria-busy="true">
+            <div class="hrow"><span class="n">&nbsp;</span><span class="lic"></span><span class="t"><i></i></span><b></b><span class="ms"></span></div>
+            <div class="hrow"><span class="n">&nbsp;</span><span class="lic"></span><span class="t"><i></i></span><b></b><span class="ms"></span></div>
+            <div class="hrow"><span class="n">&nbsp;</span><span class="lic"></span><span class="t"><i></i></span><b></b><span class="ms"></span></div>
+            <div class="hrow"><span class="n">&nbsp;</span><span class="lic"></span><span class="t"><i></i></span><b></b><span class="ms"></span></div>
+          </div>
+          <a class="more" id="hmore" href="#bench">see the benchmark ↓</a>
         </div>
         <div class="actions">
           <a class="btn" href="https://github.com/springcraft-ai/springrep" target="_blank" rel="noopener">{{GH}}github</a>
@@ -472,7 +484,7 @@ footer { border-top: 1px solid var(--rule-soft); padding-block: 28px; }
       <div class="pillars">
         <div><h3>Exact to <span class="num">1e-7</span> mm</h3><p>Surfaces are analytic or NURBS, not meshes, so volume, area, and mass properties are computed from the real shape.</p></div>
         <div><h3>Valid or a clear error</h3><p>Every result is checked for validity, and if it fails you get an error instead of a broken solid, so nothing downstream gets built on a bad shape.</p></div>
-        <div><h3>Fast and safe</h3><p>It has the fastest median case time on brep-conformance, with public results anyone can check. It's pure Rust with no dependencies and no unsafe code, and it compiles to WebAssembly.</p></div>
+        <div><h3>Fast and safe</h3><p>It is among the fastest kernels on brep-conformance, with public results anyone can check. It's pure Rust with no dependencies and no unsafe code, and it compiles to WebAssembly.</p></div>
       </div>
     </div>
   </section>
@@ -541,7 +553,7 @@ Things to know:
   <section class="sec band" id="bench">
     <div class="wrap">
       <header class="sh">
-        <h2 class="display">Best in class<sub>02</sub></h2>
+        <h2 class="display">Proven exact<sub>02</sub></h2>
         <p>Results from brep-conformance, an open conformance suite for B-rep kernels. Each case's expected result is derived from closed-form mathematics, not from another kernel's output, and every kernel, springrep included, is held to the same criteria.</p>
       </header>
       <div class="lb-head">
@@ -574,7 +586,7 @@ Things to know:
       <a href="https://github.com/springcraft-ai/brep-conformance" target="_blank" rel="noopener">brep-conformance</a>
       <a href="https://www.springcraft.ai/follow/" target="_blank" rel="noopener">build log</a>
     </nav>
-    <span class="annot">mit license · springrep 1.0.0</span>
+    <span class="annot">mit license · springrep {{VERSION}}</span>
   </div>
 </footer>
 
@@ -1167,17 +1179,11 @@ document.querySelectorAll("[data-copy-from]").forEach((b) => b.addEventListener(
   copyText(document.getElementById(b.dataset.copyFrom).textContent, b)
 }))
 
-/* The leaderboard, drawn from this copy of the verified run of 11-18-2026 and again from the
-   results site's current one once that has loaded, so it follows a new run without a change here.
+/* The leaderboard, drawn from the results site's leaderboard.json once it has loaded, so it follows
+   a new run without a change here. The hero's four rows stand empty until then.
    n: cases by tightest tolerance passed (1e-7, 1e-6, 1e-5, 1e-3), then fail, unsupported, and
-   refused/timeout/crash. ms: median, first and third quartile per case, on the cases every kernel
-   answered. */
-let BOARD = [
-  { label: "springrep", ver: "1.0.0", license: "MIT", n: [3487, 0, 0, 0, 0, 0, 0], ms: [87.3, 9.2, 260], us: true },
-  { label: "opencascade", ver: "8.0.1.1.0", license: "LGPL-2.1", n: [2823, 27, 3, 5, 304, 271, 54], ms: [195, 45.6, 434] },
-  { label: "arris", ver: "0.10.0", license: "MIT/Apache-2.0", n: [2111, 0, 0, 0, 85, 839, 452], ms: [210, 56.7, 989] },
-  { label: "solidcore", ver: "1.0.1", license: "Apache-2.0", n: [1727, 10, 2, 0, 500, 1110, 138], ms: [2093, 109, 8611] },
-]
+   refused/timeout/crash. ms: median, first and third quartile per case, failed tests excluded. */
+let BOARD
 const GRADES = ["1e-7", "1e-6", "1e-5", "1e-3", "fail", "unsupported", "quiet"]
 // The bar shows 1e-6 with 1e-5, so neighbouring segments always differ clearly in colour.
 const BANDS = [
@@ -1191,39 +1197,51 @@ const BANDS = [
 const bandCount = (k, b) => b.of.reduce((a, i) => a + k.n[i], 0)
 // The run the board shows, in the report's own fields (suite, run.unix, environment, and
 // kernel.tolerance, the precision the cases were run and graded to).
-let RUN = { suite: "1.0.0", unix: 1794975567, os: "linux", arch: "x86_64", cores: 24, tolerance: 1e-7 }
-let TOTAL = 3487
+let RUN
+let TOTAL
+const HERO_ROWS = 4
+// A percentage to one decimal, as the results site rounds it, except that anything short of all
+// the cases stops at 99.9%: only a kernel that passes every case reads 100.0%.
+const pct = (v) => (v < 100 ? Math.min(v, 99.94) : v).toFixed(1) + "%"
 function drawBoard() {
   const [ry, rm, rd] = new Date(RUN.unix * 1000).toISOString().slice(0, 10).split("-")
   const runDate = rm + "-" + rd + "-" + ry
+  document.getElementById("hsuite").textContent = "brep-conformance " + RUN.suite
   document.getElementById("hrun").textContent = runDate + " run"
-  document.getElementById("run-id").textContent = runDate + " run · brep-conformance " + RUN.suite +
-    " · " + TOTAL + " cases · " + RUN.os + " " + RUN.arch + ", " + RUN.cores + " cores · " +
-    RUN.tolerance.toExponential() + " mm precision"
+  // The suite and its cases are the board's; the date, machine and precision are one kernel's run,
+  // and the others' differ, so the line names whose they are.
+  document.getElementById("run-id").textContent = "brep-conformance " + RUN.suite + " · " + TOTAL +
+    " cases · " + RUN.kernel + " run " + runDate + " · " + RUN.os + " " + RUN.arch + ", " +
+    RUN.cores + " cores · " + RUN.tolerance.toExponential() + " mm precision"
   const atOrBetter = (k, i) => k.n.slice(0, i + 1).reduce((a, b) => a + b, 0) / TOTAL * 100
   BOARD.forEach((k) => { k.rate = atOrBetter(k, 0) })
   const hbench = document.getElementById("hbench")
   hbench.replaceChildren()
-  hbench.style.display = "grid"
-  hbench.style.gap = "10px"
-  BOARD.forEach((k) => {
+  hbench.removeAttribute("aria-busy")
+  hbench.style.minHeight = ""
+  const top = BOARD.slice(0, HERO_ROWS)
+  const us = BOARD.find((k) => k.us)
+  if (us && !top.includes(us)) top[HERO_ROWS - 1] = us
+  document.getElementById("hmore").textContent = BOARD.length > top.length
+    ? "see all " + BOARD.length + " kernels ↓"
+    : "see the benchmark ↓"
+  top.forEach((k) => {
     const row = document.createElement("div")
     row.className = "hrow" + (k.us ? " us" : "")
-    row.innerHTML = '<span class="n"></span><span class="lic"></span><span class="t"><i></i></span><b>' + k.rate.toFixed(1) + "%</b>" +
-      '<span class="ms">' + k.ms[0] + " ms</span>"
+    row.innerHTML = '<span class="n"></span><span class="lic"></span><span class="t"><i></i></span><b>' + pct(k.rate) + "</b>" +
+      '<span class="ms">' + (k.ms ? k.ms[0] + " ms" : "–") + "</span>"
     row.querySelector(".n").textContent = k.label
     row.querySelector(".lic").textContent = k.license
     row.dataset.tip = k.label + " " + k.ver + " · " + k.license + "|" + k.n[0] + " of " + TOTAL +
-      " cases hold to 1e-7 mm. Median " + k.ms[0] + " ms per case; half take " + k.ms[1] + " to " +
-      k.ms[2] + " ms."
+      " cases hold to 1e-7 mm." + (k.ms ? " Median " + k.ms[0] + " ms per case; half take " +
+      k.ms[1] + " to " + k.ms[2] + " ms." : "")
     hbench.appendChild(row)
   })
   requestAnimationFrame(() => requestAnimationFrame(() => {
-    hbench.querySelectorAll(".hrow .t i").forEach((el, i) => { el.style.width = BOARD[i].rate + "%" })
+    hbench.querySelectorAll(".hrow .t i").forEach((el, i) => { el.style.width = top[i].rate + "%" })
   }))
   const board = document.getElementById("board")
   board.replaceChildren()
-  const pct = (v) => v.toFixed(1) + "%"
   BOARD.forEach((k) => {
     const tr = document.createElement("tr")
     if (k.us) tr.className = "us"
@@ -1241,8 +1259,8 @@ function drawBoard() {
       '<td class="bar-cell"><div class="tbar" role="img"></div><div class="ruler"><span>0%</span><span>25%</span><span>50%</span><span>75%</span><span>100%</span></div></td>' +
       '<td class="p7"><span data-to="' + atOrBetter(k, 0) + '" data-dp="1" data-unit="%"></span></td>' +
       '<td class="px"><span data-to="' + atOrBetter(k, 2) + '" data-dp="1" data-unit="%"></span></td>' +
-      '<td class="mt"><b><span data-to="' + k.ms[0] + '" data-dp="' + (k.ms[0] < 100 ? 1 : 0) +
-      '"></span><small>ms</small></b></td>'
+      (k.ms ? '<td class="mt"><b><span data-to="' + k.ms[0] + '" data-dp="' + (k.ms[0] < 100 ? 1 : 0) +
+      '"></span><small>ms</small></b></td>' : '<td class="mt"><b class="none">–</b></td>')
     tr.querySelector(".k b").textContent = k.label
     tr.querySelector(".k small").textContent = k.ver + " · " + k.license
     const bar = tr.querySelector(".tbar")
@@ -1272,14 +1290,20 @@ function drawBoard() {
       return [k.label + " " + k.ver + " · " + shown[hot].says, rows.join("\n")]
     }
     cell.addEventListener("pointerleave", () => bar.classList.remove("picking"))
-    tr.querySelector(".mt").dataset.tip = k.label + " · median " + k.ms[0] + " ms per case|" +
-      "half of its cases take " + k.ms[1] + " to " + k.ms[2] + " ms. Timed only on cases every kernel answered."
+    // The results site's own speed tooltip, word for word.
+    if (k.ms) {
+      const [p50, p25, p75] = k.times.map(tipMs)
+      tr.querySelector(".mt").dataset.tip = "P50 " + p50 + " per case|P25 " + p25 + " · P75 " + p75 + "\n" +
+        (k.step === null ? "" : "STEP round trip P50 " + tipMs(k.step) + ", timed apart\n") +
+        "Failed tests excluded"
+    }
     board.appendChild(tr)
   })
 
   const figures = [...board.querySelectorAll("[data-to]")]
   const show = (el, f) => {
-    el.textContent = (Number(el.dataset.to) * f).toFixed(Number(el.dataset.dp)) + (el.dataset.unit || "")
+    const v = Number(el.dataset.to) * f
+    el.textContent = el.dataset.unit === "%" ? pct(v) : v.toFixed(Number(el.dataset.dp))
   }
   const COUNT_MS = 1100
   function lightBoard() {
@@ -1295,11 +1319,14 @@ function drawBoard() {
     requestAnimationFrame(step)
   }
   figures.forEach((el) => show(el, reduce ? 1 : 0))
-  new IntersectionObserver(([en], io) => {
-    if (!en.isIntersecting) return
+  // Watches each row, not the whole board: a long board stacked on a short screen never has a set
+  // share of itself in view, and a reader may be anywhere down it when it is drawn.
+  const io = new IntersectionObserver((rows) => {
+    if (!rows.some((en) => en.isIntersecting)) return
     io.disconnect()
     lightBoard()
-  }, { threshold: 0.35 }).observe(board)
+  }, { threshold: 0.5 })
+  ;[...board.children].forEach((tr) => io.observe(tr))
 
   const legend = document.getElementById("legend")
   legend.replaceChildren()
@@ -1311,43 +1338,95 @@ function drawBoard() {
   })
 }
 
-const LIVE = "https://springcraft-ai.github.io/brep-conformance/leaderboard.json"
+const RESULTS = "https://springcraft-ai.github.io/brep-conformance/"
+const LIVE = RESULTS + "leaderboard.json"
 const shortLicense = (spdx) =>
   spdx.replace(/ WITH .*$/, "").replace(/-only|-or-later/g, "").replace(/ OR /g, "/")
 const shortMs = (v) => v < 100 ? Math.round(v * 10) / 10 : Math.round(v)
-// The results site's leaderboard.json in this page's terms. Throws on data the board cannot draw,
-// which leaves the copy above in place.
+// A time as the results site writes it in its tooltips: three significant figures. Rounded before
+// the unit is chosen, so 999.7 ms reads 1.00 s.
+const tipMs = (v) => {
+  const r = Number(v.toPrecision(3))
+  return r >= 1000 ? (r / 1000).toPrecision(3) + " s" : r.toPrecision(3) + " ms"
+}
+// The results site's leaderboard.json in this page's terms. Throws on data the board cannot draw.
 function fromLive(d) {
-  const at = (k, ...grades) => grades.reduce((a, g) => a + (k.counts[d.grades.indexOf(g)] || 0), 0)
+  const text = (...v) => v.every((s) => typeof s === "string")
+  const above = (v, least) => typeof v === "number" && v >= least
+  const BANDED = ["1e-7", "1e-6", "1e-5", "1e-3", "fail", "unsupported"]
+  const QUIET = ["refused", "timeout", "crash"]
+  const at = (k, g) => k.counts[d.grades.indexOf(g)] || 0
+  const times = (k) => [k.time?.median, k.time?.q1, k.time?.q3]
   const rows = d.kernels.map((k) => ({
     label: k.kernel,
     ver: k.version,
     license: shortLicense(k.license),
-    n: [...["1e-7", "1e-6", "1e-5", "1e-3", "fail", "unsupported"].map((g) => at(k, g)),
-      at(k, "refused", "timeout", "crash")],
-    ms: [k.time.median, k.time.q1, k.time.q3].map(shortMs),
+    n: [...BANDED.map((g) => at(k, g)), QUIET.reduce((a, g) => a + at(k, g), 0)],
+    // Null for a kernel without all three times, which is then drawn without a speed.
+    ms: times(k).every((v) => above(v, 0)) ? times(k).map(shortMs) : null,
+    times: times(k),
+    step: above(k.time?.step, 0) ? k.time.step : null,
     ...(k.maintainers ? { us: true } : {}),
   }))
-  const run = (d.kernels.find((k) => k.maintainers) || d.kernels[0]).run
+  const ours = d.kernels.find((k) => k.maintainers) || d.kernels[0]
+  const run = ours.run
   const unix = Date.parse(run.date) / 1000
-  const bad = !rows.length || !(d.cases > 0) || !(unix > 0) || !run.cores || !run.tolerance ||
-    rows.some((k) => k.n.reduce((a, b) => a + b, 0) !== d.cases || k.ms.some((v) => !(v >= 0)))
+  // The counts add up only when every case is in a grade this page names, so a grade the suite
+  // adds later costs the board only once a kernel has cases in it: they could not be drawn truly.
+  const bad = !rows.length || !above(d.cases, 1) || !(unix > 0) || !above(run.cores, 1) ||
+    !(above(run.tolerance, 0) && run.tolerance > 0) || !text(d.suite, run.os, run.arch) ||
+    !d.grades.includes("1e-7") || d.kernels.some((k) => !text(k.kernel, k.version, k.license)) ||
+    rows.some((k) => k.n.reduce((a, b) => a + b, 0) !== d.cases)
   if (bad) throw new Error("leaderboard.json: not a board this page can draw")
   const { os, arch, cores, tolerance } = run
-  return [rows, { suite: d.suite, unix, os, arch, cores, tolerance }, d.cases]
+  return [rows, { suite: d.suite, kernel: ours.kernel, unix, os, arch, cores, tolerance }, d.cases]
 }
-// Taken before drawing, which adds each row's rate to it.
-const drawn = JSON.stringify([BOARD, RUN, TOTAL])
-drawBoard()
+// Both boards say the leaderboard did not load, and nothing drawn from one stays. The hero's keeps
+// the height its rows held.
+function boardFailed(error) {
+  console.error(error)
+  document.getElementById("hsuite").textContent = "brep-conformance"
+  document.getElementById("hrun").textContent = ""
+  document.getElementById("run-id").textContent = ""
+  document.getElementById("hmore").textContent = "see the benchmark ↓"
+  const note = () => {
+    const el = document.createElement("span")
+    el.className = "lb-off"
+    const a = document.createElement("a")
+    a.href = RESULTS
+    a.target = "_blank"
+    a.rel = "noopener"
+    a.textContent = "See it on the results site"
+    el.append("The leaderboard did not load. ", a, ".")
+    return el
+  }
+  const hbench = document.getElementById("hbench")
+  hbench.style.minHeight = hbench.offsetHeight + "px"
+  hbench.removeAttribute("aria-busy")
+  hbench.replaceChildren(note())
+  const td = document.createElement("td")
+  td.className = "k"
+  td.colSpan = 5
+  td.append(note())
+  const tr = document.createElement("tr")
+  tr.append(td)
+  document.getElementById("board").replaceChildren(tr)
+  document.getElementById("legend").replaceChildren()
+  document.querySelector(".hbench").classList.remove("wait")
+}
+// After this long without an answer the boards say so, and no longer wait. The request goes on,
+// and a board that lands later is still drawn.
+const LIVE_SLOW_MS = 8000
+const slow = setTimeout(() => boardFailed(new Error("leaderboard.json: no answer yet")), LIVE_SLOW_MS)
 fetch(LIVE)
   .then((r) => r.ok ? r.json() : Promise.reject(new Error("leaderboard.json: " + r.status)))
   .then((d) => {
-    const live = fromLive(d)
-    if (JSON.stringify(live) === drawn) return
-    ;[BOARD, RUN, TOTAL] = live
+    ;[BOARD, RUN, TOTAL] = fromLive(d)
     drawBoard()
+    document.querySelector(".hbench").classList.remove("wait")
   })
-  .catch(() => {})
+  .catch(boardFailed)
+  .finally(() => clearTimeout(slow))
 
 function alignDeck() {
   const h = document.querySelector("#bench .sh h2")

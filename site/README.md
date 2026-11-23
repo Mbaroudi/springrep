@@ -10,6 +10,7 @@ tokens, fonts and logos from that system's published build on the CDN, at an imm
 build.py. It is built from:
 
 - [template.html](template.html) — the page, its styles and its scripts.
+- [Cargo.toml](../Cargo.toml) — the crate's version, shown in the footer.
 - [bracket.rs](../examples/bracket.rs) — the getting-started example, shown on the page as code.
 - [data/flanged_tube.json](data/flanged_tube.json) — the animated part in the hero: each build
   step's edges, a coarse mesh that hides edges behind faces, the profiles it swept and what the
@@ -20,7 +21,8 @@ build.py. It is built from:
 [build.py](build.py) fills the template's `{{…}}` slots and writes springrep.html into a git-ignored
 dist folder here. The crate's manifest excludes this folder, so the site never ships with the crate.
 For a host that loads nothing from other origins, such as a sandboxed preview, `--preview` fetches
-the CDN files at build time and writes them into springrep.preview.html instead.
+the CDN files at build time and writes them into springrep.preview.html instead. That page cannot
+fetch the leaderboard, so its boards say it did not load.
 
 The [pages workflow](../.github/workflows/pages.yml) publishes the page to GitHub Pages. The API
 docs link points to docs.rs, which documents the version published on crates.io.
@@ -33,10 +35,15 @@ for good: a new image gets a new name, and the template's `og:image` tag changes
 The leaderboard follows brep-conformance's results site. When the page loads it fetches that site's
 [leaderboard.json](https://springcraft-ai.github.io/brep-conformance/leaderboard.json) and draws the
 board from it, so a new run shows here once that site has deployed it, with no change to this
-folder. Until the fetch answers, and when it fails or returns a board the page cannot draw, the page
-shows the copy in the template's `BOARD`, `RUN` and `TOTAL`: the verified run of 11-18-2026. Keep
-that copy near the current run, so a reader rarely sees the figures change. The headline and prose
+folder. The page holds no copy of the board. Until the fetch answers, the hero shows four empty rows
+the size of the ones to come, so nothing moves when they fill. When the fetch fails or returns a
+board the page cannot draw, both boards say so and link to the results site. They say the same
+after 8 seconds without an answer; the request goes on, and a board that lands later replaces the
+note. The headline and prose
 around the board are fixed text, and do not follow the figures.
+
+The hero shows only the board's first four kernels, with springrep in the last place if it ranks
+lower, and its link gives the number of kernels on the full board below.
 
 ## Setup
 

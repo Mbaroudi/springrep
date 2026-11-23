@@ -71,12 +71,23 @@ def highlight(src):
     return "\n".join(out)
 
 
+def version():
+    """The crate's version, from Cargo.toml's package table."""
+    manifest = (HERE.parent / "Cargo.toml").read_text()
+    package = re.search(r"^\[package\][ \t]*$(.*?)(?=^\[|\Z)", manifest, flags=re.M | re.S)
+    m = package and re.search(r'^version\s*=\s*"([^"]+)"', package.group(1), flags=re.M)
+    if not m:
+        sys.exit("Cargo.toml: no package version")
+    return m.group(1)
+
+
 def main():
     t = (HERE / "template.html").read_text()
     t = t.replace("{{GH}}", GH)
     t = t.replace("{{SC_CSS}}", f'@import url("{SC}/sc.css") layer(sc);')
     t = t.replace("{{SC}}", SC)
     t = t.replace("{{PART}}", (HERE / "data/flanged_tube.json").read_text().strip())
+    t = t.replace("{{VERSION}}", html.escape(version()))
     t = t.replace("{{MAIN_RS}}", highlight((HERE.parent / "examples/bracket.rs").read_text()))
     out = OUT
     if "--preview" in sys.argv[1:]:
