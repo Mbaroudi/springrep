@@ -776,7 +776,12 @@ number never overrides what topology or a closed form already decided (Sugihara 
    no branch in particular): within that reach the vertex still splits the branch, and its
    tolerance grows to cover the gap. A sheet a sweep makes from an edge leaves the face beside it
    at such a point, where the face's grazing curve meets the edge, and comes back into a concave
-   face along the second branch.
+   face along the second branch. A walk from a known vertex of both surfaces that comes back to
+   it with no two points the tolerance apart found no curve and is dropped: where a curve of the
+   two surfaces runs out of a bounded one at its corner, the points beside the corner are on both
+   only to the tolerance, and the faces meet at the vertex alone. A sheet a sweep makes from one
+   edge of a block's top leaves the block's side this way at the top corner, a fraction of a
+   degree off the corner's own path.
 
 A stub of this kind, from a fillet's rim meeting a pocket's corner round, came from a pair that both
 later layers now cover: the r 1.5 round's cylinder against the r 4 wall cylinder, axes not parallel,
@@ -1694,7 +1699,15 @@ one `u`, the whole line `u = const` is a curve (a ball's meridian under a turn a
 axis, a generator of a cylinder under a slide). Each solution's points are exact. A branch is
 clipped to the face by the face's winding number along it, each run inside the face ends at the
 root the branch passes through there, and runs that cross inside the face (a whole line across
-another branch) end at a vertex there. The run's points are fitted with a cubic B-spline at
+another branch) end at a vertex there. The winding number is read at even steps along the branch
+and, closing in from both sides, beside each root the branch passes through, so a run is found
+however little of the branch's parameter it spans: far from a screw's axis a leaning cylinder
+grazes nearly along two rulings, each curve crossing the face within a thousandth of a radian. A
+root that no curve ends at is refused: the face would be taken whole for one side. A run stops
+where the face's boundary is first within the tolerance; a branch that runs into an apex beside a
+seam is that near the seam well short of the apex, so an end with no root, where the run stopped
+away from every pole, is first looked for at the face's poles, along the branch a little past
+where the run stopped, and is the pole where the branch passes through it. The run's points are fitted with a cubic B-spline at
 chord-length parameters, points added in each span that strays from them by more than a tenth of
 `LINEAR`; points on one line or one circle within rounding are that line or circle exactly.
 
@@ -1772,7 +1785,33 @@ built in parts: the body at the start, its faces cut along their curves, united 
 the solid each piece of face in `W` sweeps on its own (its two ends and the faces its boundary
 sweeps). Each part starts on a face of the body and grazes it along its curves there; the boolean
 is told so (each such edge lies on the other's face), as a blend tells it of a round's tangent
-edges. A body that is itself a union, as a ball on a stem, may instead be swept a piece at a time,
+edges.
+
+The checker pairs only faces that share no edge, and never a face with itself, so it cannot see a
+swept face that passes through itself or through a swept face beside it: a body screwed about a
+line close by turns back through what it swept. Those are found before the faces are sewn
+([`orbit.rs`](../src/sweep/solid/orbit.rs)). A steady motion carries each point along its orbit, a
+line, a circle or a helix, and an orbit is named by two lengths the motion keeps: the place in the
+plane square to a slide; the distance from the axis and the height along it for a turn; the
+distance and `z − c·θ` for a screw of rise `c`, read again a whole turn on. Two points of the swept
+curves on one orbit, less than the motion's span apart along it, are one point of two sheets, or
+of one sheet twice. So the curves are drawn in the plane of the two lengths, and the sheets cross
+where two drawings cross, or one crosses itself, at points that close along their orbit. The
+drawings are sampled, and each crossing of their chords is confirmed on the curves by Newton's
+method: two curves that leave a shared end along one line, as a grazing curve and the edge it ends
+on do, have chords that cross beside it, and the steps run to the end.
+
+A swept face can also pass through an end of the sweep: the body's faces left where it starts, or
+those carried outward where it ends. It shares an edge with the ends beside its curve, and may
+cross any of them along a curve that meets no edge at all. So the paths of points along each swept
+curve are intersected with each end's surface, and a meeting inside the face is a crossing: a drum
+lying nearly across a screw's axis carries a sliver of its far end outward and then turns through
+where the sliver went.
+
+A product with either kind of crossing is invalid, and is built in parts or refused as any other
+overlap is; without these tests it was a solid that bounded the overlap twice.
+
+A body that is itself a union, as a ball on a stem, may instead be swept a piece at a time,
 since the sweep of a union is the union of the sweeps.
 
 The unions look for where each edge meets each face's surface by the signed distance to the

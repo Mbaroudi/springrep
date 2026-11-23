@@ -1032,3 +1032,223 @@ fn a_sweep_built_on_orbits_is_the_one_built_on_traces() {
         assert_same_solid(&built, &traced.unwrap(), 1e-7);
     }
 }
+
+/// The volume a second that the frustum about `frame`'s z axis, of radius `bottom` at its origin
+/// and `top` a `height` up, carries outward under the velocity `field`: the flow out through its
+/// surface where that is outward, by the midpoint rule. A steady motion that never brings the body
+/// back over where it was sweeps the body and this for as long as it runs.
+fn frustum_outflow(
+    frame: &Frame,
+    (bottom, top, height): (f64, f64, f64),
+    field: &dyn Fn(Vec3) -> Vec3,
+) -> f64 {
+    let n = 1200;
+    let mid = |k: usize| (k as f64 + 0.5) / n as f64;
+    let at = |rho: f64, u: f64, z: f64| {
+        frame.origin + (frame.x * u.cos() + frame.y * u.sin()) * rho + frame.z * z
+    };
+    let slope = (bottom - top) / height;
+    let cell = 2.0 * PI / (n * n) as f64;
+    let mut sum = 0.0;
+    for i in 0..n {
+        let u = 2.0 * PI * mid(i);
+        let out = frame.x * u.cos() + frame.y * u.sin() + frame.z * slope;
+        for j in 0..n {
+            let z = height * mid(j);
+            let rho = bottom - slope * z;
+            sum += field(at(rho, u, z)).dot(out).max(0.0) * rho * height * cell;
+            for (radius, z, out) in [(bottom, 0.0, -frame.z), (top, height, frame.z)] {
+                let rho = radius * mid(j);
+                sum += field(at(rho, u, z)).dot(out).max(0.0) * rho * radius * cell;
+            }
+        }
+    }
+    sum
+}
+
+// Far from a screw's axis a leaning drum or cone grazes nearly along two of its rulings: each
+// curve crosses the side within a thousandth of a radian of `u`, from rim to rim or to the apex.
+#[test]
+fn a_leaning_drum_or_cone_screwed_far_from_the_axis_is_cut_along_its_steep_curves() {
+    let frame = Frame::new(
+        Vec3::new(10.0, -2.0, 0.0),
+        Vec3::new(0.3, 0.0, 1.0),
+        Vec3::X,
+    )
+    .unwrap();
+    for (bottom, top, height, lead) in [(1.0, 1.0, 3.0, 40.0), (1.0, 0.0, 2.0, 10.0)] {
+        let body = crate::primitive::cone(&frame, bottom, top, height, "body").unwrap();
+        let motion = Motion::Screw {
+            screw: screw_z(lead),
+            from: 0.0,
+            to: 1.0,
+        };
+        let b = solid(&body, &motion, "sw").unwrap();
+        assert!(check::check(&b).is_empty());
+        let field = |p: Vec3| Vec3::Z.cross(p) + Vec3::Z * (lead / (2.0 * PI));
+        let want = measure::volume(&body) + frustum_outflow(&frame, (bottom, top, height), &field);
+        let got = measure::volume(&b);
+        assert!(rel(got, want) < 1e-5, "{got} {want}");
+    }
+}
+
+// A cone screwed about a line that grazes it turns back through what it swept: the sheets its rim
+// and its grazing curves sweep pass through themselves and each other, though they share edges.
+// Sewn as they stand they bound the overlap twice, 6% more than the solid.
+#[test]
+fn a_cone_screwed_back_through_its_own_sweep_is_no_product() {
+    let frame = Frame::new(
+        Vec3::new(-1.0, -0.5, -1.0),
+        Vec3::new(1.0, 1.0, 1.0),
+        Vec3::X,
+    )
+    .unwrap();
+    let body = crate::primitive::cone(&frame, 1.0, 0.0, 2.0, "cone").unwrap();
+    let motion = Motion::Screw {
+        screw: screw_z(2.0),
+        from: 0.0,
+        to: 2.2,
+    };
+    let (steady, twist) = (
+        sheet::Steady::of(&motion).unwrap(),
+        motion.steady().unwrap(),
+    );
+    let cut = cut::cut(&body, &move |p| twist.at(p), steady.held()).unwrap();
+    assert!(matches!(
+        product::product(&cut, &steady, "sw", None, None),
+        Err(Error::InvalidResult(_))
+    ));
+    assert!(solid(&body, &motion, "sw").is_err());
+}
+
+// A leaning block screwed far from the axis is built in parts. What its top sweeps stands on the
+// block, and the sheet one top edge sweeps leaves the block's side at the top corner, a third of a
+// degree off the corner's own path: their intersection runs out of the sheet there, so the two
+// meet at the corner alone, and the parts share no volume.
+#[test]
+fn a_swept_top_joins_its_block_where_a_sheet_leaves_the_side_at_a_corner() {
+    let frame = Frame::new(
+        Vec3::new(10.0, -2.0, 0.0),
+        Vec3::new(0.3, 0.0, 1.0),
+        Vec3::X,
+    )
+    .unwrap();
+    let body = block(&frame, Vec3::new(2.0, 1.0, 3.0), "block").unwrap();
+    let motion = Motion::Screw {
+        screw: screw_z(40.0),
+        from: 0.0,
+        to: 1.0,
+    };
+    let (steady, twist) = (
+        sheet::Steady::of(&motion).unwrap(),
+        motion.steady().unwrap(),
+    );
+    let cut = cut::cut(&body, &move |p| twist.at(p), steady.held()).unwrap();
+    let start = product::start(&cut, &steady).unwrap();
+    let top = cut
+        .parts
+        .iter()
+        .position(|p| p.front && p.names.iter().any(|n| n.face == "end"))
+        .unwrap();
+    let piece = product::product(&cut, &steady, "sw", Some(&[top]), None).unwrap();
+    let facts = crate::blend::shared_edges(&start, &piece);
+    let both = boolean::boolean_with(&start, &piece, boolean::Op::Union, &facts).unwrap();
+    assert!(check::check(&both).is_empty());
+    let want = measure::volume(&start) + measure::volume(&piece);
+    assert!(rel(measure::volume(&both), want) < 1e-12);
+}
+
+// A cone lying nearly across a far screw's axis grazes along a curve that runs into its apex a
+// few thousandths of a radian from the seam: within the tolerance of the seam well short of the
+// apex, and it ends at the apex all the same.
+#[test]
+fn a_grazing_curve_beside_a_cones_seam_runs_on_to_the_apex() {
+    let frame = Frame::new(
+        Vec3::new(10.0, -2.0, 0.0),
+        Vec3::new(1.0, 0.0, 0.2),
+        Vec3::X,
+    )
+    .unwrap();
+    let body = crate::primitive::cone(&frame, 1.0, 0.0, 2.0, "cone").unwrap();
+    let motion = Motion::Screw {
+        screw: screw_z(10.0),
+        from: 0.0,
+        to: 1.0,
+    };
+    let b = solid(&body, &motion, "sw").unwrap();
+    assert!(check::check(&b).is_empty());
+    let field = |p: Vec3| Vec3::Z.cross(p) + Vec3::Z * (10.0 / (2.0 * PI));
+    let want = measure::volume(&body) + frustum_outflow(&frame, (1.0, 0.0, 2.0), &field);
+    let got = measure::volume(&b);
+    assert!(rel(got, want) < 1e-5, "{got} {want}");
+}
+
+// A drum lying nearly across a screw's axis carries a sliver of its far end outward, and the rest
+// of the drum then turns through where the sliver went: the faces the sliver's edges sweep pass
+// through an end of the sweep, though they cross no swept face. The product is refused, and
+// built in parts no face of the solid lies inside the drum anywhere along the way.
+#[test]
+fn a_drums_sliver_swept_under_the_drum_is_no_product() {
+    let frame = Frame::new(Vec3::new(3.0, 1.0, -1.0), Vec3::new(1.0, 0.0, 0.2), Vec3::X).unwrap();
+    let (r, h, rise) = (1.0, 3.0, 2.0 / (2.0 * PI));
+    let body = cylinder(&frame, r, h, "drum").unwrap();
+    let motion = Motion::Screw {
+        screw: screw_z(2.0),
+        from: 0.0,
+        to: 1.0,
+    };
+    let (steady, twist) = (
+        sheet::Steady::of(&motion).unwrap(),
+        motion.steady().unwrap(),
+    );
+    let cut = cut::cut(&body, &move |p| twist.at(p), steady.held()).unwrap();
+    assert!(matches!(
+        product::product(&cut, &steady, "sw", None, None),
+        Err(Error::InvalidResult(_))
+    ));
+    let b = solid(&body, &motion, "sw").unwrap();
+    assert!(check::check(&b).is_empty());
+    // Where the drum at turn `t` was when it started, and whether it holds a point by a margin.
+    let held = |p: Vec3| {
+        (0..=400).map(|k| k as f64 / 400.0).any(|t| {
+            let q = p - Vec3::Z * (rise * t);
+            let (s, c) = t.sin_cos();
+            let l = frame.to_local(Vec3::new(c * q.x + s * q.y, c * q.y - s * q.x, q.z));
+            (0.02..=h - 0.02).contains(&l.z) && l.x.hypot(l.y) <= r - 0.02
+        })
+    };
+    for f in b.face_ids() {
+        let d = crate::boolean::face_domain(&b, f);
+        for i in 0..12 {
+            for j in 0..12 {
+                let at = |lo: f64, hi: f64, k: usize| lo + (hi - lo) * (k as f64 + 0.5) / 12.0;
+                let uv = crate::math::Vec2::new(at(d.lo.x, d.hi.x, i), at(d.lo.y, d.hi.y, j));
+                let p = d.surface.eval(uv.x, uv.y);
+                assert!(d.winding(uv) == 0 || !held(p), "{p:?}");
+            }
+        }
+    }
+}
+
+// A turn's axis pierces a cone's side. A point of the grazing curve a hundredth from the axis
+// turns on a circle that leaves the side, and comes back to it where the sweep ends, at a shallow
+// angle: its meeting with the side at the end is the path's own end, found a millionth short of
+// it, and not a place the swept face passes through the side.
+#[test]
+fn a_path_that_ends_shallow_on_its_own_cap_does_not_pass_through_it() {
+    let frame = Frame::new(Vec3::new(0.5, 0.5, 0.0), Vec3::new(0.4, 0.2, 1.0), Vec3::X).unwrap();
+    let body = crate::primitive::cone(&frame, 1.0, 0.0, 2.0, "cone").unwrap();
+    let motion = about_z(0.5);
+    let (steady, twist) = (
+        sheet::Steady::of(&motion).unwrap(),
+        motion.steady().unwrap(),
+    );
+    let cut = cut::cut(&body, &move |p| twist.at(p), steady.held()).unwrap();
+    let side = cut
+        .parts
+        .iter()
+        .position(|p| p.front && p.names.iter().any(|n| n.face == "side"))
+        .unwrap();
+    let piece = product::product(&cut, &steady, "sw", Some(&[side]), None).unwrap();
+    assert!(check::check(&piece).is_empty());
+}

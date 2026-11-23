@@ -590,7 +590,15 @@ fn closed_cuts(
     let size = closed.rate.size;
     let mut runs: Vec<Run> = Vec::new();
     for (branch, range) in closed.branches(eps) {
-        runs.extend(closed.runs(dom, branch, range));
+        let marks: Vec<f64> = roots
+            .iter()
+            .filter_map(|r| {
+                let at = closed.param_of(branch, r.uv);
+                let on = closed.point(branch, at)?.0;
+                (on.dist(r.point) <= 1e-7 * size).then_some(at)
+            })
+            .collect();
+        runs.extend(closed.runs(dom, branch, range, &marks));
     }
     // Each run's stops: its ends, and any crossing inside it, with the vertex there where known.
     let mut stops: Vec<Vec<(f64, Option<usize>)>> = runs
@@ -655,6 +663,15 @@ fn closed_cuts(
             }
         }
     }
+    let poles: Vec<(usize, Point3)> = b
+        .face(f)
+        .loops
+        .iter()
+        .flat_map(|&lp| &b.lp(lp).coedges)
+        .map(|&c| b.edge(b.coedge(c).edge))
+        .filter(|e| e.curve.is_none())
+        .map(|e| (e.start.index(), b.vertex(e.start).point))
+        .collect();
     let mut out = Vec::new();
     for (run, mut stop) in runs.into_iter().zip(stops) {
         stop.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -697,8 +714,40 @@ fn closed_cuts(
                         (r.vertex, r.point, r.uv)
                     }
                     (None, None) => {
-                        let (v, q) = places.on_boundary(b, f, p)?;
-                        (v, q, uv)
+                        // A run stops where the face's boundary is first within the tolerance.
+                        // A branch that runs into an apex beside a seam is that near the seam
+                        // well short of the apex, and it ends at the apex, not on the seam.
+                        // A run that stopped on a pole already ends there as it is.
+                        let on_pole = |q: Point3| q.dist(p) <= 1e-6 * (1.0 + p.norm());
+                        let far = !poles.iter().any(|&(_, q)| on_pole(q));
+                        let pole = poles.iter().filter(|_| far).find_map(|&(v, q)| {
+                            let off = |s: f64| {
+                                closed
+                                    .point(run.branch, s)
+                                    .map_or(f64::INFINITY, |x| x.0.dist(q))
+                            };
+                            let (mut lo, mut hi) = (s - reach, s + reach);
+                            for _ in 0..100 {
+                                let (x, y) = (lo + 0.382 * (hi - lo), lo + 0.618 * (hi - lo));
+                                if off(x) < off(y) {
+                                    hi = y;
+                                } else {
+                                    lo = x;
+                                }
+                            }
+                            let at = 0.5 * (lo + hi);
+                            (off(at) <= 1e-10 * size).then_some((v, q, at))
+                        });
+                        match pole {
+                            Some((v, q, at)) => {
+                                span[k] = at;
+                                (v, q, uv)
+                            }
+                            None => {
+                                let (v, q) = places.on_boundary(b, f, p)?;
+                                (v, q, uv)
+                            }
+                        }
                     }
                 };
             }
@@ -712,6 +761,14 @@ fn closed_cuts(
                 uvs: (ends[0].2, ends[1].2),
             });
         }
+    }
+    // The rate changes sign along the boundary at each root, so a curve leaves the face there;
+    // without it a piece of the face would be taken whole for one side.
+    let ended = |v: usize| out.iter().any(|c| c.ends.0 == v || c.ends.1 == v);
+    if !roots.iter().all(|r| ended(r.vertex)) {
+        return Err(Error::Numerical(
+            "no characteristic curve was found from a place the boundary crosses one".into(),
+        ));
     }
     Ok(out)
 }
