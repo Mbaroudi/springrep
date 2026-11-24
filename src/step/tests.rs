@@ -55,6 +55,7 @@ fn ball(r: f64) -> Brep {
 /// Writes `b`, reads it back, and checks the copy is valid with the same measures and names.
 /// `b` written as STEP, with pcurves and without, and read back as the same solid each way.
 fn round_trip(b: &Brep) -> Brep {
+    assert_within_step_domains(b);
     let bare = write_with(b, "part", &WriteOptions::default().pcurves(false)).unwrap();
     for kind in [
         "PCURVE",
@@ -2732,4 +2733,574 @@ fn a_rational_circle_is_turned_to_start_where_its_edge_does() {
         let p = back.eval(0.5 + 4.0 * i as f64 / 64.0);
         assert!((p.x.hypot(p.y) - 1.0).abs() < 1e-14 && p.z == 0.0);
     }
+}
+
+/// Everything written lies in the domain of what it is written on, as a reader that wraps only
+/// what STEP itself wraps sees it: each edge in its curve's, each pcurve in its surface's and in
+/// its own, and each loop's pcurves, its poles' lines among them, meet end to end along every
+/// direction the surface has ends in. A seam's two pcurves on its face lie a whole number of
+/// periods apart, and not on one another. A face kept as the kernel has it has no pcurves to check.
+/// Returns how many faces had such a direction, and how many of those had their surface written
+/// from where the face starts.
+fn assert_within_step_domains(b: &Brep) -> (usize, usize) {
+    let inside = |x: f64, (lo, hi): (f64, f64)| {
+        let slack = 1e-9 * (1.0 + lo.abs().max(hi.abs()));
+        x >= lo - slack && x <= hi + slack
+    };
+    for e in b.edge_ids() {
+        let edge = b.edge(e);
+        let Some(curve) = &edge.curve else { continue };
+        if matches!(curve, Curve::Line(_) | Curve::Circle(_) | Curve::Ellipse(_)) {
+            continue;
+        }
+        let domain = match super::write::turn_from(curve, edge.range) {
+            Some(s) => (s.knots[0], s.knots[s.knots.len() - 1]),
+            None => curve.domain(),
+        };
+        let (t0, t1) = edge.range;
+        assert!(
+            inside(t0, domain) && inside(t1, domain),
+            "a {} edge over {t0}..{t1} on a curve written over {domain:?}",
+            curve.kind()
+        );
+    }
+    let (mut ended, mut rebased) = (0, 0);
+    for f in b.face_ids() {
+        let form = super::write::face_form(b, f);
+        let (du, dv) = form.ended;
+        if du.is_none() && dv.is_none() {
+            continue;
+        }
+        ended += 1;
+        rebased += usize::from(form.surface.is_some());
+        if form.kept {
+            continue;
+        }
+        let surface = &b.face(f).surface;
+        let kind = surface.kind();
+        // Each seam's two pcurves on this face, at the middle of its edge: whole periods apart
+        // along some direction, and so not one on the other.
+        for &lp in &b.face(f).loops {
+            for &c in &b.lp(lp).coedges {
+                let Some(p) = b.partner(c).filter(|&p| p > c && b.coedge_face(p) == f) else {
+                    continue;
+                };
+                let edge = b.edge(b.coedge(c).edge);
+                let (Some(a), Some(z)) = (form.pcurve(b, c), form.pcurve(b, p)) else {
+                    continue;
+                };
+                let t = [0.5 * (edge.range.0 + edge.range.1)];
+                let gap = a.track(&t)[0] - z.track(&t)[0];
+                let whole = |g: f64, period: Option<f64>| {
+                    period.is_some_and(|q| {
+                        let n = (g / q).round();
+                        n != 0.0 && (g - n * q).abs() <= 1e-6 * q
+                    })
+                };
+                let apart = whole(gap.x, surface.u_period()) || whole(gap.y, surface.v_period());
+                assert!(apart, "{kind}: a seam's two pcurves {gap:?} apart");
+            }
+        }
+        for &lp in &b.face(f).loops {
+            let mut ends: Vec<(Vec2, Vec2)> = Vec::new();
+            // A coedge the writer finds no pcurve for within the tolerance has none written, and
+            // its loop's pcurves cannot be followed end to end.
+            let mut whole = true;
+            for &c in &b.lp(lp).coedges {
+                let co = b.coedge(c);
+                let edge = b.edge(co.edge);
+                if edge.is_degenerate() {
+                    // A pole's line across the parameter plane, moved as the writer moves it.
+                    let by = form.shift[&c];
+                    let (t0, t1) = edge.range;
+                    let ts = if co.reversed { [t1, t0] } else { [t0, t1] };
+                    let e = b.coedge_uvs(c, &ts);
+                    ends.push((e[0] + by, e[1] + by));
+                    continue;
+                }
+                let Some(c2) = form.pcurve(b, c) else {
+                    whole = false;
+                    continue;
+                };
+                let (t0, t1) = edge.range;
+                if let super::write::Curve2::Spline { knots, .. } = &c2 {
+                    let own = (knots[0], knots[knots.len() - 1]);
+                    assert!(
+                        inside(t0, own) && inside(t1, own),
+                        "{kind}: pcurve's own domain"
+                    );
+                }
+                let ts: Vec<f64> = (0..=64).map(|i| t0 + (t1 - t0) * i as f64 / 64.0).collect();
+                let uvs = c2.track(&ts);
+                // The box the pcurve is known to lie in, as well as points along it.
+                let (_, bounds) = super::write::course(b, c, Some(&c2));
+                for &uv in uvs.iter().chain(&bounds) {
+                    if let Some(d) = du {
+                        assert!(inside(uv.x, d), "{kind}: u {} outside {d:?}", uv.x);
+                    }
+                    if let Some(d) = dv {
+                        assert!(inside(uv.y, d), "{kind}: v {} outside {d:?}", uv.y);
+                    }
+                }
+                let (a, z) = (uvs[0], uvs[64]);
+                ends.push(if co.reversed { (z, a) } else { (a, z) });
+            }
+            for k in 0..if whole { ends.len() } else { 0 } {
+                let (to, from) = (ends[k].1, ends[(k + 1) % ends.len()].0);
+                let gap = to - from;
+                for (g, d) in [(gap.x, du), (gap.y, dv)] {
+                    if let Some((lo, hi)) = d {
+                        assert!(
+                            g.abs() <= 1e-6 * (hi - lo),
+                            "{kind}: a loop's pcurves {g} apart"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    (ended, rebased)
+}
+
+/// A cam: a closed spline round `centre`, of radius `r` waved three times, its turn starting at
+/// `start` radians round from `+x`.
+fn cam(centre: Vec2, r: f64, start: f64) -> Profile {
+    let pts: Vec<Vec2> = (0..9)
+        .map(|i| {
+            let a = start + TAU * i as f64 / 9.0;
+            let rr = r * (1.0 + 0.2 * (3.0 * a).cos());
+            centre + Vec2::new(rr * a.cos(), rr * a.sin())
+        })
+        .collect();
+    Profile::points(&pts, PointsInterp::PeriodicSpline, "side").unwrap()
+}
+
+/// The half of `b` on the side of the plane `x = 0` that `keep` points to.
+fn half(b: &Brep, keep: f64) -> Brep {
+    let lo = if keep > 0.0 { -100.0 } else { 0.0 };
+    boolean::difference(
+        b,
+        &block("cut", [lo, -100.0, -100.0], [lo + 100.0, 100.0, 100.0]),
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_face_across_an_extruded_splines_join_is_written_inside_its_surface() {
+    // The cam's turn starts at +x: the half towards +x has its side across the join, the half
+    // towards -x has not.
+    let tall = extrude(&cam(Vec2::ZERO, 10.0, 0.0), &Frame::WORLD, 4.0, "cam").unwrap();
+    for (keep, across) in [(1.0, 1), (-1.0, 0)] {
+        let b = half(&tall, keep);
+        assert_eq!(assert_within_step_domains(&b), (1, across));
+        round_trip(&b);
+    }
+}
+
+#[test]
+fn a_face_across_a_revolved_splines_join_is_written_inside_its_surface() {
+    // A ring whose tube is a cam turned about z, the cam's turn starting outermost: the ring's
+    // outer half has its face across the join.
+    let ring = revolve(
+        &cam(Vec2::new(20.0, 0.0), 3.0, 0.0),
+        &xz(),
+        Vec3::ZERO,
+        Vec3::Z,
+        TAU,
+        "r",
+    )
+    .unwrap();
+    let core = extrude(
+        &Profile::circle(Vec2::ZERO, 40.0),
+        &Frame::new(Vec3::new(0.0, 0.0, -10.0), Vec3::Z, Vec3::X).unwrap(),
+        20.0,
+        "core",
+    )
+    .unwrap();
+    for (b, across) in [
+        (boolean::difference(&ring, &core).unwrap(), 1),
+        (boolean::intersection(&ring, &core).unwrap(), 0),
+    ] {
+        assert_eq!(assert_within_step_domains(&b), (1, across));
+        round_trip(&b);
+    }
+}
+
+#[test]
+fn a_face_across_a_lofted_splines_join_is_written_inside_its_surface() {
+    let sections: Vec<crate::loft::Section> = (0..2)
+        .map(|i| crate::loft::Section {
+            profile: cam(Vec2::ZERO, 8.0 + 2.0 * i as f64, 0.0),
+            frame: Frame::new(Vec3::new(0.0, 0.0, 6.0 * i as f64), Vec3::Z, Vec3::X).unwrap(),
+        })
+        .collect();
+    let loft = crate::loft::loft(&sections, false, "l").unwrap();
+    for (keep, across) in [(1.0, 1), (-1.0, 0)] {
+        let b = half(&loft, keep);
+        assert_eq!(assert_within_step_domains(&b), (1, across));
+        round_trip(&b);
+    }
+}
+
+#[test]
+fn an_unclamped_closed_nurbs_is_turned_to_start_where_its_edge_does() {
+    // A cubic on even knots round eight points, its first three again at the end, as a file may
+    // carry a closed curve: it is closed, and has no knot of more than one at its ends.
+    let ring: Vec<Vec3> = (0..8)
+        .map(|i| {
+            let a = TAU * i as f64 / 8.0;
+            Vec3::new(5.0 * a.cos(), 3.0 * a.sin(), 0.5 * (2.0 * a).sin())
+        })
+        .collect();
+    let ctrl: Vec<Vec3> = (0..11).map(|i| ring[i % 8]).collect();
+    let knots: Vec<f64> = (0..15).map(|i| i as f64).collect();
+    let n = crate::geom::NurbsCurve::new(3, knots, ctrl, None).unwrap();
+    assert_eq!(n.domain(), (3.0, 11.0));
+    assert_eq!(n.period(), Some(8.0));
+    let curve = Curve::Nurbs(Box::new(n.clone()));
+    let turned = super::write::turn_from(&curve, (5.5, 13.5)).expect("past the end");
+    assert_eq!(turned.knots[0], 5.5);
+    assert_eq!(turned.knots[turned.knots.len() - 1], 13.5);
+    assert!(turned.ctrl[0].dist(n.eval(5.5)) < 1e-12);
+    let back = crate::geom::BSpline::new(turned.degree, turned.knots, turned.ctrl).unwrap();
+    for i in 0..=64 {
+        let t = 5.5 + 8.0 * i as f64 / 64.0;
+        assert!(back.eval(t).dist(n.eval(t)) < 1e-12, "at {t}");
+    }
+}
+
+#[test]
+fn a_closed_nurbs_with_unequal_end_weights_is_turned_to_start_where_its_edge_does() {
+    // The unit circle in four quarter arcs, the last arc's weights (1, w, 1) taken to
+    // (1, w·λ, λ²): the same arc, run at another rate, so the circle ends on a weight of λ².
+    let (w, lambda) = (std::f64::consts::FRAC_1_SQRT_2, 2.0);
+    let square = [
+        (1.0, 0.0),
+        (1.0, 1.0),
+        (0.0, 1.0),
+        (-1.0, 1.0),
+        (-1.0, 0.0),
+        (-1.0, -1.0),
+        (0.0, -1.0),
+        (1.0, -1.0),
+        (1.0, 0.0),
+    ];
+    let ctrl: Vec<Vec3> = square.iter().map(|&(x, y)| Vec3::new(x, y, 0.0)).collect();
+    let weights = vec![1.0, w, 1.0, w, 1.0, w, 1.0, w * lambda, lambda * lambda];
+    let knots = vec![0.0, 0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0, 4.0];
+    let n = crate::geom::NurbsCurve::new(2, knots, ctrl, Some(weights)).unwrap();
+    let curve = Curve::Nurbs(Box::new(n.clone()));
+    let turned = super::write::turn_from(&curve, (0.5, 4.5)).expect("past the end");
+    let back =
+        crate::geom::NurbsCurve::new(turned.degree, turned.knots, turned.ctrl, turned.weights)
+            .unwrap();
+    for i in 0..=64 {
+        let t = 0.5 + 4.0 * i as f64 / 64.0;
+        let p = back.eval(t);
+        assert!((p.x.hypot(p.y) - 1.0).abs() < 1e-14 && p.z == 0.0, "at {t}");
+        assert!(p.dist(n.eval(t)) < 1e-14, "at {t}");
+    }
+}
+
+#[test]
+fn whole_closed_spline_solids_are_written_inside_their_surfaces() {
+    // Uncut, each closed side is one face round its seam: in its surface's own turn, and with no
+    // surface written anew.
+    let tall = extrude(
+        &cam(Vec2::new(1.0, -2.0), 10.0, 0.7),
+        &Frame::WORLD,
+        4.0,
+        "cam",
+    )
+    .unwrap();
+    let ring = revolve(
+        &cam(Vec2::new(20.0, 0.0), 3.0, 2.0),
+        &xz(),
+        Vec3::ZERO,
+        Vec3::Z,
+        TAU,
+        "r",
+    )
+    .unwrap();
+    let sections: Vec<crate::loft::Section> = (0..3)
+        .map(|i| crate::loft::Section {
+            profile: cam(Vec2::ZERO, 8.0 + i as f64, 0.4 * i as f64),
+            frame: Frame::new(Vec3::new(0.0, 0.0, 5.0 * i as f64), Vec3::Z, Vec3::X).unwrap(),
+        })
+        .collect();
+    let loft = crate::loft::loft(&sections, false, "l").unwrap();
+    for b in [tall, ring, loft] {
+        let (ended, rebased) = assert_within_step_domains(&b);
+        assert!(ended > 0);
+        assert_eq!(rebased, 0);
+        round_trip(&b);
+    }
+}
+
+#[test]
+fn a_hole_on_the_join_of_a_face_across_it_is_written_inside_its_surface() {
+    // The halves whose sides run across their surfaces' joins, each drilled right on the join: a
+    // rod along x through the cam's and the loft's side, and one along z through the ring's tube.
+    // The hole's loop lies across the join too, inside the face's own.
+    let core = extrude(
+        &Profile::circle(Vec2::ZERO, 40.0),
+        &Frame::new(Vec3::new(0.0, 0.0, -10.0), Vec3::Z, Vec3::X).unwrap(),
+        20.0,
+        "core",
+    )
+    .unwrap();
+    let rod = |frame: Frame, d: f64| {
+        extrude(&Profile::circle(Vec2::ZERO, d), &frame, 60.0, "rod").unwrap()
+    };
+    let along_x = Frame::new(Vec3::new(-30.0, 0.0, 2.0), Vec3::X, Vec3::Y).unwrap();
+    let tall = extrude(&cam(Vec2::ZERO, 10.0, 0.0), &Frame::WORLD, 4.0, "cam").unwrap();
+    let sections: Vec<crate::loft::Section> = (0..2)
+        .map(|i| crate::loft::Section {
+            profile: cam(Vec2::ZERO, 8.0 + 2.0 * i as f64, 0.0),
+            frame: Frame::new(Vec3::new(0.0, 0.0, 4.0 * i as f64), Vec3::Z, Vec3::X).unwrap(),
+        })
+        .collect();
+    let loft = crate::loft::loft(&sections, false, "l").unwrap();
+    let ring = revolve(
+        &cam(Vec2::new(20.0, 0.0), 3.0, 0.0),
+        &xz(),
+        Vec3::ZERO,
+        Vec3::Z,
+        TAU,
+        "r",
+    )
+    .unwrap();
+    let along_z = Frame::new(Vec3::new(23.6, 0.0, -30.0), Vec3::Z, Vec3::X).unwrap();
+    let outer = boolean::difference(&ring, &core).unwrap();
+    for b in [
+        boolean::difference(&half(&tall, 1.0), &rod(along_x, 2.0)).unwrap(),
+        boolean::difference(&half(&loft, 1.0), &rod(along_x, 2.0)).unwrap(),
+        boolean::difference(&outer, &rod(along_z, 1.0)).unwrap(),
+    ] {
+        assert_eq!(assert_within_step_domains(&b), (1, 1));
+        round_trip(&b);
+    }
+}
+
+#[test]
+fn a_piece_across_both_of_a_rings_joins_is_written_inside_its_surface() {
+    // A block over the ring's outer side round where both its angle and its tube's turn start,
+    // so the piece of the tube it keeps runs across both.
+    let ring = revolve(
+        &cam(Vec2::new(20.0, 0.0), 3.0, 0.0),
+        &xz(),
+        Vec3::ZERO,
+        Vec3::Z,
+        TAU,
+        "r",
+    )
+    .unwrap();
+    let b =
+        boolean::intersection(&ring, &block("k", [20.5, -6.0, -10.0], [30.0, 6.0, 10.0])).unwrap();
+    assert_eq!(assert_within_step_domains(&b), (1, 1));
+    round_trip(&b);
+}
+
+#[test]
+fn an_assembly_writes_each_part_on_its_own_surfaces() {
+    // A part with a face across its surface's join, then another: the second's faces are written
+    // on their own surfaces, not on the first's turned one, and both come back whole.
+    use super::write::{Instance, Part, write_assembly};
+    let tall = extrude(&cam(Vec2::ZERO, 10.0, 0.0), &Frame::WORLD, 4.0, "cam").unwrap();
+    let cam_half = half(&tall, 1.0);
+    let sections: Vec<crate::loft::Section> = (0..2)
+        .map(|i| crate::loft::Section {
+            profile: cam(Vec2::ZERO, 8.0 + 2.0 * i as f64, 0.0),
+            frame: Frame::new(Vec3::new(0.0, 0.0, 6.0 * i as f64), Vec3::Z, Vec3::X).unwrap(),
+        })
+        .collect();
+    let loft_half = half(&crate::loft::loft(&sections, false, "l").unwrap(), 1.0);
+    let blk = block("blk", [0.0, 0.0, 0.0], [10.0, 4.0, 3.0]);
+    let count = |t: &str, k: &str| t.matches(k).count();
+    for (x, y) in [
+        (&cam_half, &blk),
+        (&blk, &cam_half),
+        (&cam_half, &loft_half),
+    ] {
+        let (alone_x, alone_y) = (write(x, "x").unwrap(), write(y, "y").unwrap());
+        let parts = [Part::new("x", x, None), Part::new("y", y, None)];
+        let at = crate::math::Transform::translation(Vec3::new(100.0, 0.0, 0.0));
+        let instances = [
+            Instance::new("i", 0, crate::math::Transform::IDENTITY),
+            Instance::new("j", 1, at),
+        ];
+        let both = write_assembly("a", &parts, &instances).unwrap();
+        for k in [
+            "PLANE(",
+            "SURFACE_OF_LINEAR_EXTRUSION(",
+            "PCURVE(",
+            "ADVANCED_FACE(",
+        ] {
+            assert_eq!(
+                count(&both, k),
+                count(&alone_x, k) + count(&alone_y, k),
+                "{k}"
+            );
+        }
+        let back = read(both.as_bytes(), "imp").unwrap();
+        assert!(back.rejected.is_empty(), "{:?}", back.rejected);
+        assert!(check::check(&back.brep).is_empty());
+        let want = measure::volume(x) + measure::volume(y);
+        assert!((measure::volume(&back.brep) - want).abs() <= 1e-9 * want);
+    }
+}
+
+#[test]
+fn a_loft_to_a_point_from_a_closed_spline_is_written_across_its_pole() {
+    // Its side is closed along `u` and meets the point in a pole, whose line crosses the closed
+    // direction in the parameter plane: the loop runs along it and closes.
+    let sections = vec![crate::loft::Section {
+        profile: cam(Vec2::ZERO, 8.0, 0.0),
+        frame: Frame::WORLD,
+    }];
+    for ruled in [false, true] {
+        let apex = Vec3::new(0.0, 0.0, 9.0);
+        let b = crate::loft::loft_to_point(&sections, apex, ruled, "l").unwrap();
+        assert!(assert_within_step_domains(&b).0 > 0);
+        round_trip(&b);
+    }
+}
+
+/// A file of a solid whose one face is a rational spline surface closed along `u`, with a pole at
+/// each end of `v` and one seam: a circle of radius 2 turned along a parabola from (0, 0, −1) to
+/// (0, 0, 1) through the circle, so the solid is the revolution of ρ = 1 − z².
+fn lemon_text() -> String {
+    let w = std::f64::consts::FRAC_1_SQRT_2;
+    let ring = [
+        (2.0, 0.0),
+        (2.0, 2.0),
+        (0.0, 2.0),
+        (-2.0, 2.0),
+        (-2.0, 0.0),
+        (-2.0, -2.0),
+        (0.0, -2.0),
+        (2.0, -2.0),
+        (2.0, 0.0),
+    ];
+    let mut t = String::from(
+        "ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION((''),'2;1');\n\
+         FILE_NAME('','',(''),(''),'','','');\n\
+         FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));\nENDSEC;\nDATA;\n",
+    );
+    t += "#1=CARTESIAN_POINT('',(0.,0.,-1.));\n#2=CARTESIAN_POINT('',(0.,0.,1.));\n";
+    for (i, (x, y)) in ring.iter().enumerate() {
+        t += &format!("#{}=CARTESIAN_POINT('',({x:?},{y:?},0.));\n", 10 + i);
+    }
+    let net: Vec<String> = (0..9).map(|i| format!("(#1,#{},#2)", 10 + i)).collect();
+    let ws: Vec<String> = (0..9)
+        .map(|i| {
+            let x = if i % 2 == 0 { 1.0 } else { w };
+            format!("({x:?},{x:?},{x:?})")
+        })
+        .collect();
+    t += &format!(
+        "#30=(BOUNDED_SURFACE() B_SPLINE_SURFACE(2,2,({}),.UNSPECIFIED.,.F.,.F.,.F.) \
+         B_SPLINE_SURFACE_WITH_KNOTS((3,2,2,2,3),(3,3),(0.,1.,2.,3.,4.),(0.,1.),.UNSPECIFIED.) \
+         GEOMETRIC_REPRESENTATION_ITEM() RATIONAL_B_SPLINE_SURFACE(({})) \
+         REPRESENTATION_ITEM('') SURFACE());\n",
+        net.join(","),
+        ws.join(",")
+    );
+    t += "#31=B_SPLINE_CURVE_WITH_KNOTS('',2,(#1,#10,#2),.UNSPECIFIED.,.F.,.F.,(3,3),(0.,1.),\
+          .UNSPECIFIED.);\n";
+    t += "#32=VERTEX_POINT('',#1);\n#33=VERTEX_POINT('',#2);\n";
+    t += "#34=EDGE_CURVE('',#32,#33,#31,.T.);\n";
+    t += "#35=ORIENTED_EDGE('',*,*,#34,.T.);\n#36=ORIENTED_EDGE('',*,*,#34,.F.);\n";
+    t += "#37=EDGE_LOOP('',(#35,#36));\n#38=FACE_OUTER_BOUND('',#37,.T.);\n";
+    t += "#39=ADVANCED_FACE('',(#38),#30,.T.);\n#40=CLOSED_SHELL('',(#39));\n";
+    t += "#41=MANIFOLD_SOLID_BREP('',#40);\n";
+    t += "#50=(LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.));\n";
+    t += "#51=(NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.));\n";
+    t += "#52=(NAMED_UNIT(*) SI_UNIT($,.STERADIAN.) SOLID_ANGLE_UNIT());\n";
+    t += "#53=UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-7),#50,'distance_accuracy_value',\
+          '');\n";
+    t += "#54=(GEOMETRIC_REPRESENTATION_CONTEXT(3) GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#53)) \
+          GLOBAL_UNIT_ASSIGNED_CONTEXT((#50,#51,#52)) REPRESENTATION_CONTEXT('','3D'));\n";
+    t += "#55=ADVANCED_BREP_SHAPE_REPRESENTATION('lemon',(#41),#54);\n";
+    t += "ENDSEC;\nEND-ISO-10303-21;\n";
+    t
+}
+
+#[test]
+fn a_face_between_two_poles_keeps_its_seam_a_period_apart() {
+    // Volume π∫(1 − z²)² dz over −1..1, 16π/15; its seam's two pcurves a turn of `u` apart.
+    let imp = read(lemon_text().as_bytes(), "imp").unwrap();
+    assert!(imp.rejected.is_empty(), "{:?}", imp.rejected);
+    let b = imp.brep;
+    let want = 16.0 * PI / 15.0;
+    assert!((measure::volume(&b) - want).abs() <= 1e-9 * want);
+    assert!(assert_within_step_domains(&b).0 > 0);
+    round_trip(&b);
+}
+
+#[test]
+fn a_face_that_fits_no_one_turn_is_written_as_the_kernel_has_it() {
+    // A ring with a cam for its tube, less a slab tilted through it: one face runs a whole turn
+    // of the tube and on past its seam, which no one turn of the tube's curve holds. It is kept on
+    // the surface as it is, without pcurves, as before, and reads back whole.
+    let ring = revolve(
+        &cam(Vec2::new(20.0, 0.0), 3.0, 0.0),
+        &xz(),
+        Vec3::ZERO,
+        Vec3::Z,
+        TAU,
+        "r",
+    )
+    .unwrap();
+    let (tilt, turn) = (0.21f64, 2.2f64);
+    let z = Vec3::new(tilt.sin() * turn.cos(), tilt.sin() * turn.sin(), tilt.cos());
+    let frame = Frame::new(Vec3::new(0.0, 0.0, 0.3), z, Vec3::Y.cross(z)).unwrap();
+    let slab = extrude(
+        &Profile::rect(Vec2::ZERO, 300.0, 300.0),
+        &frame,
+        100.0,
+        "cut",
+    )
+    .unwrap();
+    let b = boolean::difference(&ring, &slab).unwrap();
+    assert!(check::check(&b).is_empty());
+    let kept = b
+        .face_ids()
+        .filter(|&f| super::write::face_form(&b, f).kept)
+        .count();
+    assert_eq!(kept, 1);
+    round_trip(&b);
+}
+
+#[test]
+fn a_cut_spline_face_s_trimmed_edges_are_placed_within_their_pcurves() {
+    // A lofted cam cut by planes along x and then across z, so its intersection edges start part
+    // way along their pcurves: each stretch the writer bounds lies within its pcurve's domain.
+    let sections: Vec<crate::loft::Section> = (0..3)
+        .map(|i| crate::loft::Section {
+            profile: cam(Vec2::ZERO, 8.0 + 2.0 * i as f64, 0.0),
+            frame: Frame::new(Vec3::new(0.0, 0.0, 3.0 * i as f64), Vec3::Z, Vec3::X).unwrap(),
+        })
+        .collect();
+    let loft = crate::loft::loft(&sections, false, "l").unwrap();
+    let mut written = 0;
+    for off in [-4.0, -0.93, 2.4] {
+        let first = boolean::difference(
+            &loft,
+            &block("x", [off, -100.0, -100.0], [off + 100.0, 100.0, 100.0]),
+        )
+        .unwrap();
+        for zc in [1.31, 2.53, 4.97] {
+            let b = boolean::difference(
+                &first,
+                &block("z", [-100.0, -100.0, zc], [100.0, 100.0, 100.0]),
+            )
+            .unwrap();
+            assert!(check::check(&b).is_empty());
+            assert_within_step_domains(&b);
+            write(&b, "p").unwrap();
+            written += 1;
+        }
+    }
+    assert_eq!(written, 9);
 }
