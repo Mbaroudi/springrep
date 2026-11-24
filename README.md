@@ -2,7 +2,7 @@
 
 [![crates.io](https://img.shields.io/crates/v/springrep.svg)](https://crates.io/crates/springrep)
 [![docs.rs](https://docs.rs/springrep/badge.svg)](https://docs.rs/springrep)
-[![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/springcraft-ai/springrep/blob/main/LICENSE)
+[![MIT or Apache-2.0 licensed](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](https://github.com/springcraft-ai/springrep/blob/main/LICENSE-MIT)
 
 An exact boundary-representation (B-rep) geometry kernel, in safe Rust with no dependencies.
 
@@ -75,5 +75,6 @@ before you open an issue or a pull request.
 
 ## Licence
 
-springrep is under the MIT licence: see
-[LICENSE](https://github.com/springcraft-ai/springrep/blob/main/LICENSE).
+springrep is dual-licensed under the [MIT licence](https://github.com/springcraft-ai/springrep/blob/main/LICENSE-MIT)
+or the [Apache License, Version 2.0](https://github.com/springcraft-ai/springrep/blob/main/LICENSE-APACHE),
+at your option. Unless you state otherwise, any contribution you submit is under both.

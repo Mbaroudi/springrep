@@ -28,7 +28,7 @@ The [pages workflow](../.github/workflows/pages.yml) publishes the page to GitHu
 docs link points to docs.rs, which documents the version published on crates.io.
 
 The link-preview image (`og:image`) is a 1200×630 PNG: the Springcraft mark, the springrep name,
-tagline and MIT badge on the left, and the finished flanged tube drawn by its exact edges on the
+tagline and licence badge on the left, and the finished flanged tube drawn by its exact edges on the
 right. It lives on the CDN under `springrep/`, with a version stamp in its name so it can be cached
 for good: a new image gets a new name, and the template's `og:image` tag changes with it.
 
